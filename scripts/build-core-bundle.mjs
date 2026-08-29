@@ -9,9 +9,13 @@ await build({
   outfile: out,
   bundle: true,
   format: "esm",
-  platform: "browser",
+  platform: "neutral",
   target: "es2022",
-  conditions: ["workerd", "worker", "browser", "module", "import"],
+  conditions: ["workerd", "worker", "module", "import"],
+  // Node built-ins used by the Agents/MCP SDK are runtime-provided by
+  // Cloudflare Workers for our compatibility date. Do not ask Vercel
+  // esbuild to resolve/polyfill them while embedding the Worker bundle.
+  external: ["node:*"],
   minify: false,
   sourcemap: false,
   legalComments: "none",
@@ -19,5 +23,5 @@ await build({
 });
 const source = await readFile(out, "utf8");
 const target = path.join(root, "lib", "generated-core-bundle.ts");
-await writeFile(target, `// AUTO-GENERATED. DO NOT EDIT.\nexport const CORE_WORKER_BUNDLE_VERSION = \"0.12.0\";\nexport const CORE_WORKER_BUNDLE = ${JSON.stringify(source)};\n`, "utf8");
+await writeFile(target, `// AUTO-GENERATED. DO NOT EDIT.\nexport const CORE_WORKER_BUNDLE_VERSION = \"0.12.1\";\nexport const CORE_WORKER_BUNDLE = ${JSON.stringify(source)};\n`, "utf8");
 console.log(`Core Worker bundle embedded: ${source.length} bytes`);

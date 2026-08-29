@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "corvo-core-v2",
   "main": "src/index.ts",
-  "compatibility_date": "2026-08-28",
+  "compatibility_date": "2026-08-29",
   "d1_databases": [
     {
       "binding": "DB",

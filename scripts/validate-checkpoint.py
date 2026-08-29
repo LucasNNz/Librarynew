@@ -170,6 +170,22 @@ def self_sufficient_checks(restore: pathlib.Path):
     }
 
 
+
+def worker_bundle_build_checks():
+    path = ROOT / "scripts" / "build-core-bundle.mjs"
+    text = path.read_text("utf8")
+    wrangler = (ROOT / "cloudflare" / "wrangler.jsonc.example").read_text("utf8")
+    deploy = (ROOT / "lib" / "cloudflare-control.ts").read_text("utf8")
+    return {
+        "platform_browser_disabled": 'platform: "browser"' not in text,
+        "platform_neutral": 'platform: "neutral"' in text,
+        "node_builtins_externalized": re.search(r'external\s*:\s*\[\s*["\']node:\*["\']\s*\]', text) is not None,
+        "worker_condition_present": '"workerd"' in text and '"worker"' in text,
+        "browser_condition_removed": 'conditions: ["workerd", "worker", "browser"' not in text,
+        "wrangler_compat_date": re.search(r'"compatibility_date"\s*:\s*"(\d{4}-\d{2}-\d{2})"', wrangler).group(1) if re.search(r'"compatibility_date"\s*:\s*"(\d{4}-\d{2}-\d{2})"', wrangler) else None,
+        "api_deploy_compat_date": re.search(r'compatibility_date:\s*"(\d{4}-\d{2}-\d{2})"', deploy).group(1) if re.search(r'compatibility_date:\s*"(\d{4}-\d{2}-\d{2})"', deploy) else None,
+    }
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("restore_sql", help="Caminho para CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql")
@@ -267,6 +283,16 @@ def main():
         if set(mcp["extras"]) != EXPECTED_EXTRA_TOOLS: errors.append(f"unexpected MCP extras: {mcp['extras']}")
         if mcp["duplicates"] or mcp["missing_implemented"] or mcp["incorrectly_registered_substitutes"]: errors.append("MCP registration contract mismatch")
 
+        worker_bundle = worker_bundle_build_checks()
+        if not worker_bundle["platform_browser_disabled"]: errors.append("Worker prebuild still uses browser platform")
+        if not worker_bundle["platform_neutral"]: errors.append("Worker prebuild must use neutral platform")
+        if not worker_bundle["node_builtins_externalized"]: errors.append("Worker prebuild must externalize node:* runtime imports")
+        if not worker_bundle["worker_condition_present"]: errors.append("Worker prebuild is missing workerd/worker conditions")
+        if not worker_bundle["browser_condition_removed"]: errors.append("Worker prebuild still prioritizes browser package conditions")
+        for label in ["wrangler_compat_date", "api_deploy_compat_date"]:
+            value = worker_bundle[label]
+            if not value or value < "2026-08-04": errors.append(f"{label} must enable Cloudflare Node compatibility")
+
         self_sufficient = self_sufficient_checks(restore)
         if not self_sufficient["embedded_restore_exists"]: errors.append("embedded D1 bootstrap is missing")
         if not self_sufficient["embedded_restore_matches_input"]: errors.append("embedded D1 bootstrap differs from validated restore")
@@ -298,6 +324,7 @@ def main():
             "historical_integrity": fk,
             "logical_integrity": health,
             "configuration_persistence": config_persistence,
+            "worker_bundle_build": worker_bundle,
             "self_sufficient_setup": self_sufficient,
             "mcp": mcp,
             "source": source,

@@ -1,7 +1,7 @@
 {
-  "checkpoint": "0.12.0",
+  "checkpoint": "0.12.1",
   "validation": "PASS",
-  "duration_seconds": 2.992,
+  "duration_seconds": 3.985,
   "restore": {
     "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
     "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",
@@ -97,6 +97,15 @@
     "lock_state": "LOCKED",
     "revision": 7,
     "secret_like_columns": []
+  },
+  "worker_bundle_build": {
+    "platform_browser_disabled": true,
+    "platform_neutral": true,
+    "node_builtins_externalized": true,
+    "worker_condition_present": true,
+    "browser_condition_removed": true,
+    "wrangler_compat_date": "2026-08-29",
+    "api_deploy_compat_date": "2026-08-29"
   },
   "self_sufficient_setup": {
     "embedded_restore_exists": true,
