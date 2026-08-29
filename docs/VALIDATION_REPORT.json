@@ -1,7 +1,7 @@
 {
-  "checkpoint": "0.12.2",
+  "checkpoint": "0.12.3",
   "validation": "PASS",
-  "duration_seconds": 3.39,
+  "duration_seconds": 3.027,
   "restore": {
     "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
     "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",
@@ -120,7 +120,9 @@
     "worker_has_self_update": true,
     "core_bundle_endpoint_exists": true,
     "migration_registry_exists": true,
-    "setup_route_exists": true
+    "setup_route_exists": true,
+    "queue_consumer_reconciles_existing": true,
+    "queue_consumer_has_race_recovery": true
   },
   "mcp": {
     "historical_total": 229,

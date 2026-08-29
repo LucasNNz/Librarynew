@@ -139,6 +139,7 @@ def self_sufficient_checks(restore: pathlib.Path):
     core_client = (ROOT / "lib" / "core-client.ts").read_text("utf8")
     browser = (ROOT / "lib" / "browser-connection.ts").read_text("utf8")
     provision = (ROOT / "app" / "api" / "setup" / "cloudflare" / "provision" / "route.ts").read_text("utf8")
+    cloudflare_control = (ROOT / "lib" / "cloudflare-control.ts").read_text("utf8")
     worker_control = (ROOT / "cloudflare" / "src" / "core" / "control-plane.ts").read_text("utf8")
     package = json.loads((ROOT / "package.json").read_text("utf8"))
     gzip_path = ROOT / "bootstrap" / "CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql.gz"
@@ -167,6 +168,16 @@ def self_sufficient_checks(restore: pathlib.Path):
         "core_bundle_endpoint_exists": (ROOT / "app" / "api" / "setup" / "core-bundle" / "route.ts").exists(),
         "migration_registry_exists": (ROOT / "cloudflare" / "migrations" / "9007_v2_migration_registry.sql").exists(),
         "setup_route_exists": "CLOUDFLARE_API_TOKEN_REQUIRED" in provision,
+        "queue_consumer_reconciles_existing": (
+            "updateQueueConsumer" in cloudflare_control
+            and 'method: "PUT"' in cloudflare_control
+            and "existingWorker" in cloudflare_control
+            and "previousScriptName" in cloudflare_control
+        ),
+        "queue_consumer_has_race_recovery": (
+            "Race/idempotency guard" in cloudflare_control
+            and "const after = await listQueueConsumers" in cloudflare_control
+        ),
     }
 
 
@@ -312,6 +323,8 @@ def main():
         if not self_sufficient["worker_has_self_update"]: errors.append("Worker self-update control plane missing")
         if not self_sufficient["core_bundle_endpoint_exists"]: errors.append("Core bundle endpoint missing")
         if not self_sufficient["migration_registry_exists"]: errors.append("web-managed migration registry missing")
+        if not self_sufficient["queue_consumer_reconciles_existing"]: errors.append("Queue consumer setup is not idempotent for an existing consumer")
+        if not self_sufficient["queue_consumer_has_race_recovery"]: errors.append("Queue consumer setup lacks LIST/POST race recovery")
 
         typecheck = {
             "worker_structural": run_tsc(ROOT / "cloudflare" / "tsconfig.validate.json"),

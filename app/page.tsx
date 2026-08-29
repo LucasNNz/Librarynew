@@ -40,7 +40,7 @@ const defaultInfrastructureDraft: InfrastructureDraft = {
 };
 
 const nav = ["Catálogo", "Projetos", "Solicitações", "Lotes", "Importações", "Coleta automática", "Operação", "Políticas", "Estoque & giro", "Inbox candidatas", "Pendentes", "Rejeitados", "Configurações"];
-const EXPECTED_CORE_VERSION = "0.12.2";
+const EXPECTED_CORE_VERSION = "0.12.3";
 
 function Mark() {
   return <span className="mark" aria-hidden="true"><i /></span>;

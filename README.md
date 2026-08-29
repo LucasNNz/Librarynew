@@ -1,8 +1,13 @@
-# Corvo Library V2 — checkpoint 0.12.2
+# Corvo Library V2 — checkpoint 0.12.3
 
 Reconstrução limpa da Corvo Library com **UI web** + **Cloudflare Worker (Core)** + **D1 + R2 + Queue**, com configuração autossuficiente pela própria interface.
 
 A V2 usa a V61.9 como especificação funcional e preserva o banco histórico 1:1. Não usa Turso/libSQL, `production-recovery`, `secret_cloudflare_connection` nem credenciais R2 salvas no D1.
+
+## Queue consumer fix — 0.12.3
+
+O provisionamento de Queue agora é idempotente: se `corvo-materialize-v2` já tiver um Worker consumer de uma tentativa anterior, a V2 reconcilia esse consumidor via API `PUT` em vez de tentar criar um segundo consumer. Um consumidor `http_pull` continua protegido e gera conflito explícito em vez de ser alterado silenciosamente. O fluxo também relista a Queue após uma corrida entre LIST/POST.
+
 
 ## Arquitetura
 
@@ -22,7 +27,7 @@ Cloudflare Worker / MCP
 
 O frontend pode continuar hospedado na Vercel, mas **não depende de Environment Variables da Vercel para operar a Library**. Depois do setup, o navegador fala diretamente com o Corvo Core usando uma chave própria da aplicação. O token Cloudflare nunca é salvo no D1 nem no `localStorage`; após a primeira configuração ele existe somente como secret do Worker.
 
-## Configuração autossuficiente — 0.12.2
+## Configuração autossuficiente — 0.12.3
 
 A tela **Configurações** executa o provisionamento pela API oficial da Cloudflare. O usuário informa um API Token uma única vez e o app:
 
@@ -66,11 +71,11 @@ O D1 não recebe token Cloudflare, Access Key, Secret Key, signing key ou master
 Veja `docs/SETUP_WIZARD.md`, `docs/ARCHITECTURE.md` e `docs/DEPLOYMENT_RUNBOOK.md`.
 
 
-## Build fix — 0.12.2
+## Build fix — 0.12.3
 
 O bundle do Worker é gerado no `prebuild` da Vercel. Dependências do MCP/Agents usam APIs nativas do runtime Cloudflare, incluindo `node:async_hooks`. O esbuild agora usa `platform: "neutral"` e preserva imports `node:*` como externos, em vez de tentar resolvê-los como browser modules durante o build da Vercel. O Worker é publicado com compatibility date `2026-08-29`, que fornece a compatibilidade Node necessária no runtime Cloudflare.
 
-## Build fixes — 0.12.2
+## Build fixes — 0.12.3
 
 ### Post-prebuild TypeScript regression
 `generated-core-bundle.ts` now exports the generated version and source as explicit `string` values. This prevents TypeScript from narrowing the generated version to the literal checkpoint value and rejecting the defensive `UNBUILT` comparison during `next build`. The checkpoint gate simulates the post-prebuild generated file before packaging.

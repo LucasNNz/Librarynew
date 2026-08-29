@@ -129,20 +129,79 @@ export async function deployWorker(input: WorkerDeployInput) {
   return { coreUrl };
 }
 
-export async function ensureQueueConsumer(token: string, accountId: string, queueId: string, workerName: string, dlqName: string) {
-  const consumers = await cfApi<Array<{ consumer_id?: string; script_name?: string; type?: string }>>(token, `/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers`);
-  const existing = (Array.isArray(consumers) ? consumers : []).find(item => item.type === "worker" && item.script_name === workerName);
-  if (existing) return { created: false, id: existing.consumer_id || null };
-  const result = await cfApi<{ consumer_id?: string }>(token, `/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers`, {
-    method: "POST",
-    body: JSON.stringify({
-      type: "worker",
-      script_name: workerName,
-      dead_letter_queue: dlqName,
-      settings: { batch_size: 10, max_retries: 4, retry_delay: 10 },
-    }),
+type QueueConsumerInfo = {
+  consumer_id?: string;
+  script_name?: string;
+  type?: "worker" | "http_pull" | string;
+  dead_letter_queue?: string;
+  settings?: Record<string, unknown>;
+};
+
+function desiredQueueConsumer(workerName: string, dlqName: string) {
+  return {
+    type: "worker" as const,
+    script_name: workerName,
+    dead_letter_queue: dlqName,
+    settings: { batch_size: 10, max_retries: 4, retry_delay: 10 },
+  };
+}
+
+async function listQueueConsumers(token: string, accountId: string, queueId: string) {
+  const result = await cfApi<QueueConsumerInfo[]>(token, `/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers`);
+  return Array.isArray(result) ? result : [];
+}
+
+async function updateQueueConsumer(token: string, accountId: string, queueId: string, consumerId: string, workerName: string, dlqName: string) {
+  const result = await cfApi<QueueConsumerInfo>(token, `/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers/${encodeURIComponent(consumerId)}`, {
+    method: "PUT",
+    body: JSON.stringify(desiredQueueConsumer(workerName, dlqName)),
   });
-  return { created: true, id: result.consumer_id || null };
+  return { created: false, updated: true, id: result.consumer_id || consumerId, scriptName: workerName };
+}
+
+export async function ensureQueueConsumer(token: string, accountId: string, queueId: string, workerName: string, dlqName: string) {
+  const consumers = await listQueueConsumers(token, accountId, queueId);
+
+  // A Queue has only one active push consumer. Reconcile an existing Worker
+  // consumer instead of trying to create a duplicate. `type` is optional in
+  // Cloudflare responses, so script_name is the strongest match signal.
+  const exact = consumers.find(item => item.script_name === workerName && item.consumer_id);
+  if (exact?.consumer_id) {
+    return updateQueueConsumer(token, accountId, queueId, exact.consumer_id, workerName, dlqName);
+  }
+
+  const existingWorker = consumers.find(item => item.consumer_id && item.type !== "http_pull");
+  if (existingWorker?.consumer_id) {
+    // This queue name is dedicated to Corvo. A previous partial installation
+    // may have left a consumer pointing at an older Worker name; adopt it.
+    return { ...(await updateQueueConsumer(token, accountId, queueId, existingWorker.consumer_id, workerName, dlqName)), adopted: true, previousScriptName: existingWorker.script_name || null };
+  }
+
+  const pullConsumer = consumers.find(item => item.consumer_id && item.type === "http_pull");
+  if (pullConsumer) {
+    throw new CloudflareApiError("QUEUE_HAS_HTTP_PULL_CONSUMER", 409, {
+      queueId,
+      consumerId: pullConsumer.consumer_id,
+      detail: "A Queue já possui um consumidor HTTP Pull. A Corvo não altera esse tipo automaticamente.",
+    });
+  }
+
+  try {
+    const result = await cfApi<QueueConsumerInfo>(token, `/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers`, {
+      method: "POST",
+      body: JSON.stringify(desiredQueueConsumer(workerName, dlqName)),
+    });
+    return { created: true, updated: false, id: result.consumer_id || null, scriptName: workerName };
+  } catch (error) {
+    // Race/idempotency guard: another setup attempt may have created the
+    // consumer between LIST and POST. Re-list once and reconcile it.
+    const after = await listQueueConsumers(token, accountId, queueId);
+    const concurrent = after.find(item => item.consumer_id && item.type !== "http_pull");
+    if (concurrent?.consumer_id) {
+      return { ...(await updateQueueConsumer(token, accountId, queueId, concurrent.consumer_id, workerName, dlqName)), adopted: true, raced: true, previousScriptName: concurrent.script_name || null };
+    }
+    throw error;
+  }
 }
 
 export async function queryD1<T = Record<string, unknown>>(token: string, accountId: string, databaseId: string, sql: string, params: unknown[] = []) {
