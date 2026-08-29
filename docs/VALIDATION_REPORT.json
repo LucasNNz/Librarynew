@@ -1,7 +1,7 @@
 {
-  "checkpoint": "0.8.0",
+  "checkpoint": "0.10.0",
   "validation": "PASS",
-  "duration_seconds": 3.045,
+  "duration_seconds": 2.943,
   "restore": {
     "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
     "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",
@@ -11,7 +11,8 @@
       "9002_v2_direct_upload.sql",
       "9003_v2_control_plane.sql",
       "9004_v2_archives.sql",
-      "9005_v2_delivery_hardening.sql"
+      "9005_v2_delivery_hardening.sql",
+      "9006_v2_persistent_infrastructure.sql"
     ]
   },
   "database": {
@@ -25,13 +26,15 @@
     "asset_usage": 1176,
     "assets_missing_r2_key": 0,
     "duplicate_asset_r2_keys": 8,
-    "tables_total": 59,
+    "tables_total": 61,
     "v2_tables": [
       "v2_asset_exports",
       "v2_collection_events",
       "v2_control_jobs",
       "v2_direct_uploads",
       "v2_download_packages",
+      "v2_infrastructure_config_events",
+      "v2_infrastructure_profiles",
       "v2_ingest_candidates",
       "v2_ingest_events",
       "v2_ingest_operations",
@@ -40,7 +43,7 @@
       "v2_schema_meta",
       "v2_storage_audits"
     ],
-    "schema_version": "2.5.0",
+    "schema_version": "2.6.0",
     "sensitive_settings_rows": 0
   },
   "historical_integrity": {
@@ -80,9 +83,18 @@
       "eventsWithoutOperation": 0,
       "packagesWithoutProject": 0,
       "projectMediaWithoutProject": 0,
-      "projectTitlesWithoutProject": 0
+      "projectTitlesWithoutProject": 0,
+      "infrastructureEventsWithoutProfile": 0
     },
     "v2_orphans": 0
+  },
+  "configuration_persistence": {
+    "not_seeded_by_migrations": true,
+    "persistent_migration_is_idempotent": true,
+    "migration_profile_mutators": [],
+    "lock_state": "LOCKED",
+    "revision": 7,
+    "secret_like_columns": []
   },
   "mcp": {
     "historical_total": 229,
@@ -105,8 +117,8 @@
     ]
   },
   "source": {
-    "files_checked": 77,
-    "relative_imports_checked": 169,
+    "files_checked": 80,
+    "relative_imports_checked": 175,
     "missing_relative_imports": [],
     "forbidden_legacy_hits": {
       "@libsql": [],

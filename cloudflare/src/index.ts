@@ -16,6 +16,7 @@ import { confirmDirectUpload, getDirectUpload, prepareDirectUpload, receiveDirec
 import { appliedPolicies, createOperationalPolicy, detectOperationalGap, editOperationalPolicy, getOperationalGap, linkGapPolicy, listOperationalGaps, listOperationalPolicies, policyTelemetry, policyWorkspace, resolveGapAndLearn, rollbackPolicy, setPolicyStatus, testPolicy } from "./core/policies";
 import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, resolveSupervisorDecision, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog } from "./core/supervisor";
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
+import { alterInfrastructureProfile, getInfrastructureProfile, initializeInfrastructureProfile, verifyInfrastructureProfile } from "./core/infrastructure";
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, processFastApproveJob, processSupervisorDecisionsJob, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, processPackageJob, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage, servePackageFile, serveProjectMedia } from "./core/production";
@@ -52,7 +53,8 @@ async function health(env: Env) {
   } catch {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok", service: "corvo-core", version: "0.8.0", d1, r2, schema, queue: "ok" as const, signing, queueBacklog };
+  const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok", service: "corvo-core", version: "0.10.0", d1, r2, schema, queue: "ok" as const, signing, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -235,6 +237,10 @@ export default {
     else if (url.pathname === "/workers/limits" && request.method === "POST") response=json(await configureWorkerLimit(env,await request.json()));
     else if (url.pathname === "/settings" && request.method === "GET") response=json({items:await listSafeSettings(env),bindings:await bindingStatus(env)});
     else if (url.pathname === "/settings" && request.method === "PATCH") { const body=await request.json() as {key?:string;value?:unknown}; response=body.key?json(await updateSafeSetting(env,body.key,body.value)):json({error:"INVALID_INPUT"},{status:400}); }
+    else if (url.pathname === "/infrastructure/config" && request.method === "GET") response=json(await getInfrastructureProfile(env));
+    else if (url.pathname === "/infrastructure/config" && request.method === "POST") { const value=await initializeInfrastructureProfile(env,await request.json()); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:201}); }
+    else if (url.pathname === "/infrastructure/config" && request.method === "PATCH") { const value=await alterInfrastructureProfile(env,await request.json()); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
+    else if (url.pathname === "/infrastructure/verify" && request.method === "POST") { const value=await verifyInfrastructureProfile(env); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/stock" && request.method === "GET") response=json(await stockPanel(env));
     else if (url.pathname === "/stock/report" && request.method === "GET") response=json({text:await stockTextReport(env)});
     else if (url.pathname === "/stock/policies" && request.method === "POST") response=json(await configureStockPolicy(env,await request.json() as Parameters<typeof configureStockPolicy>[1]),{status:201});

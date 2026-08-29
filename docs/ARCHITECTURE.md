@@ -27,3 +27,14 @@
 - `MISSING`, `LOCKED`, `UNAVAILABLE` e `MISCONFIGURED` nunca são tratados como o mesmo estado.
 - Deploy da UI não altera D1/R2.
 - Deploy do Core não executa bootstrap destrutivo.
+
+## Configuração imutável por padrão — 0.10
+
+A infraestrutura usa dois níveis de persistência:
+
+- **Provider state**: bindings e secrets vivem no Cloudflare/Vercel e sobrevivem a deploys.
+- **D1 manifest**: `v2_infrastructure_profiles` registra somente nomes não secretos, `instance_id`, revisão e timestamps.
+
+O perfil é singleton (`id=primary`), nasce `LOCKED` e não é tocado por migrations. Alterações passam exclusivamente por `PATCH /infrastructure/config`, exigem `expectedRevision` e `confirmChange=true`, incrementam a revisão e escrevem auditoria em `v2_infrastructure_config_events`.
+
+`POST /infrastructure/verify` testa a infraestrutura e atualiza somente `last_verified_at`; ele nunca altera bindings ou nomes configurados.

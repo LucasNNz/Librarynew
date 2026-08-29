@@ -10,6 +10,7 @@ export type CoreHealth = {
   queue?: "ok" | "error" | "unknown";
   signing?: "ok" | "error" | "unknown";
   error?: string;
+  infrastructure?: { initialized?: boolean; profile?: Record<string, unknown> | null };
 };
 
 export function coreConfigured() {

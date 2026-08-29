@@ -1,4 +1,4 @@
-# Corvo Library V2 — checkpoint 0.8
+# Corvo Library V2 — checkpoint 0.10
 
 Reconstrução limpa da Corvo Library com **Vercel (UI/BFF)** + **Cloudflare Worker (Core)** + **D1 + R2 + Queue**.
 
@@ -19,10 +19,10 @@ Cloudflare Worker / MCP
 Worker-only: CORVO_SIGNING_KEY → URLs temporárias
 ```
 
-## Checkpoint 0.8
+## Checkpoint 0.10
 
 - Restauração histórica: **929 assets**, **849 aprovados**, **77 pendentes**, **3 rejeitados**, **174 universos aprovados**, **1.176 usos**.
-- 47 tabelas históricas preservadas + 12 tabelas `v2_*`; schema V2 **2.5.0**.
+- 47 tabelas históricas preservadas + 14 tabelas `v2_*`; schema V2 **2.6.0**.
 - FAST PUSH URL → ACK → Queue → R2 → D1 → Inbox.
 - FAST APPROVE e aprovação de candidatas endurecidos para retry/idempotência e promoção `incoming/ → assets/`.
 - Upload direto com claim atômico: `PREPARED → UPLOADING → STORED → CONFIRMING → CONFIRMED`, recuperação de claim travado e sem binário no MCP.
@@ -33,11 +33,23 @@ Worker-only: CORVO_SIGNING_KEY → URLs temporárias
 - **227/229** nomes MCP históricos implementados; os outros **2** são substituídos pelos bindings Cloudflare seguros.
 - 3 ferramentas extras V2 de diagnóstico/upload.
 
-## Gate 0.8
 
-O script `scripts/validate-checkpoint.py` executa restauração completa + todas as migrations, compara a dívida histórica com um baseline imutável, exige zero órfãos V2, valida paridade MCP, imports relativos, dependências proibidas e typechecks estruturais.
+### Configuração persistente 0.10
 
-Resultado atual: **PASS**.
+A tela **Configurações** agora possui um manifesto persistente de infraestrutura:
+
+- a configuração é salva uma única vez e fica `LOCKED`;
+- cada alteração explícita cria uma nova revisão e evento de auditoria;
+- migrations/redeploys não fazem seed nem overwrite do manifesto;
+- o gate reaplica todas as migrations sobre uma configuração-sentinela e exige preservação byte a byte;
+- secrets continuam exclusivamente no Vercel/Cloudflare, nunca no D1;
+- `Verificar agora` testa bindings sem reconfigurar nada.
+
+## Gate 0.10
+
+O script `scripts/validate-checkpoint.py` executa restauração completa + todas as migrations, compara a dívida histórica com um baseline imutável, exige zero órfãos V2, valida paridade MCP, imports relativos, dependências proibidas, typechecks estruturais e o contrato de persistência da configuração.
+
+Resultado atual: **PASS**, incluindo o teste de persistência da configuração.
 
 O `next build` real e o build/typecheck com dependências reais de Wrangler continuam como gates externos porque o registry não concluiu a instalação nesta execução.
 

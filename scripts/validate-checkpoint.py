@@ -16,7 +16,7 @@ EXPECTED = {
     "all_universes": 175,
     "asset_usage": 1176,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.5.0",
+    "schema_version": "2.6.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
@@ -60,6 +60,7 @@ def logical_health(conn: sqlite3.Connection):
         "packagesWithoutProject": "SELECT COUNT(*) FROM v2_download_packages p LEFT JOIN automatic_projects a ON a.id=p.project_id WHERE a.id IS NULL",
         "projectMediaWithoutProject": "SELECT COUNT(*) FROM v2_project_media m LEFT JOIN automatic_projects a ON a.id=m.project_id WHERE a.id IS NULL",
         "projectTitlesWithoutProject": "SELECT COUNT(*) FROM v2_project_titles t LEFT JOIN automatic_projects a ON a.id=t.project_id WHERE a.id IS NULL",
+        "infrastructureEventsWithoutProfile": "SELECT COUNT(*) FROM v2_infrastructure_config_events e LEFT JOIN v2_infrastructure_profiles p ON p.id=e.profile_id WHERE p.id IS NULL",
     }
     return (
         {k: int(q1(conn, sql) or 0) for k, sql in queries.items()},
@@ -184,6 +185,36 @@ def main():
         if historical != baseline["logical_orphans"]: errors.append("logical historical orphan baseline changed")
         if active_risk != baseline["active_historical_risk"]: errors.append("active historical risk baseline changed")
         if health["v2_orphans"] != 0: errors.append(f"V2 logical orphans={health['v2_orphans']}")
+
+        # Persistence contract: configuration is never seeded by migration and survives migration replay byte-for-byte.
+        initial_profiles = int(q1(conn, "SELECT COUNT(*) FROM v2_infrastructure_profiles") or 0)
+        if initial_profiles != 0: errors.append("infrastructure profile must not be seeded by migrations")
+        profile_columns = [r[1] for r in conn.execute("PRAGMA table_info(v2_infrastructure_profiles)").fetchall()]
+        forbidden_profile_columns = sorted(c for c in profile_columns if re.search(r"secret|token|password|credential|access_key|master_key", c, re.I))
+        if forbidden_profile_columns: errors.append(f"secret-like columns found in infrastructure profile: {forbidden_profile_columns}")
+        migration_mutators = []
+        mutation_re = re.compile(r"\b(?:insert\s+(?:or\s+replace\s+)?into|replace\s+into|update|delete\s+from)\s+v2_infrastructure_profiles\b", re.I)
+        for mig in migration_files:
+            if mutation_re.search(mig.read_text("utf8")): migration_mutators.append(mig.name)
+        if migration_mutators: errors.append(f"migrations mutate persistent infrastructure profile: {migration_mutators}")
+
+        sentinel = ("primary","INST-PERSISTENCE-GATE",7,"LOCKED","corvo-library-v2","corvo-core-v2","corvo-library-v2","corvoquiz-prod","corvo-materialize-v2","corvo-materialize-v2-dlq",1700000000000,1700000000123,1700000000456,'{"gate":"immutable"}')
+        conn.execute("INSERT INTO v2_infrastructure_profiles (id,instance_id,revision,lock_state,bff_project_name,worker_name,d1_database_name,r2_bucket_name,queue_name,dlq_name,configured_at,updated_at,last_verified_at,metadata_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", sentinel)
+        before_replay = conn.execute("SELECT * FROM v2_infrastructure_profiles WHERE id='primary'").fetchone()
+        persistence_migration = ROOT / "cloudflare" / "migrations" / "9006_v2_persistent_infrastructure.sql"
+        load_sql_transactionally(conn, persistence_migration.read_text("utf8"))
+        after_replay = conn.execute("SELECT * FROM v2_infrastructure_profiles WHERE id='primary'").fetchone()
+        config_persistence = {
+            "not_seeded_by_migrations": initial_profiles == 0,
+            "persistent_migration_is_idempotent": before_replay == after_replay,
+            "migration_profile_mutators": migration_mutators,
+            "lock_state": after_replay[3] if after_replay else None,
+            "revision": after_replay[2] if after_replay else None,
+            "secret_like_columns": forbidden_profile_columns,
+        }
+        if before_replay != after_replay: errors.append("persistent infrastructure migration changed saved configuration")
+        conn.execute("DELETE FROM v2_infrastructure_profiles WHERE id='primary'")
+        conn.commit()
         conn.close()
 
         source = source_checks()
@@ -218,6 +249,7 @@ def main():
             "database": db,
             "historical_integrity": fk,
             "logical_integrity": health,
+            "configuration_persistence": config_persistence,
             "mcp": mcp,
             "source": source,
             "typecheck": typecheck,

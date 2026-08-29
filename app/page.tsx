@@ -11,6 +11,33 @@ type Health = {
   core: { ok: boolean; d1?: string; r2?: string; schema?: string; queue?: string; signing?: string; queueBacklog?: number | null; error?: string };
 };
 
+type InfrastructureProfile = {
+  id: string;
+  instanceId: string;
+  revision: number;
+  lockState: "LOCKED";
+  bffProjectName: string;
+  workerName: string;
+  d1DatabaseName: string;
+  r2BucketName: string;
+  queueName: string;
+  dlqName: string;
+  configuredAt: number;
+  updatedAt: number;
+  lastVerifiedAt: number | null;
+};
+
+type InfrastructureDraft = Pick<InfrastructureProfile, "bffProjectName"|"workerName"|"d1DatabaseName"|"r2BucketName"|"queueName"|"dlqName">;
+
+const defaultInfrastructureDraft: InfrastructureDraft = {
+  bffProjectName:"corvo-library-v2",
+  workerName:"corvo-core-v2",
+  d1DatabaseName:"corvo-library-v2",
+  r2BucketName:"corvoquiz-prod",
+  queueName:"corvo-materialize-v2",
+  dlqName:"corvo-materialize-v2-dlq",
+};
+
 const nav = ["Catálogo", "Projetos", "Solicitações", "Lotes", "Importações", "Coleta automática", "Operação", "Políticas", "Estoque & giro", "Inbox candidatas", "Pendentes", "Rejeitados", "Configurações"];
 
 function Mark() {
@@ -83,6 +110,15 @@ export default function Home() {
   const [stockDetail, setStockDetail] = useState<{totals:Array<Record<string,unknown>>;universes:Array<Record<string,unknown>>;rotation:Array<Record<string,unknown>>;policies:Array<Record<string,unknown>>}|null>(null);
   const [safeSettings, setSafeSettings] = useState<Array<{key:string;value:string;updated_at:number}>>([]);
   const [bindingStatus, setBindingStatus] = useState<Record<string,unknown>|null>(null);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupCopied, setSetupCopied] = useState(false);
+  const [infraProfile, setInfraProfile] = useState<InfrastructureProfile | null>(null);
+  const [infraEvents, setInfraEvents] = useState<Array<Record<string,unknown>>>([]);
+  const [infraEditing, setInfraEditing] = useState(false);
+  const [infraDraft, setInfraDraft] = useState<InfrastructureDraft>(defaultInfrastructureDraft);
+  const [infraMessage, setInfraMessage] = useState("");
+  const [infraSaving, setInfraSaving] = useState(false);
 
   const refreshHealth = useCallback(async () => {
     const response = await fetch("/api/health", { cache:"no-store" });
@@ -146,8 +182,19 @@ export default function Home() {
   },[]);
 
   const refreshSettings = useCallback(async () => {
-    const response=await fetch("/api/settings",{cache:"no-store"}); if(!response.ok)return; const value=await response.json(); setSafeSettings(Array.isArray(value.items)?value.items:[]); setBindingStatus(value.bindings||null);
-  },[]);
+    const [settingsResponse, infrastructureResponse] = await Promise.all([
+      fetch("/api/settings",{cache:"no-store"}),
+      fetch("/api/infrastructure/config",{cache:"no-store"}),
+    ]);
+    if(settingsResponse.ok){const value=await settingsResponse.json(); setSafeSettings(Array.isArray(value.items)?value.items:[]); setBindingStatus(value.bindings||null);}
+    if(infrastructureResponse.ok){
+      const value=await infrastructureResponse.json();
+      const profile=(value.profile||null) as InfrastructureProfile|null;
+      setInfraProfile(profile);
+      setInfraEvents(Array.isArray(value.events)?value.events:[]);
+      if(profile && !infraEditing)setInfraDraft({bffProjectName:profile.bffProjectName,workerName:profile.workerName,d1DatabaseName:profile.d1DatabaseName,r2BucketName:profile.r2BucketName,queueName:profile.queueName,dlqName:profile.dlqName});
+    }
+  },[infraEditing]);
 
   const refreshStock = useCallback(async () => {
     const response=await fetch("/api/stock",{cache:"no-store"}); if(response.ok)setStockDetail(await response.json());
@@ -300,6 +347,70 @@ export default function Home() {
     }
   }
 
+  function openInfrastructureSetup(edit = false) {
+    setInfraMessage("");
+    setInfraEditing(edit || !infraProfile);
+    if (infraProfile) setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});
+    setSetupOpen(true);
+  }
+
+  function updateInfraDraft(field:keyof InfrastructureDraft,value:string){setInfraDraft(current=>({...current,[field]:value}));}
+
+  async function saveInfrastructureProfile() {
+    setInfraSaving(true); setInfraMessage("");
+    try {
+      const method=infraProfile?"PATCH":"POST";
+      const body=infraProfile?{...infraDraft,expectedRevision:infraProfile.revision,confirmChange:true}:infraDraft;
+      const response=await fetch("/api/infrastructure/config",{method,headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      const value=await response.json();
+      if(!response.ok){setInfraMessage(value.error||`HTTP_${response.status}`);return;}
+      setInfraEditing(false);
+      setInfraMessage(infraProfile?`Alteração salva como revisão ${value.profile?.revision||"nova"}.`:`Configuração cravada na revisão ${value.profile?.revision||1}.`);
+      await Promise.all([refreshSettings(),refreshHealth()]);
+    } finally { setInfraSaving(false); }
+  }
+
+  async function recheckInfrastructure() {
+    setSetupBusy(true); setInfraMessage("");
+    try {
+      if(infraProfile){
+        const response=await fetch("/api/infrastructure/verify",{method:"POST"});
+        const value=await response.json();
+        setInfraMessage(response.ok?(value.healthy?"Infraestrutura verificada e saudável.":"Configuração preservada, mas algum binding não respondeu."):(value.error||`HTTP_${response.status}`));
+      }
+      await Promise.all([refreshHealth(), refreshSettings()]);
+    } finally {
+      setSetupBusy(false);
+    }
+  }
+
+  async function copyInfrastructureChecklist() {
+    const checklist = `CORVO LIBRARY V2 — CONFIGURAÇÃO DE INFRAESTRUTURA
+
+VERCEL
+CORVO_CORE_URL=https://<worker>.workers.dev
+CORVO_INTERNAL_KEY=<mesma chave configurada no Worker>
+
+CLOUDFLARE WORKER — BINDINGS
+DB=D1 da Corvo Library
+MEDIA=R2 bucket corvoquiz-prod
+MATERIALIZE_QUEUE=Queue FAST PUSH
+MATERIALIZE_DLQ=Dead Letter Queue
+
+CLOUDFLARE WORKER — SECRETS
+CORVO_INTERNAL_KEY=<chave compartilhada apenas com o BFF/MCP>
+CORVO_SIGNING_KEY=<chave exclusiva do Worker para URLs temporárias>
+
+Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
+    try {
+      await navigator.clipboard.writeText(checklist);
+      setSetupCopied(true);
+      setTimeout(() => setSetupCopied(false), 1800);
+    } catch {
+      setSetupCopied(false);
+    }
+  }
+
   return <main className="shell">
     <aside className="sidebar">
       <div className="brand"><Mark /><div><strong>CORVO</strong><span>LIBRARY V2</span></div></div>
@@ -311,11 +422,11 @@ export default function Home() {
     <section className="workspace">
       <header className="topbar">
         <div><b>CORVO LIBRARY V2</b><span>D1 histórico direto · R2 por binding · FAST PUSH em Queue</span></div>
-        <div className="envBadge">V2 CORE 0.3</div>
+        <div className="envBadge">V2 CORE 0.10</div>
       </header>
 
       <div className="content">
-        <div className="titleRow"><div><h1>{active}</h1><p>{active === "Catálogo" ? "Sem conversão permanente: D1 estrutura, R2 armazena e o Worker materializa." : active === "Configurações" ? "Infraestrutura por bindings; nenhuma chave R2 é gravada no banco." : "Reimplementação limpa por equivalência funcional."}</p></div></div>
+        <div className="titleRow"><div><h1>{active}</h1><p>{active === "Catálogo" ? "Sem conversão permanente: D1 estrutura, R2 armazena e o Worker materializa." : active === "Configurações" ? "Configuração persistente por bindings; atualização de código nunca redefine a infraestrutura." : "Reimplementação limpa por equivalência funcional."}</p></div>{active === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>
 
         <section className="healthGrid">
           <article><small>APP VERCEL</small><strong>ONLINE</strong><span>Interface e BFF</span></article>
@@ -427,12 +538,51 @@ export default function Home() {
         {active === "Estoque & giro" && <section className="modulePanel operationGrid"><div><span className="eyebrow">ESTOQUE</span><h2>{stats.approved.toLocaleString("pt-BR")} aprovados em {stats.universes.toLocaleString("pt-BR")} universos ativos</h2><p>Derivado diretamente da tabela histórica <code>assets</code>, sem conversão.</p><div className="recordList wide">{universes.slice(0,40).map(item=><article key={item.name}><div><strong>{item.name}</strong><span>{item.approved} aprovados · {item.pending} pendentes · {item.rejected} rejeitados</span></div><code>{item.total} total</code></article>)}</div></div><div><span className="eyebrow">GIRO</span><h2>Uso do catálogo</h2><div className="recordList">{(stockDetail?.rotation||[]).map((item,index)=><article key={`${String(item.bucket)}-${index}`}><div><strong>{String(item.bucket)}</strong><span>assets aprovados</span></div><code>{String(item.count||0)}</code></article>)}</div></div><div><span className="eyebrow">POLÍTICAS DE ESTOQUE</span><h2>Limites semânticos</h2><div className="recordList">{(stockDetail?.policies||[]).length===0?<div className="quiet">Nenhuma política ativa.</div>:(stockDetail?.policies||[]).slice(0,50).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.concept||"conceito")}</strong><span>{String(item.universe||"Sem universo")} · min {String(item.minimum||0)} / ideal {String(item.ideal||0)}</span></div><code>{String(item.maximum||0)} max</code></article>)}</div></div></section>}
 
         {active === "Configurações" && <section className="modulePanel configPanel">
-          <span className="eyebrow">INFRAESTRUTURA</span><h2>Bindings, não credenciais salvas</h2><p>A V2 não terá o formulário que quebrava a conexão R2 após atualizações.</p>
-          <div className="bindingList"><div><b>DB</b><span>D1 · catálogo e estados históricos</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · corvoquiz-prod</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · FAST PUSH</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>CORVO_INTERNAL_KEY</b><span>Autenticação Vercel/MCP → Worker; nunca no D1</span><em>{health?.coreConfigured ? "configurado no BFF" : "aguardando"}</em></div><div><b>CORVO_SIGNING_KEY</b><span>Assina URLs temporárias; existe apenas no Worker</span><em>{health?.core.signing || "aguardando"}</em></div></div>
-          <div className="notice compact"><strong>Configuração segura</strong><span>{safeSettings.length} configurações operacionais visíveis · R2 credentials in D1: {String(bindingStatus?.r2CredentialsStoredInD1??false)}</span></div><div className="recordList wide">{safeSettings.slice(0,60).map(item=><article key={item.key}><div><strong>{item.key}</strong><span>setting operacional</span></div><code>{item.value}</code></article>)}</div>
+          <span className="eyebrow">INFRAESTRUTURA</span><h2>Configuração cravada por padrão</h2><p>Bindings e secrets ficam persistidos no Cloudflare/Vercel. O D1 guarda apenas o manifesto não secreto e sua revisão; deploys só leem, nunca resetam.</p>
+          <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : health?.core.ok ? "Core conectado — falta cravar o manifesto" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Configure os bindings, conecte o Core e salve o manifesto uma única vez."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
+          {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
+          <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || "catálogo e estados históricos"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || "FAST PUSH"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>CORVO_INTERNAL_KEY</b><span>Persistida no Vercel/Worker; nunca no D1</span><em>{health?.coreConfigured ? "configurado" : "aguardando"}</em></div><div><b>CORVO_SIGNING_KEY</b><span>Persistida apenas no Worker</span><em>{health?.core.signing || "aguardando"}</em></div></div>
+          <div className="notice compact"><strong>Regra de persistência</strong><span>Atualizar/reabrir = preservar · alterar = somente por ação explícita · credenciais R2 no D1: {String(bindingStatus?.r2CredentialsStoredInD1??false)}</span></div>
+          {infraEvents.length>0 && <div className="recordList wide">{infraEvents.slice(0,8).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.event_type||"EVENT")}</strong><span>revisão {String(item.next_revision||"")} · {new Date(Number(item.created_at||0)).toLocaleString("pt-BR")}</span></div><code>{String(item.source||"")}</code></article>)}</div>}
+          <div className="recordList wide">{safeSettings.slice(0,60).map(item=><article key={item.key}><div><strong>{item.key}</strong><span>setting operacional persistente</span></div><code>{item.value}</code></article>)}</div>
         </section>}
 
         {!["Catálogo","Projetos","Solicitações","Lotes","Importações","Coleta automática","Operação","Políticas","Estoque & giro","Inbox candidatas","Pendentes","Rejeitados","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo está na matriz de equivalência da V61.9. Ele será ligado ao núcleo V2 sem copiar bootstrap, recovery ou configuração legada.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
+
+        {setupOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Configurar infraestrutura">
+          <div className="setupModal">
+            <div className="setupModalHead"><div><span className="eyebrow">ASSISTENTE DE INFRAESTRUTURA</span><h2>{infraProfile ? "Infraestrutura persistente" : "Conectar Corvo Core"}</h2><p>{infraProfile ? `Configuração cravada na revisão ${infraProfile.revision}. Abrir o app ou publicar uma atualização não altera estes valores.` : "Configure uma vez e salve. O manifesto não secreto fica no D1 e os secrets/bindings permanecem no Cloudflare/Vercel."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setInfraEditing(false);setInfraMessage("");}} aria-label="Fechar">×</button></div>
+
+            <div className="setupProgress">
+              <div className={health?.coreConfigured ? "done" : "current"}><b>1</b><span>Vercel BFF</span></div>
+              <div className={health?.core.d1 === "ok" ? "done" : "current"}><b>2</b><span>D1</span></div>
+              <div className={health?.core.r2 === "ok" ? "done" : "current"}><b>3</b><span>R2</span></div>
+              <div className={health?.core.queue === "ok" ? "done" : "current"}><b>4</b><span>Queue</span></div>
+              <div className={health?.core.ok ? "done" : "current"}><b>5</b><span>Teste</span></div>
+            </div>
+
+            <div className="persistBox">
+              <div className="persistHead"><div><span>MANIFESTO PERSISTENTE</span><strong>{infraProfile ? `🔒 LOCKED · REV ${infraProfile.revision}` : "NÃO INICIALIZADO"}</strong></div>{infraProfile && !infraEditing && <button className="secondary" onClick={() => setInfraEditing(true)}>Alterar configuração</button>}</div>
+              <div className="infraFields">
+                {([
+                  ["bffProjectName","Projeto Vercel"],["workerName","Worker"],["d1DatabaseName","D1"],["r2BucketName","R2 bucket"],["queueName","Queue"],["dlqName","DLQ"]
+                ] as Array<[keyof InfrastructureDraft,string]>).map(([field,label])=><label key={field}><span>{label}</span>{infraEditing || !infraProfile ? <input value={infraDraft[field]} onChange={(event:ChangeEvent<HTMLInputElement>)=>updateInfraDraft(field,event.target.value)} /> : <code>{infraDraft[field]}</code>}</label>)}
+              </div>
+              {(infraEditing || !infraProfile) && <div className="persistActions"><span>Esses valores só mudam quando você salvar explicitamente. Secrets não entram aqui.</span>{infraProfile && <button className="secondary" onClick={()=>{setInfraEditing(false);setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});setInfraMessage("");}}>Cancelar</button>}<button className="primary" disabled={infraSaving || !health?.coreConfigured} onClick={saveInfrastructureProfile}>{infraSaving ? "Salvando…" : infraProfile ? "Salvar nova revisão" : "Salvar e travar configuração"}</button></div>}
+              {infraMessage && <div className="infraMessage">{infraMessage}</div>}
+            </div>
+
+            <div className="setupSteps">
+              <article><header><b>1. Vercel</b><em className={health?.coreConfigured ? "okState" : "waitState"}>{health?.coreConfigured ? "CONFIGURADO" : "PENDENTE"}</em></header><p>No projeto <strong>corvo-library-v2</strong>, adicione:</p><code>CORVO_CORE_URL=https://&lt;worker&gt;.workers.dev</code><code>CORVO_INTERNAL_KEY=&lt;chave-compartilhada&gt;</code></article>
+              <article><header><b>2. Cloudflare Worker</b><em className={health?.core.signing === "ok" ? "okState" : "waitState"}>{health?.core.signing === "ok" ? "CONFIGURADO" : "PENDENTE"}</em></header><p>Configure secrets somente no Worker:</p><code>CORVO_INTERNAL_KEY=&lt;mesma-chave-do-BFF&gt;</code><code>CORVO_SIGNING_KEY=&lt;chave-exclusiva-do-worker&gt;</code></article>
+              <article><header><b>3. Bindings nativos</b><em className={health?.core.d1 === "ok" && health?.core.r2 === "ok" && health?.core.queue === "ok" ? "okState" : "waitState"}>{health?.core.d1 === "ok" && health?.core.r2 === "ok" && health?.core.queue === "ok" ? "OK" : "PENDENTE"}</em></header><div className="miniBindings"><span><b>DB</b>D1 Corvo Library · {health?.core.d1 || "unknown"}</span><span><b>MEDIA</b>R2 corvoquiz-prod · {health?.core.r2 || "unknown"}</span><span><b>MATERIALIZE_QUEUE</b>FAST PUSH · {health?.core.queue || "unknown"}</span><span><b>MATERIALIZE_DLQ</b>fila de falhas</span></div></article>
+              <article><header><b>4. Banco</b><em className={health?.core.schema === "ok" ? "okState" : "waitState"}>{health?.core.schema === "ok" ? "SCHEMA OK" : "AGUARDANDO"}</em></header><p>Restaure a base histórica uma única vez e aplique as migrations <code>v2_*</code>. Depois disso os deploys não recriam nem convertem o catálogo.</p></article>
+            </div>
+
+            <div className="setupResult"><div><span>ESTADO ATUAL</span><strong className={health?.core.ok && infraProfile ? "okState" : "waitState"}>{health?.core.ok && infraProfile ? "CONFIGURAÇÃO CRAVADA E ONLINE" : health?.core.ok ? "CORE ONLINE · SALVE O MANIFESTO" : coreState}</strong><small>{health?.core.error || (infraProfile ? `Instância ${infraProfile.instanceId} · revisão ${infraProfile.revision}` : "Finalize os passos e salve a configuração uma única vez.")}</small></div><div className="setupActions"><button className="secondary" onClick={copyInfrastructureChecklist}>{setupCopied ? "✓ Copiado" : "Copiar checklist"}</button><button className="primary" disabled={setupBusy || !infraProfile} onClick={recheckInfrastructure}>{setupBusy ? "Verificando…" : "Verificar agora"}</button></div></div>
+          </div>
+        </div>}
+
       </div>
     </section>
   </main>;
