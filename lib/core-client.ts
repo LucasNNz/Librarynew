@@ -8,6 +8,7 @@ export type CoreHealth = {
   d1?: "ok" | "error" | "unknown";
   r2?: "ok" | "error" | "unknown";
   queue?: "ok" | "error" | "unknown";
+  signing?: "ok" | "error" | "unknown";
   error?: string;
 };
 

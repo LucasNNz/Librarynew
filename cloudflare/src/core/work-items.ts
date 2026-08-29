@@ -53,14 +53,14 @@ export async function createBatch(env: Env, name: string, project?: string, asse
   return getBatch(env, batchId);
 }
 
-export async function getBatch(env: Env, batchId: string) {
+export async function getBatch(env: Env, batchId: string): Promise<(Record<string, unknown> & { assets: Record<string, unknown>[] }) | null> {
   const batch = await env.DB.prepare("SELECT * FROM batches WHERE id=?").bind(batchId).first<Record<string, unknown>>();
   if (!batch) return null;
   const links = await env.DB.prepare(`SELECT ba.id AS link_id,ba.position,ba.slot,ba.note,
       a.id,a.name,a.universe,a.kind,a.status,a.r2_key,a.original_name,a.mime_type,a.size_bytes,a.use_count
       FROM batch_assets ba JOIN assets a ON a.id=ba.asset_id WHERE ba.batch_id=? ORDER BY ba.position ASC`)
     .bind(batchId).all<Record<string, unknown>>();
-  return { ...batch, assets: links.results || [] };
+  return { ...(batch as Record<string, unknown>), assets: links.results || [] };
 }
 
 export async function addAssetsToBatch(env: Env, batchId: string, assetIds: string[]) {

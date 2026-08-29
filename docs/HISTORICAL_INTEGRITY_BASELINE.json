@@ -1,0 +1,38 @@
+{
+  "source": "CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
+  "purpose": "Baseline imutável de inconsistências já presentes no backup histórico. A V2 não apaga nem reescreve estes registros; gates falham se a contagem aumentar ou surgirem violações novas.",
+  "foreign_key_violations_total": 11505,
+  "foreign_key_violation_groups": {
+    "collection_candidates->collection_batches": 7540,
+    "collection_terms->collection_batches": 3393,
+    "worker_work_items->automatic_project_items": 215,
+    "supervisor_decision_queue->automatic_project_items": 158,
+    "operational_policy_events->automatic_project_items": 104,
+    "supervisor_project_candidates->automatic_project_items": 82,
+    "plan_branches->automatic_project_items": 9,
+    "source_routing_plans->automatic_project_items": 3,
+    "collection_candidates->collection_terms": 1
+  },
+  "logical_orphans": {
+    "collectionTermsWithoutBatch": 3393,
+    "collectionCandidatesWithoutBatch": 7540,
+    "collectionCandidatesWithoutTerm": 1,
+    "workerItemsWithoutParent": 215,
+    "supervisorDecisionsWithoutItem": 158,
+    "operationalPolicyEventsWithoutItem": 104,
+    "supervisorCandidatesWithoutItem": 82,
+    "planBranchesWithoutItem": 9,
+    "sourceRoutingPlansWithoutItem": 3
+  },
+  "active_historical_risk": {
+    "readyOrLeasedWorkerItemsWithoutParent": 54,
+    "pendingSupervisorDecisionsWithoutItem": 134,
+    "actionableSupervisorCandidatesWithoutItem": 60
+  },
+  "v2_policy": {
+    "preserve_historical_rows": true,
+    "dispatcher_ignores_orphan_work_items": true,
+    "new_v2_foreign_key_violations_allowed": 0,
+    "new_v2_logical_orphans_allowed": 0
+  }
+}

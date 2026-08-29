@@ -1,30 +1,58 @@
-# Desenvolvimento contínuo — status
+# Desenvolvimento contínuo — checkpoint 0.8
 
-## Núcleo concluído nesta fase
+## Núcleo implementado
 
-- D1 histórico restaurável 1:1.
-- R2 via binding nativo `MEDIA`.
-- Queue de materialização assíncrona.
-- FAST PUSH por URL com ACK rápido.
-- Inbox de candidatas.
-- Aprovação/rejeição de candidatas.
-- Catálogo com busca, universo, status, tipo e nunca usado.
-- Preview/download com URL HMAC temporária, sem credencial R2.
-- Registro de uso e histórico.
-- Aprovação/rejeição/restauração de assets.
-- Solicitações e lotes básicos.
-- Manifesto de lote no R2.
-- MCP stateless V2 com nomes históricos preservados.
-- Gate de consistência D1↔R2 e detecção de `r2_key` compartilhado.
+- D1 histórico restaurado 1:1; nenhuma conversão permanente de catálogo.
+- R2 por binding nativo `MEDIA` no bucket `corvoquiz-prod`.
+- Queue com retry limitado, concorrência limitada e DLQ.
+- FAST PUSH assíncrono; MCP recebe ACK e não transporta mídia por URL.
+- Upload direto atômico com recuperação de claims interrompidos.
+- Catálogo, usos, pendentes, Inbox, lotes, solicitações, imports e projetos.
+- FAST APPROVE idempotente e promoção de objetos para chave canônica `assets/...`.
+- Auditoria D1↔R2 e integridade lógica D1.
+- Workers com lease atômico, limites de capacidade, retry/backoff e watchdog.
+- Supervisor com lease próprio, decisões, candidatos, circuit breaker e perfis de coleta.
+- Proteção contra dados históricos órfãos: Dispatcher e Supervisor não os assumem nem os apagam.
+- Políticas operacionais, estoque/giro, coleta automática, produção, ZIPs e downloads.
+- Secrets separados: `CORVO_INTERNAL_KEY` (API) e `CORVO_SIGNING_KEY` (somente Worker).
+- MCP stateless V2.
 
 ## MCP
 
-- Catálogo histórico: 229 ferramentas.
-- Implementadas atualmente: consultar `docs/MCP_COMPATIBILITY_MATRIX.md` (gerado automaticamente).
-- `configurar_cloudflare` e `obter_configuracao_cloudflare` são deliberadamente substituídas por bindings; não serão reintroduzidas como formulário de segredo no banco.
+- Ferramentas históricas: **229**.
+- Implementadas com o mesmo nome: **227**.
+- Substituídas por bindings seguros: **2** (`obter_configuracao_cloudflare`, `configurar_cloudflare`).
+- Planejadas/faltantes por nome: **0**.
+- Extras V2: `auditar_armazenamento_r2`, `auditar_integridade_d1`, `obter_status_upload_midia`.
 
-## Bloqueios externos atuais
+`IMPLEMENTADO` garante presença no contrato MCP V2. Equivalência comportamental crítica é progressivamente coberta pelos gates e continua sendo validada antes do corte.
 
-- O projeto Vercel separado `corvo-library-v2` ainda precisa ser criado/vinculado antes do deploy; não publicar sobre o projeto `vercel` existente.
-- A conta Cloudflare não está conectada como ferramenta nesta sessão, portanto D1/R2/Queue reais não foram criados nem mutados.
-- `npm install` no container de desenvolvimento expirou por timeout de rede; a validação completa de build deve ocorrer no build da Vercel/Cloudflare quando os projetos forem vinculados.
+## Integridade 0.8
+
+- `PRAGMA integrity_check`: PASS.
+- Assets: 929 / 849 aprovados / 77 pendentes / 3 rejeitados.
+- Universos aprovados: 174.
+- Usos: 1.176.
+- Assets sem `r2_key`: 0.
+- `r2_key` compartilhadas: 8 grupos históricos preservados.
+- Tabelas: 59 = 47 históricas + 12 `v2_*`.
+- Schema V2: 2.5.0.
+- Órfãos lógicos `v2_*`: **0**.
+- 11.505 violações FK históricas são reproduzidas exatamente pelo backup e estão congeladas em `HISTORICAL_INTEGRITY_BASELINE.json`; aumento ou grupo novo falha o gate.
+- Risco histórico ativo detectado: 54 worker jobs + 134 decisões + 60 candidatas de Supervisor sem item pai. Todos são preservados para auditoria e ignorados pelos fluxos V2.
+
+## Gates
+
+- Worker/Core structural typecheck: PASS.
+- Frontend/BFF structural typecheck: PASS.
+- Restauração + migrations 9000–9005: PASS.
+- Paridade MCP: PASS (227 históricos registrados, 2 substituídos, 0 duplicados).
+- Imports relativos/dependências legadas: PASS.
+- `next build` real: PENDENTE por instalação de dependências/registry.
+- Wrangler real/deploy: PENDENTE por dependências e provisionamento Cloudflare.
+
+## Bloqueios externos
+
+- Provisionar/vincular D1, Queue/DLQ e Worker na conta Cloudflare.
+- Criar o projeto Vercel separado `corvo-library-v2`.
+- Executar build real nos ambientes conectados antes de Production.

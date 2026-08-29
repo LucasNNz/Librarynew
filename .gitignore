@@ -8,3 +8,9 @@ node_modules
 CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql
 *.sqlite
 *.sqlite3
+
+cloudflare/wrangler.jsonc
+cloudflare/.dev.vars
+*.db
+
+tsconfig.tsbuildinfo

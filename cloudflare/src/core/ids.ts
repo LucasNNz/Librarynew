@@ -11,3 +11,12 @@ export function safeFilenameFromUrl(value: string, fallback: string) {
     return fallback;
   }
 }
+
+export async function stableId(prefix: string, value: string, bytes = 10) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  const hex = [...new Uint8Array(digest).slice(0, Math.max(6, Math.min(bytes, 16)))]
+    .map(byte => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+  return `${prefix}-${hex}`;
+}

@@ -1,13 +1,14 @@
 {
   "name": "corvo-core-v2",
-  "version": "0.3.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --config wrangler.jsonc",
     "deploy": "wrangler deploy --config wrangler.jsonc",
     "typecheck": "tsc -p tsconfig.json",
-    "db:migrate": "wrangler d1 migrations apply CORVO_DB --remote --config wrangler.jsonc"
+    "db:migrate": "wrangler d1 migrations apply CORVO_DB --remote --config wrangler.jsonc",
+    "typecheck:structural": "tsc -p tsconfig.validate.json --pretty false"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260828.0",

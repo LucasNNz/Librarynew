@@ -1,11 +1,13 @@
 export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
-  MATERIALIZE_QUEUE: Queue<MaterializeJob>;
+  MATERIALIZE_QUEUE: Queue<CorvoQueueJob>;
   CORVO_INTERNAL_KEY: string;
+  CORVO_SIGNING_KEY: string;
 }
 
 export type MaterializeJob = {
+  kind?: "MATERIALIZE_URL";
   operationId: string;
   candidateId: string;
   url: string;
@@ -53,3 +55,39 @@ export type LegacyAssetRow = {
   sha256: string | null;
   semantic_family: string | null;
 };
+
+export type FastApproveJob = {
+  kind: "FAST_APPROVE_PROJECT_ITEMS";
+  operationId: string;
+  projectId: string;
+  approvals: Array<{ itemId?: string; targetFile?: string; candidateId: string; note?: string }>;
+};
+
+export type SupervisorDecisionsJob = {
+  kind: "SUPERVISOR_DECISIONS";
+  operationId: string;
+  projectId: string;
+  decisions: Array<{ itemId: string; status: string; observation?: string }>;
+};
+
+export type PackageJob = {
+  kind: "GENERATE_PACKAGE";
+  operationId: string;
+  packageId: string;
+  projectId: string;
+};
+
+export type CollectionJob = {
+  kind: "COLLECTION_TICK";
+  operationId: string;
+  batchId: string;
+  rounds: number;
+};
+
+export type AssetExportJob = {
+  kind: "EXPORT_ASSETS";
+  operationId: string;
+  exportId: string;
+};
+
+export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | PackageJob | CollectionJob | AssetExportJob;

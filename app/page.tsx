@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
-import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, ImportRecord, LibraryRequest, Operation, UniverseFacet } from "../lib/contracts";
+import type { ChangeEvent, FormEvent } from "react";
+import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, UniverseFacet } from "../lib/contracts";
 
 type Health = {
   app: "ok";
   architecture: "CLOUDFLARE_CORE";
   coreConfigured: boolean;
-  core: { ok: boolean; d1?: string; r2?: string; schema?: string; queue?: string; queueBacklog?: number | null; error?: string };
+  core: { ok: boolean; d1?: string; r2?: string; schema?: string; queue?: string; signing?: string; queueBacklog?: number | null; error?: string };
 };
 
 const nav = ["Catálogo", "Projetos", "Solicitações", "Lotes", "Importações", "Coleta automática", "Operação", "Políticas", "Estoque & giro", "Inbox candidatas", "Pendentes", "Rejeitados", "Configurações"];
@@ -56,6 +56,9 @@ export default function Home() {
   const [pushBusy, setPushBusy] = useState(false);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [pushError, setPushError] = useState("");
+  const [directFile, setDirectFile] = useState<File | null>(null);
+  const [directBusy, setDirectBusy] = useState(false);
+  const [directMessage, setDirectMessage] = useState("");
   const [requests, setRequests] = useState<LibraryRequest[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [imports, setImports] = useState<ImportRecord[]>([]);
@@ -67,7 +70,19 @@ export default function Home() {
   const [projects, setProjects] = useState<AutomaticProject[]>([]);
   const [projectName, setProjectName] = useState("");
   const [integrity, setIntegrity] = useState<{checked:number;present:number;missing:number;missingItems:Array<{id:string;r2Key:string;exists:boolean}>}|null>(null);
+  const [dataHealth, setDataHealth] = useState<{ok:boolean;v2Orphans:number;activeHistoricalOrphans:number;catalog:{assetsMissingR2Key:number;duplicateAssetR2Keys:number};historical:Record<string,number>;activeHistoricalRisk:Record<string,number>;v2:Record<string,number>}|null>(null);
   const [r2Objects, setR2Objects] = useState<Array<{key:string;size:number;etag:string;uploaded:string}>>([]);
+  const [storageAudit, setStorageAudit] = useState<StorageAudit | null>(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [recentOperations, setRecentOperations] = useState<Array<Record<string,unknown>>>([]);
+  const [dispatcherHealth, setDispatcherHealth] = useState<DispatcherHealth | null>(null);
+  const [materializationStats, setMaterializationStats] = useState<MaterializationStats | null>(null);
+  const [policyWorkspace, setPolicyWorkspace] = useState<{gaps:Array<Record<string,unknown>>;policies:Array<Record<string,unknown>>;recentEvents:Array<Record<string,unknown>>}|null>(null);
+  const [policyTelemetry, setPolicyTelemetry] = useState<{policies:Array<Record<string,unknown>>;events:Array<Record<string,unknown>>}|null>(null);
+  const [supervisorPanel, setSupervisorPanel] = useState<Record<string,unknown>|null>(null);
+  const [stockDetail, setStockDetail] = useState<{totals:Array<Record<string,unknown>>;universes:Array<Record<string,unknown>>;rotation:Array<Record<string,unknown>>;policies:Array<Record<string,unknown>>}|null>(null);
+  const [safeSettings, setSafeSettings] = useState<Array<{key:string;value:string;updated_at:number}>>([]);
+  const [bindingStatus, setBindingStatus] = useState<Record<string,unknown>|null>(null);
 
   const refreshHealth = useCallback(async () => {
     const response = await fetch("/api/health", { cache:"no-store" });
@@ -124,11 +139,53 @@ export default function Home() {
     } finally { setRecordLoading(false); }
   }, []);
 
-  const refreshOperations = useCallback(async () => {
-    const [integrityResponse,r2Response]=await Promise.all([fetch("/api/storage/integrity?limit=100",{cache:"no-store"}),fetch("/api/storage/r2?limit=50&prefix=assets/",{cache:"no-store"})]);
-    if(integrityResponse.ok)setIntegrity(await integrityResponse.json());
-    if(r2Response.ok){const value=await r2Response.json();setR2Objects(Array.isArray(value.objects)?value.objects:[]);}
+  const refreshPolicies = useCallback(async () => {
+    const [workspaceResponse,telemetryResponse]=await Promise.all([fetch("/api/policies/workspace",{cache:"no-store"}),fetch("/api/policies/telemetry",{cache:"no-store"})]);
+    if(workspaceResponse.ok)setPolicyWorkspace(await workspaceResponse.json());
+    if(telemetryResponse.ok)setPolicyTelemetry(await telemetryResponse.json());
   },[]);
+
+  const refreshSettings = useCallback(async () => {
+    const response=await fetch("/api/settings",{cache:"no-store"}); if(!response.ok)return; const value=await response.json(); setSafeSettings(Array.isArray(value.items)?value.items:[]); setBindingStatus(value.bindings||null);
+  },[]);
+
+  const refreshStock = useCallback(async () => {
+    const response=await fetch("/api/stock",{cache:"no-store"}); if(response.ok)setStockDetail(await response.json());
+  },[]);
+
+  const refreshOperations = useCallback(async () => {
+    const [integrityResponse,dataHealthResponse,r2Response,auditResponse,operationsResponse,workersResponse,materializationResponse,supervisorResponse]=await Promise.all([
+      fetch("/api/storage/integrity?limit=100",{cache:"no-store"}),
+      fetch("/api/data-health",{cache:"no-store"}),
+      fetch("/api/storage/r2?limit=50&prefix=assets/",{cache:"no-store"}),
+      fetch("/api/storage/audit",{cache:"no-store"}),
+      fetch("/api/operations?limit=25",{cache:"no-store"}),
+      fetch("/api/workers/health",{cache:"no-store"}),
+      fetch("/api/materialization/stats",{cache:"no-store"}),
+      fetch("/api/supervisor/panel",{cache:"no-store"}),
+    ]);
+    if(integrityResponse.ok)setIntegrity(await integrityResponse.json());
+    if(dataHealthResponse.ok)setDataHealth(await dataHealthResponse.json());
+    if(r2Response.ok){const value=await r2Response.json();setR2Objects(Array.isArray(value.objects)?value.objects:[]);}
+    if(auditResponse.ok){const value=await auditResponse.json();setStorageAudit((value.audit?.summary || value.audit || null) as StorageAudit|null);}
+    if(operationsResponse.ok){const value=await operationsResponse.json();setRecentOperations(Array.isArray(value.items)?value.items:[]);}
+    if(workersResponse.ok)setDispatcherHealth(await workersResponse.json());
+    if(materializationResponse.ok)setMaterializationStats(await materializationResponse.json());
+    if(supervisorResponse.ok)setSupervisorPanel(await supervisorResponse.json());
+  },[]);
+
+  const runStorageAudit = useCallback(async () => {
+    setAuditBusy(true);
+    try {
+      const response=await fetch("/api/storage/audit?maxObjects=10000",{method:"POST"});
+      if(response.ok)setStorageAudit(await response.json());
+    } finally { setAuditBusy(false); }
+  },[]);
+
+  const projectAction = useCallback(async (projectId:string, action:"process"|"reconcile") => {
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}/${action}`,{method:"POST"});
+    await refreshRecords("Projetos");
+  },[refreshRecords]);
 
   const refreshCandidates = useCallback(async () => {
     setCandidateLoading(true);
@@ -160,7 +217,10 @@ export default function Home() {
     if (active === "Inbox candidatas") void refreshCandidates();
     if (["Projetos","Solicitações","Lotes","Importações"].includes(active)) void refreshRecords(active);
     if (active === "Operação") void refreshOperations();
-  }, [active, refreshCandidates, refreshRecords, refreshOperations]);
+    if (active === "Políticas") void refreshPolicies();
+    if (active === "Estoque & giro") void refreshStock();
+    if (active === "Configurações") void refreshSettings();
+  }, [active, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings]);
 
   useEffect(() => {
     if (!operation || ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(operation.status)) return;
@@ -173,6 +233,20 @@ export default function Home() {
 
   const coreState = !health ? "VERIFICANDO" : health.core.ok ? "ONLINE" : health.coreConfigured ? "INDISPONÍVEL" : "AGUARDANDO CONFIGURAÇÃO";
   const selectedUniverse = useMemo(() => universes.find(item => item.name === universe), [universes, universe]);
+
+  async function uploadDirectMedia() {
+    if (!directFile) { setDirectMessage("Selecione um arquivo."); return; }
+    setDirectBusy(true); setDirectMessage("");
+    try {
+      const prepare=await fetch("/api/uploads/prepare",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({fileName:directFile.name,mimeType:directFile.type||"application/octet-stream",maxBytes:Math.max(directFile.size,1024),universe:pushUniverse||undefined,subject:pushSubject||undefined,tags:["direct-upload"]})});
+      const ticket=await prepare.json(); if(!prepare.ok)throw new Error(ticket.error||"PREPARE_FAILED");
+      const upload=await fetch(ticket.uploadUrl,{method:"PUT",headers:{"content-type":directFile.type||"application/octet-stream"},body:directFile}); if(!upload.ok)throw new Error(`UPLOAD_${upload.status}`);
+      const confirm=await fetch(`/api/uploads/${encodeURIComponent(ticket.uploadId)}/confirm`,{method:"POST"}); const result=await confirm.json(); if(!confirm.ok)throw new Error(result.error||"CONFIRM_FAILED");
+      setDirectMessage(`Materializado: ${result.candidateId || result.projectFileId || ticket.uploadId}`); setDirectFile(null);
+      if(active==="Inbox candidatas")await refreshCandidates();
+    } catch(error) { setDirectMessage(error instanceof Error?error.message:"UPLOAD_FAILED"); }
+    finally { setDirectBusy(false); }
+  }
 
   async function submitPush(event: FormEvent) {
     event.preventDefault();
@@ -261,9 +335,9 @@ export default function Home() {
           </section>
 
           <section className="catalogTools">
-            <label className="searchBox"><span>⌕</span><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Buscar nome, universo, personagem ou tag..." /></label>
-            <select value={universe} onChange={e=>setUniverse(e.target.value)}><option value="">Todos os universos</option>{universes.map(item => <option key={item.name} value={item.name}>{item.name} ({item.total})</option>)}</select>
-            <select value={status} onChange={e=>setStatus(e.target.value)}><option value="">Todos os status</option><option value="APPROVED">Aprovados</option><option value="PENDING">Pendentes</option><option value="REJECTED">Rejeitados</option></select>
+            <label className="searchBox"><span>⌕</span><input value={query} onChange={(e: ChangeEvent<HTMLInputElement>)=>setQuery(e.target.value)} placeholder="Buscar nome, universo, personagem ou tag..." /></label>
+            <select value={universe} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setUniverse(e.target.value)}><option value="">Todos os universos</option>{universes.map(item => <option key={item.name} value={item.name}>{item.name} ({item.total})</option>)}</select>
+            <select value={status} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setStatus(e.target.value)}><option value="">Todos os status</option><option value="APPROVED">Aprovados</option><option value="PENDING">Pendentes</option><option value="REJECTED">Rejeitados</option></select>
           </section>
           {selectedUniverse && <div className="filterContext"><b>{selectedUniverse.name}</b><span>{selectedUniverse.approved} aprovados · {selectedUniverse.pending} pendentes · {selectedUniverse.rejected} rejeitados</span></div>}
 
@@ -280,20 +354,20 @@ export default function Home() {
         </>}
 
         {active === "Projetos" && <section className="modulePanel twoCol">
-          <div><span className="eyebrow">PROJETOS AUTOMÁTICOS</span><h2>Control plane preservado</h2><p>A V2 lê e cria projetos sobre <code>automatic_projects</code> sem reconciliação implícita ou varredura R2.</p><form className="pushForm" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="Nome do projeto"/><button className="primary">Criar projeto</button></form></div>
-          <div className="recordList">{recordLoading?<div className="quiet">Carregando…</div>:projects.length===0?<div className="quiet">Nenhum projeto.</div>:projects.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.pipeline_status || item.status} · {item.approved_count||0}/{item.total_items||0} aprovados</span></div><code>{item.id}</code></article>)}</div>
+          <div><span className="eyebrow">PROJETOS AUTOMÁTICOS</span><h2>Control plane preservado</h2><p>A V2 lê e cria projetos sobre <code>automatic_projects</code> sem reconciliação implícita ou varredura R2.</p><form className="pushForm" onSubmit={createProject}><input value={projectName} onChange={(e: ChangeEvent<HTMLInputElement>)=>setProjectName(e.target.value)} placeholder="Nome do projeto"/><button className="primary">Criar projeto</button></form></div>
+          <div className="recordList">{recordLoading?<div className="quiet">Carregando…</div>:projects.length===0?<div className="quiet">Nenhum projeto.</div>:projects.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.pipeline_status || item.status} · {item.approved_count||0}/{item.total_items||0} aprovados</span></div><div className="inlineActions"><code>{item.id}</code><button onClick={()=>void projectAction(item.id,"reconcile")}>Reconciliar</button><button onClick={()=>void projectAction(item.id,"process")}>Processar</button></div></article>)}</div>
         </section>}
 
         {active === "Solicitações" && <section className="modulePanel twoCol">
           <div><span className="eyebrow">SOLICITAÇÕES</span><h2>Fila estrutural preservada</h2><p>Cria e lê diretamente a tabela histórica <code>requests</code>.</p>
-            <form className="pushForm" onSubmit={createLibraryRequest}><input value={requestProject} onChange={e=>setRequestProject(e.target.value)} placeholder="Projeto"/><textarea rows={8} value={requestItems} onChange={e=>setRequestItems(e.target.value)} placeholder="Um item por linha"/><button className="primary">Criar solicitação</button></form>
+            <form className="pushForm" onSubmit={createLibraryRequest}><input value={requestProject} onChange={(e: ChangeEvent<HTMLInputElement>)=>setRequestProject(e.target.value)} placeholder="Projeto"/><textarea rows={8} value={requestItems} onChange={(e: ChangeEvent<HTMLTextAreaElement>)=>setRequestItems(e.target.value)} placeholder="Um item por linha"/><button className="primary">Criar solicitação</button></form>
           </div>
           <div className="recordList">{recordLoading ? <div className="quiet">Carregando…</div> : requests.length===0 ? <div className="quiet">Nenhuma solicitação.</div> : requests.map(item=><article key={item.id}><div><strong>{item.project}</strong><span>{item.item_count} itens · {item.status}</span></div><code>{item.id}</code></article>)}</div>
         </section>}
 
         {active === "Lotes" && <section className="modulePanel twoCol">
           <div><span className="eyebrow">LOTES</span><h2>Lotes sobre o D1 histórico</h2><p>Manifestos novos são gravados diretamente no R2 via binding.</p>
-            <form className="pushForm" onSubmit={createLibraryBatch}><input value={batchName} onChange={e=>setBatchName(e.target.value)} placeholder="Nome do lote"/><input value={batchProject} onChange={e=>setBatchProject(e.target.value)} placeholder="Projeto opcional"/><button className="primary">Criar lote</button></form>
+            <form className="pushForm" onSubmit={createLibraryBatch}><input value={batchName} onChange={(e: ChangeEvent<HTMLInputElement>)=>setBatchName(e.target.value)} placeholder="Nome do lote"/><input value={batchProject} onChange={(e: ChangeEvent<HTMLInputElement>)=>setBatchProject(e.target.value)} placeholder="Projeto opcional"/><button className="primary">Criar lote</button></form>
           </div>
           <div className="recordList">{recordLoading ? <div className="quiet">Carregando…</div> : batches.length===0 ? <div className="quiet">Nenhum lote.</div> : batches.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.project || "Sem projeto"} · {item.status}</span></div><div className="inlineActions"><code>{item.id}</code><button onClick={()=>void generateManifest(item.id)}>Manifesto</button></div></article>)}</div>
         </section>}
@@ -306,11 +380,12 @@ export default function Home() {
             <h2>Materializar URLs sem transportar arquivos pelo MCP</h2>
             <p>O cliente envia apenas URLs e metadados. O Worker responde com um operation ID, a Queue baixa em background e o R2 recebe a mídia.</p>
             <form className="pushForm" onSubmit={submitPush}>
-              <textarea rows={10} value={pushUrls} onChange={e=>setPushUrls(e.target.value)} placeholder={"Uma URL por linha\nhttps://.../imagem1.jpg\nhttps://.../imagem2.png"}/>
-              <div className="formRow"><input value={pushUniverse} onChange={e=>setPushUniverse(e.target.value)} placeholder="Universo opcional"/><input value={pushSubject} onChange={e=>setPushSubject(e.target.value)} placeholder="Personagem/assunto opcional"/></div>
+              <textarea rows={10} value={pushUrls} onChange={(e: ChangeEvent<HTMLTextAreaElement>)=>setPushUrls(e.target.value)} placeholder={"Uma URL por linha\nhttps://.../imagem1.jpg\nhttps://.../imagem2.png"}/>
+              <div className="formRow"><input value={pushUniverse} onChange={(e: ChangeEvent<HTMLInputElement>)=>setPushUniverse(e.target.value)} placeholder="Universo opcional"/><input value={pushSubject} onChange={(e: ChangeEvent<HTMLInputElement>)=>setPushSubject(e.target.value)} placeholder="Personagem/assunto opcional"/></div>
               {pushError && <div className="formError">{pushError}</div>}
               <button className="primary" disabled={pushBusy}>{pushBusy ? "Enviando…" : "Enviar para FAST PUSH"}</button>
             </form>
+            <div className="directUploadBox"><span className="eyebrow">UPLOAD DIRETO</span><strong>Arquivo local → Worker → R2</strong><p>O navegador recebe um ticket temporário e envia o arquivo direto para o Core. Nenhuma Access Key aparece na Library e o MCP não manipula o binário.</p><input type="file" accept="image/*,video/*" onChange={(e: ChangeEvent<HTMLInputElement>)=>setDirectFile(e.target.files?.[0]||null)}/><div className="inlineActions"><button className="primary" type="button" disabled={!directFile||directBusy} onClick={()=>void uploadDirectMedia()}>{directBusy?"Enviando…":"Enviar arquivo"}</button>{directFile&&<code>{directFile.name} · {formatBytes(directFile.size)}</code>}</div>{directMessage&&<div className={directMessage.startsWith("Materializado")?"notice compact":"formError"}>{directMessage}</div>}</div>
           </div>
           <div className="operationBox">
             <span className="eyebrow">OPERAÇÃO</span>
@@ -324,7 +399,7 @@ export default function Home() {
         </section>}
 
         {active === "Inbox candidatas" && <>
-          <section className="candidateToolbar"><div><b>Inbox de materialização</b><span>Aprovar move o objeto de incoming/ para assets/ e cria o AST-* no D1 histórico.</span></div><select value={candidateState} onChange={e=>setCandidateState(e.target.value)}><option value="MATERIALIZED">Materializadas</option><option value="RETRYING">Em retry</option><option value="FAILED">Falhas</option><option value="APPROVED">Aprovadas</option><option value="REJECTED">Rejeitadas</option></select></section>
+          <section className="candidateToolbar"><div><b>Inbox de materialização</b><span>Aprovar move o objeto de incoming/ para assets/ e cria o AST-* no D1 histórico.</span></div><select value={candidateState} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setCandidateState(e.target.value)}><option value="MATERIALIZED">Materializadas</option><option value="RETRYING">Em retry</option><option value="FAILED">Falhas</option><option value="APPROVED">Aprovadas</option><option value="REJECTED">Rejeitadas</option></select></section>
           {candidateLoading ? <div className="empty">Carregando candidatas…</div> : candidates.length === 0 ? <div className="empty"><strong>Inbox vazia</strong><span>As mídias do FAST PUSH aparecem aqui depois que a Queue conclui a materialização.</span></div> : <div className="candidateGrid">{candidates.map(candidate => <article className="candidate" key={candidate.id}>
             <div className="candidatePreview">{candidate.previewUrl ? <img src={candidate.previewUrl} alt=""/> : <span>{candidate.status}</span>}</div>
             <div className="candidateBody"><div className="candidateTitle"><strong>{candidate.subject || "Sem assunto"}</strong><b className={statusClass(candidate.status)}>{candidate.status}</b></div><span>{candidate.universe || "Sem universo"}</span><code>{candidate.id}</code><small>{formatBytes(candidate.sizeBytes)} · tentativa {candidate.attempts}</small>{candidate.failureReason && <p>{candidate.failureReason}</p>}
@@ -333,19 +408,31 @@ export default function Home() {
           </article>)}</div>}
         </>}
 
-        {active === "Operação" && <section className="modulePanel twoCol">
-          <div><span className="eyebrow">INTEGRIDADE</span><h2>D1 ↔ R2</h2><p>A checagem nunca corrige ou apaga automaticamente. Ela apenas prova se o objeto apontado por <code>r2_key</code> está presente.</p><div className="opNumbers"><span><b>{integrity?.checked ?? 0}</b>checados</span><span><b>{integrity?.present ?? 0}</b>presentes</span><span><b>{integrity?.missing ?? 0}</b>faltantes</span></div>{integrity?.missing ? <div className="formError">{integrity.missing} referências sem objeto no lote verificado.</div> : <div className="notice compact"><strong>Gate limpo</strong><span>Nenhum objeto faltante na amostra atual.</span></div>}</div>
-          <div><span className="eyebrow">R2 — assets/</span><h2>Inventário físico</h2><div className="recordList">{r2Objects.length===0?<div className="quiet">Nenhum objeto carregado ou Core ainda desconectado.</div>:r2Objects.map(item=><article key={item.key}><div><strong>{item.key.split("/").pop()}</strong><span>{formatBytes(item.size)}</span></div><code>{item.key}</code></article>)}</div></div>
+        {active === "Operação" && <section className="modulePanel operationGrid">
+          <div><span className="eyebrow">INTEGRIDADE RÁPIDA</span><h2>D1 ↔ R2</h2><p>A amostra valida os <code>r2_key</code> mais recentes sem alterar qualquer registro.</p><div className="opNumbers"><span><b>{integrity?.checked ?? 0}</b>checados</span><span><b>{integrity?.present ?? 0}</b>presentes</span><span><b>{integrity?.missing ?? 0}</b>faltantes</span></div>{integrity?.missing ? <div className="formError">{integrity.missing} referências sem objeto na amostra.</div> : <div className="notice compact"><strong>Amostra limpa</strong><span>Nenhum objeto faltante na checagem rápida.</span></div>}</div>
+          <div><span className="eyebrow">AUDITORIA COMPLETA</span><h2>Todas as referências conhecidas</h2><p>Compara assets, arquivos de projeto, imports, exports e materializações com o inventário físico do R2.</p><div className="opNumbers"><span><b>{storageAudit?.r2Objects ?? 0}</b>objetos R2</span><span><b>{storageAudit?.missingReferences ?? 0}</b>faltantes</span><span><b>{storageAudit?.orphanObjects ?? 0}</b>órfãos</span><span><b>{storageAudit?.sharedKeys ?? 0}</b>chaves compartilhadas</span></div><button className="primary" disabled={auditBusy} onClick={()=>void runStorageAudit()}>{auditBusy?"Auditando…":"Executar auditoria completa"}</button></div>
+          <div><span className="eyebrow">INTEGRIDADE LÓGICA D1</span><h2>Histórico separado da V2</h2><p>Orfandades antigas permanecem auditáveis, mas o dispatcher novo não as assume. Regressões <code>v2_*</code> são tratadas separadamente.</p><div className="opNumbers"><span><b>{dataHealth?.v2Orphans ?? 0}</b>órfãos V2</span><span><b>{dataHealth?.activeHistoricalOrphans ?? 0}</b>históricos ativos</span><span><b>{dataHealth?.catalog.assetsMissingR2Key ?? 0}</b>assets sem r2_key</span><span><b>{dataHealth?.catalog.duplicateAssetR2Keys ?? 0}</b>r2_key compartilhadas</span></div><div className={(dataHealth?.v2Orphans||0)>0?"formError":"notice compact"}><strong>{(dataHealth?.v2Orphans||0)>0?"Regressão V2 detectada":"Camada V2 consistente"}</strong><span>{dataHealth?.activeHistoricalOrphans ? "Há filas históricas órfãs preservadas; elas são ignoradas pelo dispatcher V2." : "Nenhuma inconsistência ativa detectada."}</span></div></div>
+          <div><span className="eyebrow">DISPATCHER</span><h2>Workers e leases</h2><div className="opNumbers"><span><b>{dispatcherHealth?.expiredLeases ?? 0}</b>leases expirados</span><span><b>{dispatcherHealth?.queue?.length ?? 0}</b>grupos de fila</span><span><b>{dispatcherHealth?.sessions?.length ?? 0}</b>grupos de sessões</span></div><div className={dispatcherHealth?.ok===false?"formError":"notice compact"}><strong>{dispatcherHealth?.ok===false?"Atenção":"Dispatcher saudável"}</strong><span>Leases expirados voltam para READY pelo watchdog, sem perder o item.</span></div></div>
+          <div><span className="eyebrow">MATERIALIZAÇÃO</span><h2>FAST PUSH</h2><div className="recordList">{(materializationStats?.candidateStates||[]).length===0?<div className="quiet">Sem estatísticas.</div>:(materializationStats?.candidateStates||[]).map((item,index)=><article key={`${String(item.status)}-${index}`}><div><strong>{String(item.status)}</strong><span>{Number(item.bytes||0)>0?formatBytes(Number(item.bytes)):""}</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
+          <div><span className="eyebrow">OPERAÇÕES RECENTES</span><h2>Fila assíncrona</h2><div className="recordList">{recentOperations.length===0?<div className="quiet">Nenhuma operação.</div>:recentOperations.map(item=><article key={String(item.id)}><div><strong>{String(item.type||"OP")}</strong><span>{String(item.status||"")} · {String(item.succeeded||0)}/{String(item.requested||0)}</span></div><code>{String(item.id)}</code></article>)}</div></div>
+          <div><span className="eyebrow">R2 — assets/</span><h2>Inventário recente</h2><div className="recordList">{r2Objects.length===0?<div className="quiet">Nenhum objeto carregado ou Core ainda desconectado.</div>:r2Objects.map(item=><article key={item.key}><div><strong>{item.key.split("/").pop()}</strong><span>{formatBytes(item.size)}</span></div><code>{item.key}</code></article>)}</div></div>
         </section>}
 
-        {active === "Estoque & giro" && <section className="modulePanel"><span className="eyebrow">ESTOQUE</span><h2>{stats.approved.toLocaleString("pt-BR")} aprovados em {stats.universes.toLocaleString("pt-BR")} universos ativos</h2><p>Esta visão é derivada diretamente da tabela histórica <code>assets</code>.</p><div className="recordList wide">{universes.map(item=><article key={item.name}><div><strong>{item.name}</strong><span>{item.approved} aprovados · {item.pending} pendentes · {item.rejected} rejeitados</span></div><code>{item.total} total</code></article>)}</div></section>}
+        {active === "Políticas" && <section className="modulePanel operationGrid">
+          <div><span className="eyebrow">APRENDIZADO OPERACIONAL</span><h2>Gaps</h2><p>Os gaps são deduplicados por assinatura e permanecem auditáveis.</p><div className="recordList">{(policyWorkspace?.gaps||[]).length===0?<div className="quiet">Nenhum gap registrado.</div>:(policyWorkspace?.gaps||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"GAP")}</strong><span>{String(item.severity||"")} · {String(item.status||"")}</span></div><code>{String(item.count||item.occurrence_count||0)}</code></article>)}</div></div>
+          <div><span className="eyebrow">POLÍTICAS</span><h2>Versões e estado</h2><p>Alterações criam novas versões; rollback não apaga histórico.</p><div className="recordList">{(policyWorkspace?.policies||[]).length===0?<div className="quiet">Nenhuma política registrada.</div>:(policyWorkspace?.policies||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"POLICY")}</strong><span>{String(item.status||"")} · {String(item.applied||0)} aplicações</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
+          <div><span className="eyebrow">TELEMETRIA</span><h2>Aplicações e resultados</h2><div className="recordList">{(policyTelemetry?.events||[]).length===0?<div className="quiet">Sem eventos de política.</div>:(policyTelemetry?.events||[]).map((item,index)=><article key={`${String(item.event_type)}-${index}`}><div><strong>{String(item.event_type||"EVENT")}</strong><span>{String(item.successes||"")}</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
+        </section>}
+
+        {active === "Estoque & giro" && <section className="modulePanel operationGrid"><div><span className="eyebrow">ESTOQUE</span><h2>{stats.approved.toLocaleString("pt-BR")} aprovados em {stats.universes.toLocaleString("pt-BR")} universos ativos</h2><p>Derivado diretamente da tabela histórica <code>assets</code>, sem conversão.</p><div className="recordList wide">{universes.slice(0,40).map(item=><article key={item.name}><div><strong>{item.name}</strong><span>{item.approved} aprovados · {item.pending} pendentes · {item.rejected} rejeitados</span></div><code>{item.total} total</code></article>)}</div></div><div><span className="eyebrow">GIRO</span><h2>Uso do catálogo</h2><div className="recordList">{(stockDetail?.rotation||[]).map((item,index)=><article key={`${String(item.bucket)}-${index}`}><div><strong>{String(item.bucket)}</strong><span>assets aprovados</span></div><code>{String(item.count||0)}</code></article>)}</div></div><div><span className="eyebrow">POLÍTICAS DE ESTOQUE</span><h2>Limites semânticos</h2><div className="recordList">{(stockDetail?.policies||[]).length===0?<div className="quiet">Nenhuma política ativa.</div>:(stockDetail?.policies||[]).slice(0,50).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.concept||"conceito")}</strong><span>{String(item.universe||"Sem universo")} · min {String(item.minimum||0)} / ideal {String(item.ideal||0)}</span></div><code>{String(item.maximum||0)} max</code></article>)}</div></div></section>}
 
         {active === "Configurações" && <section className="modulePanel configPanel">
           <span className="eyebrow">INFRAESTRUTURA</span><h2>Bindings, não credenciais salvas</h2><p>A V2 não terá o formulário que quebrava a conexão R2 após atualizações.</p>
-          <div className="bindingList"><div><b>DB</b><span>D1 · catálogo e estados históricos</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · corvoquiz-prod</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · FAST PUSH</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>CORVO_INTERNAL_KEY</b><span>Secret do Worker + Vercel; nunca no D1</span><em>{health?.coreConfigured ? "configurado no BFF" : "aguardando"}</em></div></div>
+          <div className="bindingList"><div><b>DB</b><span>D1 · catálogo e estados históricos</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · corvoquiz-prod</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · FAST PUSH</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>CORVO_INTERNAL_KEY</b><span>Autenticação Vercel/MCP → Worker; nunca no D1</span><em>{health?.coreConfigured ? "configurado no BFF" : "aguardando"}</em></div><div><b>CORVO_SIGNING_KEY</b><span>Assina URLs temporárias; existe apenas no Worker</span><em>{health?.core.signing || "aguardando"}</em></div></div>
+          <div className="notice compact"><strong>Configuração segura</strong><span>{safeSettings.length} configurações operacionais visíveis · R2 credentials in D1: {String(bindingStatus?.r2CredentialsStoredInD1??false)}</span></div><div className="recordList wide">{safeSettings.slice(0,60).map(item=><article key={item.key}><div><strong>{item.key}</strong><span>setting operacional</span></div><code>{item.value}</code></article>)}</div>
         </section>}
 
-        {!["Catálogo","Projetos","Solicitações","Lotes","Importações","Coleta automática","Operação","Estoque & giro","Inbox candidatas","Pendentes","Rejeitados","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo está na matriz de equivalência da V61.9. Ele será ligado ao núcleo V2 sem copiar bootstrap, recovery ou configuração legada.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
+        {!["Catálogo","Projetos","Solicitações","Lotes","Importações","Coleta automática","Operação","Políticas","Estoque & giro","Inbox candidatas","Pendentes","Rejeitados","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo está na matriz de equivalência da V61.9. Ele será ligado ao núcleo V2 sem copiar bootstrap, recovery ou configuração legada.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
       </div>
     </section>
   </main>;

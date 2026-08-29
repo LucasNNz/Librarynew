@@ -1,13 +1,16 @@
 {
   "name": "corvo-library-v2",
-  "version": "0.3.0",
+  "version": "0.8.0",
   "private": true,
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit --pretty false"
+    "typecheck": "tsc --noEmit --pretty false",
+    "validate:structural": "tsc -p tsconfig.validate.json --pretty false && tsc -p cloudflare/tsconfig.validate.json --pretty false"
   },
   "dependencies": {
     "next": "16.2.6",

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "esModuleInterop": true
+  },
+  "include": [".validate-frontend-stubs.d.ts", "app/**/*.ts", "app/**/*.tsx", "lib/**/*.ts", "next.config.ts"],
+  "exclude": ["node_modules", "cloudflare"]
+}

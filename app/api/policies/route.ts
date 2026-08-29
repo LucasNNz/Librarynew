@@ -1,0 +1,4 @@
+import { NextRequest } from "next/server";
+import { coreFetch } from "../../../lib/core-client";
+export async function GET(request:NextRequest){const u=new URL(request.url);const qs=u.searchParams.toString();const r=await coreFetch(`/policies${qs?`?${qs}`:""}`);return new Response(r.body,{status:r.status,headers:{"content-type":r.headers.get("content-type")||"application/json"}});}
+export async function POST(request:NextRequest){const r=await coreFetch('/policies',{method:'POST',body:await request.text(),headers:{'content-type':'application/json'}});return new Response(r.body,{status:r.status,headers:{"content-type":r.headers.get("content-type")||"application/json"}});}

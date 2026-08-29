@@ -1,47 +1,139 @@
 {
-  "version": "0.3.0",
-  "source_validation": {
-    "typescript_files_syntax_checked": 40,
-    "syntax_errors": 0,
-    "relative_imports_checked": 56,
-    "missing_relative_imports": 0,
-    "runtime_legacy_dependency_hits": 0
+  "checkpoint": "0.8.0",
+  "validation": "PASS",
+  "duration_seconds": 3.045,
+  "restore": {
+    "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
+    "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",
+    "migrations": [
+      "9000_v2_core.sql",
+      "9001_v2_observability.sql",
+      "9002_v2_direct_upload.sql",
+      "9003_v2_control_plane.sql",
+      "9004_v2_archives.sql",
+      "9005_v2_delivery_hardening.sql"
+    ]
   },
-  "d1_restore": {
-    "tables": 50,
-    "assets_total": 929,
-    "asset_statuses": {
-      "Aprovado": 849,
-      "Pendente": 77,
-      "Rejeitado": 3
-    },
+  "database": {
+    "integrity_check": "ok",
+    "assets": 929,
+    "approved": 849,
+    "pending": 77,
+    "rejected": 3,
     "approved_universes": 174,
     "all_universes": 175,
     "asset_usage": 1176,
-    "settings_total": 39,
-    "removed_secret_settings": 0,
-    "v2_tables": 3,
-    "v2_schema_version": "2.0.0",
     "assets_missing_r2_key": 0,
-    "unique_r2_keys": 921,
-    "duplicate_r2_key_groups": 8
+    "duplicate_asset_r2_keys": 8,
+    "tables_total": 59,
+    "v2_tables": [
+      "v2_asset_exports",
+      "v2_collection_events",
+      "v2_control_jobs",
+      "v2_direct_uploads",
+      "v2_download_packages",
+      "v2_ingest_candidates",
+      "v2_ingest_events",
+      "v2_ingest_operations",
+      "v2_project_media",
+      "v2_project_titles",
+      "v2_schema_meta",
+      "v2_storage_audits"
+    ],
+    "schema_version": "2.5.0",
+    "sensitive_settings_rows": 0
   },
-  "safe_dump": {
-    "removed_secret_settings": 3,
-    "removed_transaction_wrappers": 2,
-    "retained_sanitized_markers": 11,
-    "bytes": 24947407,
-    "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5"
+  "historical_integrity": {
+    "total": 11505,
+    "groups": {
+      "collection_candidates->collection_batches": 7540,
+      "collection_candidates->collection_terms": 1,
+      "collection_terms->collection_batches": 3393,
+      "operational_policy_events->automatic_project_items": 104,
+      "plan_branches->automatic_project_items": 9,
+      "source_routing_plans->automatic_project_items": 3,
+      "supervisor_decision_queue->automatic_project_items": 158,
+      "supervisor_project_candidates->automatic_project_items": 82,
+      "worker_work_items->automatic_project_items": 215
+    },
+    "baseline_exact_match": true
+  },
+  "logical_integrity": {
+    "historical": {
+      "collectionTermsWithoutBatch": 3393,
+      "collectionCandidatesWithoutBatch": 7540,
+      "collectionCandidatesWithoutTerm": 1,
+      "workerItemsWithoutParent": 215,
+      "supervisorDecisionsWithoutItem": 158,
+      "operationalPolicyEventsWithoutItem": 104,
+      "supervisorCandidatesWithoutItem": 82,
+      "planBranchesWithoutItem": 9,
+      "sourceRoutingPlansWithoutItem": 3
+    },
+    "active_historical_risk": {
+      "readyOrLeasedWorkerItemsWithoutParent": 54,
+      "pendingSupervisorDecisionsWithoutItem": 134,
+      "actionableSupervisorCandidatesWithoutItem": 60
+    },
+    "v2": {
+      "candidatesWithoutOperation": 0,
+      "eventsWithoutOperation": 0,
+      "packagesWithoutProject": 0,
+      "projectMediaWithoutProject": 0,
+      "projectTitlesWithoutProject": 0
+    },
+    "v2_orphans": 0
   },
   "mcp": {
-    "historical_tools": 229,
-    "implemented_same_name": 40,
-    "substituted_by_architecture": 2,
-    "planned": 187
+    "historical_total": 229,
+    "matrix_implemented": 227,
+    "matrix_substituted": 2,
+    "registered_total": 230,
+    "registered_unique": 230,
+    "historical_registered": 227,
+    "extras": [
+      "auditar_armazenamento_r2",
+      "auditar_integridade_d1",
+      "obter_status_upload_midia"
+    ],
+    "duplicates": [],
+    "missing_implemented": [],
+    "incorrectly_registered_substitutes": [],
+    "substituted": [
+      "configurar_cloudflare",
+      "obter_configuracao_cloudflare"
+    ]
   },
-  "build": {
-    "npm_install": "BLOCKED_NETWORK_TIMEOUT",
-    "full_next_build": "NOT_RUN",
-    "full_worker_typecheck": "NOT_RUN"
-  }
+  "source": {
+    "files_checked": 77,
+    "relative_imports_checked": 169,
+    "missing_relative_imports": [],
+    "forbidden_legacy_hits": {
+      "@libsql": [],
+      "TURSO_": [],
+      "production-recovery": [],
+      "secret_cloudflare_connection": []
+    }
+  },
+  "typecheck": {
+    "worker_structural": {
+      "status": "PASS",
+      "returncode": 0,
+      "output": ""
+    },
+    "frontend_structural": {
+      "status": "PASS",
+      "returncode": 0,
+      "output": ""
+    },
+    "real_next_build": {
+      "status": "EXTERNAL_GATE",
+      "reason": "Dependencies were not installed because registry access timed out in this execution."
+    },
+    "real_wrangler_build": {
+      "status": "EXTERNAL_GATE",
+      "reason": "Cloudflare dependencies/account are not provisioned in this execution."
+    }
+  },
+  "errors": []
 }

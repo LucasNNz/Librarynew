@@ -1,5 +1,5 @@
 import type { Env } from "../types";
-import { validSignedCandidateRequest, validSignedFileRequest } from "./auth";
+import { validSignedCandidateRequest, validSignedFileRequest, validSignedSupervisorCandidateRequest } from "./auth";
 
 export async function serveFile(request: Request, assetId: string, env: Env) {
   if (!(await validSignedFileRequest(request, assetId, env))) return new Response("Forbidden", { status: 403 });
@@ -50,5 +50,15 @@ export async function serveCandidateFile(request: Request, candidateId: string, 
   headers.set("cache-control", "private, max-age=900");
   headers.set("x-content-type-options", "nosniff");
   if (row.mime_type) headers.set("content-type", row.mime_type);
+  return new Response(object.body, { headers });
+}
+
+export async function serveSupervisorCandidateFile(request: Request, candidateId: string, env: Env) {
+  if (!(await validSignedSupervisorCandidateRequest(request, candidateId, env))) return new Response("Forbidden", { status: 403 });
+  const row = await env.DB.prepare("SELECT f.r2_key,f.mime_type FROM supervisor_project_candidates c JOIN materialization_files f ON f.id=c.materialization_file_id WHERE c.id=?").bind(candidateId).first<{ r2_key: string; mime_type: string | null }>();
+  if (!row) return new Response("Not found", { status: 404 });
+  const object = await env.MEDIA.get(row.r2_key);
+  if (!object) return new Response("Object missing", { status: 404 });
+  const headers = new Headers(); object.writeHttpMetadata(headers); headers.set("etag", object.httpEtag); headers.set("cache-control", "private, max-age=900"); headers.set("x-content-type-options", "nosniff"); if (row.mime_type) headers.set("content-type", row.mime_type);
   return new Response(object.body, { headers });
 }

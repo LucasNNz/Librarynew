@@ -1,26 +1,25 @@
-import type { Env, FastPushBody, MaterializeJob } from "../types";
-import { id, nowMs, safeFilenameFromUrl } from "./ids";
+import type { CorvoQueueJob, Env, FastPushBody, MaterializeJob } from "../types";
+import { id, nowMs, safeFilenameFromUrl, stableId } from "./ids";
 import { limitedStream, safeRemoteUrl, transientHttpStatus } from "./net";
 import { createSignedCandidateUrl } from "./auth";
+import { recordIngestEvent, updateHostHealth } from "./materialization";
+import { createProjectMediaFromCandidate } from "./production";
 
 function normalizeTags(tags: unknown) {
   return Array.isArray(tags) ? [...new Set(tags.map(String).map(value => value.trim()).filter(Boolean))].slice(0, 40) : [];
 }
 
-export async function fastPush(request: Request, env: Env) {
-  const body = await request.json<FastPushBody>().catch(() => ({}));
-  const rows = Array.isArray(body.urls)
-    ? body.urls.filter(item => typeof item?.url === "string" && safeRemoteUrl(item.url) !== null).slice(0, 200)
-    : [];
+export async function enqueueFastPushItems(env: Env, items: NonNullable<FastPushBody["urls"]>, input:{operationId?:string;type?:string}={}) {
+  const rows = Array.isArray(items) ? items.filter(item => typeof item?.url === "string" && safeRemoteUrl(item.url) !== null).slice(0, 200) : [];
   if (!rows.length) return { error: "NO_VALID_URLS", status: 400 } as const;
 
-  const operationId = id("OP");
+  const operationId = input.operationId || id("OP");
   const created = nowMs();
   const operation = env.DB.prepare(`INSERT INTO v2_ingest_operations
     (id,type,status,requested,succeeded,failed,payload_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`).bind(operationId, "FAST_PUSH", "QUEUED", rows.length, 0, 0, "{}", created, created);
+    VALUES (?,?,?,?,?,?,?,?,?)`).bind(operationId, input.type || "FAST_PUSH", "QUEUED", rows.length, 0, 0, "{}", created, created);
 
-  const jobs: MessageSendRequest<MaterializeJob>[] = [];
+  const jobs: MessageSendRequest<CorvoQueueJob>[] = [];
   const inserts: D1PreparedStatement[] = [operation];
   for (const row of rows) {
     const candidateId = id("CAND");
@@ -40,12 +39,18 @@ export async function fastPush(request: Request, env: Env) {
         created,
         created,
       ));
-    jobs.push({ body: { operationId, candidateId, url: row.url!, projectId: row.projectId, itemId: row.itemId, universe: row.universe, subject: row.subject, tags } });
+    jobs.push({ body: { kind: "MATERIALIZE_URL", operationId, candidateId, url: row.url!, projectId: row.projectId, itemId: row.itemId, universe: row.universe, subject: row.subject, tags } });
   }
 
   await env.DB.batch(inserts);
   for (let offset = 0; offset < jobs.length; offset += 100) await env.MATERIALIZE_QUEUE.sendBatch(jobs.slice(offset, offset + 100));
+  await recordIngestEvent(env, operationId, null, "FAST_PUSH_ACCEPTED", "QUEUED", `${rows.length} URL(s) accepted`, null);
   return { accepted: rows.length, operationId, status: "QUEUED", httpStatus: 202 } as const;
+}
+
+export async function fastPush(request: Request, env: Env) {
+  const body = await request.json().catch(() => ({})) as FastPushBody;
+  return enqueueFastPushItems(env, body.urls || []);
 }
 
 export async function getOperation(operationId: string, env: Env) {
@@ -94,22 +99,30 @@ export async function listCandidates(request: Request, env: Env) {
 export async function approveCandidate(candidateId: string, env: Env) {
   const candidate = await env.DB.prepare("SELECT * FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<Record<string, unknown>>();
   if (!candidate) return { error: "NOT_FOUND", status: 404 } as const;
+  if (candidate.status === "APPROVED" && candidate.asset_id) {
+    const asset = await env.DB.prepare("SELECT id,r2_key FROM assets WHERE id=?").bind(candidate.asset_id).first<Record<string, unknown>>();
+    if (asset) return { ok:true, assetId:String(asset.id), r2Key:String(asset.r2_key), idempotent:true, status:200 } as const;
+  }
   if (candidate.status !== "MATERIALIZED") return { error: "INVALID_STATE", currentStatus: candidate.status, status: 409 } as const;
 
   const sourceKey = String(candidate.r2_key || "");
   const sourceObject = sourceKey ? await env.MEDIA.get(sourceKey) : null;
   if (!sourceObject) return { error: "OBJECT_MISSING", status: 409 } as const;
 
-  const assetId = id("AST");
+  const assetId = await stableId("AST", `V2_FAST_PUSH\n${candidateId}`, 10);
   const mime = String(candidate.mime_type || "application/octet-stream");
   const ext = mime.split("/")[1]?.replace("jpeg", "jpg").replace("svg+xml", "svg") || "bin";
   const rawName = safeFilenameFromUrl(String(candidate.source_url || ""), `${candidateId}.${ext}`);
   const filename = rawName.includes(".") ? rawName : `${rawName}.${ext}`;
   const finalKey = `assets/${assetId}/${filename}`;
-  await env.MEDIA.put(finalKey, sourceObject.body, {
-    httpMetadata: sourceObject.httpMetadata,
-    customMetadata: { ...(sourceObject.customMetadata || {}), approvedFromCandidate: candidateId, assetId },
-  });
+
+  const existing = await env.DB.prepare("SELECT id,r2_key FROM assets WHERE id=?").bind(assetId).first<Record<string, unknown>>();
+  if (!existing) {
+    await env.MEDIA.put(finalKey, sourceObject.body, {
+      httpMetadata: sourceObject.httpMetadata,
+      customMetadata: { ...(sourceObject.customMetadata || {}), approvedFromCandidate: candidateId, assetId },
+    });
+  }
 
   const timestamp = nowMs();
   const subject = String(candidate.subject || "").trim();
@@ -119,23 +132,25 @@ export async function approveCandidate(candidateId: string, env: Env) {
   const sizeBytes = Number(candidate.size_bytes || sourceObject.size || 0);
 
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO assets
+    env.DB.prepare(`INSERT OR IGNORE INTO assets
       (id,name,universe,kind,status,tags,r2_key,original_name,mime_type,size_bytes,use_count,created_at,updated_at,subject,source_url,qa_status)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
         assetId, name, universe, "Imagem", "Aprovado", tags, finalKey, filename, mime, sizeBytes, 0, timestamp, timestamp, subject || null, candidate.source_url || null, "APROVADO",
       ),
-    env.DB.prepare("UPDATE v2_ingest_candidates SET status='APPROVED',asset_id=?,updated_at=? WHERE id=?").bind(assetId, timestamp, candidateId),
+    env.DB.prepare("UPDATE v2_ingest_candidates SET status='APPROVED',asset_id=?,r2_key=?,updated_at=? WHERE id=? AND status IN ('MATERIALIZED','APPROVED')").bind(assetId, finalKey, timestamp, candidateId),
   ]);
-  await env.MEDIA.delete(sourceKey);
+  if (sourceKey !== finalKey && sourceKey.startsWith("incoming/")) await env.MEDIA.delete(sourceKey).catch(() => undefined);
+  await recordIngestEvent(env, String(candidate.operation_id), candidateId, "CANDIDATE_APPROVED", "APPROVED", assetId, null);
   return { ok: true, assetId, r2Key: finalKey, status: 200 } as const;
 }
 
 export async function rejectCandidate(candidateId: string, env: Env) {
-  const candidate = await env.DB.prepare("SELECT status,r2_key FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<{ status: string; r2_key: string | null }>();
+  const candidate = await env.DB.prepare("SELECT status,r2_key,operation_id FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<{ status: string; r2_key: string | null; operation_id:string }>();
   if (!candidate) return { error: "NOT_FOUND", status: 404 } as const;
   if (["APPROVED", "REJECTED"].includes(candidate.status)) return { error: "INVALID_STATE", currentStatus: candidate.status, status: 409 } as const;
   if (candidate.r2_key) await env.MEDIA.delete(candidate.r2_key).catch(() => undefined);
   await env.DB.prepare("UPDATE v2_ingest_candidates SET status='REJECTED',updated_at=? WHERE id=?").bind(nowMs(), candidateId).run();
+  await recordIngestEvent(env, candidate.operation_id, candidateId, "CANDIDATE_REJECTED", "REJECTED", null, null);
   return { ok: true, status: 200 } as const;
 }
 
@@ -148,6 +163,7 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
     env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=? AND status='QUEUED'").bind(started, job.operationId),
     env.DB.prepare("UPDATE v2_ingest_candidates SET status='DOWNLOADING',attempts=?,updated_at=? WHERE id=?").bind(attempt, started, job.candidateId),
   ]);
+  await recordIngestEvent(env, job.operationId, job.candidateId, "DOWNLOAD_STARTED", "DOWNLOADING", `attempt=${attempt}`, null);
 
   let shouldRetry = false;
   try {
@@ -174,11 +190,19 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
       env.DB.prepare("UPDATE v2_ingest_candidates SET status='MATERIALIZED',r2_key=?,mime_type=?,size_bytes=?,failure_reason=NULL,updated_at=? WHERE id=?").bind(r2Key, mime, Number(stored?.size || contentLength || 0), done, job.candidateId),
       env.DB.prepare("UPDATE v2_ingest_operations SET succeeded=succeeded+1,updated_at=? WHERE id=?").bind(done, job.operationId),
     ]);
+    await updateHostHealth(env, remote.hostname.toLowerCase(), true);
+    if (job.projectId && (job.tags || []).some(tag => String(tag).toLowerCase() === "thumb")) {
+      await createProjectMediaFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,r2Key,mimeType:mime,sizeBytes:Number(stored?.size || contentLength || 0),sourceUrl:job.url,agentOrigin:"FAST_PUSH"}).catch(()=>undefined);
+    }
+    await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZED", "MATERIALIZED", r2Key, done - started);
   } catch (error) {
     const done = nowMs();
     const reason = error instanceof Error ? error.message.slice(0, 240) : "MATERIALIZATION_FAILED";
+    const failedRemote = safeRemoteUrl(job.url);
+    if (failedRemote) await updateHostHealth(env, failedRemote.hostname.toLowerCase(), false);
     if ((shouldRetry || error instanceof TypeError) && attempt < 5) {
       await env.DB.prepare("UPDATE v2_ingest_candidates SET status='RETRYING',failure_reason=?,updated_at=? WHERE id=?").bind(reason, done, job.candidateId).run();
+      await recordIngestEvent(env, job.operationId, job.candidateId, "RETRY_SCHEDULED", "RETRYING", reason, done - started);
       message.retry({ delaySeconds: Math.min(60, attempt * 5) });
       return;
     }
@@ -186,6 +210,7 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
       env.DB.prepare("UPDATE v2_ingest_candidates SET status='FAILED',failure_reason=?,updated_at=? WHERE id=?").bind(reason, done, job.candidateId),
       env.DB.prepare("UPDATE v2_ingest_operations SET failed=failed+1,updated_at=? WHERE id=?").bind(done, job.operationId),
     ]);
+    await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZATION_FAILED", "FAILED", reason, done - started);
   }
 
   const totals = await env.DB.prepare("SELECT requested,succeeded,failed FROM v2_ingest_operations WHERE id=?").bind(job.operationId).first<{ requested: number; succeeded: number; failed: number }>();
@@ -194,4 +219,25 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
     await env.DB.prepare("UPDATE v2_ingest_operations SET status=?,updated_at=? WHERE id=?").bind(finalStatus, nowMs(), job.operationId).run();
   }
   message.ack();
+}
+
+export async function linkCandidatesToProject(env:Env,candidateIds:string[],projectId:string,itemId?:string|null){
+  const project=await env.DB.prepare("SELECT id FROM automatic_projects WHERE id=?").bind(projectId).first(); if(!project)return {error:"PROJECT_NOT_FOUND",status:404} as const;
+  const ids=[...new Set(candidateIds.map(String).filter(Boolean))].slice(0,200); if(!ids.length)return {updated:0};
+  const ts=nowMs(); let updated=0;
+  for(const candidateId of ids){ const result=await env.DB.prepare("UPDATE v2_ingest_candidates SET project_id=?,item_id=COALESCE(?,item_id),updated_at=? WHERE id=?").bind(projectId,itemId||null,ts,candidateId).run(); updated+=Number(result.meta?.changes||0); }
+  return {updated,projectId,itemId:itemId||null};
+}
+
+export async function deleteIngestCandidates(env:Env,candidateIds:string[]){
+  const ids=[...new Set(candidateIds.map(String).filter(Boolean))].slice(0,200); const results=[] as Array<Record<string,unknown>>;
+  for(const candidateId of ids){
+    const row=await env.DB.prepare("SELECT status,r2_key FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<{status:string;r2_key:string|null}>();
+    if(!row){results.push({candidateId,error:"NOT_FOUND"});continue;}
+    if(row.status==="APPROVED"){results.push({candidateId,error:"APPROVED_IMMUTABLE"});continue;}
+    if(row.r2_key)await env.MEDIA.delete(row.r2_key).catch(()=>undefined);
+    await env.DB.prepare("DELETE FROM v2_ingest_candidates WHERE id=?").bind(candidateId).run();
+    results.push({candidateId,deleted:true});
+  }
+  return {results,deleted:results.filter(item=>item.deleted===true).length};
 }

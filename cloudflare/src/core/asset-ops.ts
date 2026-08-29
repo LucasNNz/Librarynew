@@ -174,7 +174,7 @@ export async function approvePendingAssets(request: Request, assetIds: string[],
   ).bind(note?.trim() || "", note?.trim() || "", note?.trim() || "", timestamp, assetId));
   const results = await env.DB.batch(statements);
   const changed = results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
-  const assets = [];
+  const assets: NonNullable<Awaited<ReturnType<typeof getAsset>>>[] = [];
   for (const assetId of ids) {
     const asset = await getAsset(request, assetId, env);
     if (asset?.rawStatus === "Aprovado") assets.push(asset);
@@ -187,4 +187,35 @@ export async function findDuplicateR2Keys(env: Env, limit = 100) {
     FROM assets WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>'' GROUP BY r2_key HAVING COUNT(*)>1 ORDER BY count DESC,r2_key LIMIT ?`)
     .bind(Math.max(1, Math.min(limit, 500))).all<Record<string, unknown>>();
   return result.results || [];
+}
+
+export async function deleteAssetPermanently(env: Env, assetId: string, confirm: boolean) {
+  if (!confirm) return { error: "CONFIRM_REQUIRED", status: 400 } as const;
+  const asset = await env.DB.prepare("SELECT * FROM assets WHERE id=?").bind(assetId).first<Record<string, unknown>>();
+  if (!asset) return { error: "NOT_FOUND", status: 404 } as const;
+  const r2Key = String(asset.r2_key || "");
+  const shared = r2Key ? await env.DB.prepare("SELECT COUNT(*) AS n FROM assets WHERE r2_key=? AND id<>?").bind(r2Key, assetId).first<{ n:number }>() : null;
+  const ts=nowMs();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM asset_consultations WHERE asset_id=?").bind(assetId),
+    env.DB.prepare("DELETE FROM asset_usage WHERE asset_id=?").bind(assetId),
+    env.DB.prepare("DELETE FROM batch_assets WHERE asset_id=?").bind(assetId),
+    env.DB.prepare("UPDATE collection_candidates SET asset_id=NULL WHERE asset_id=?").bind(assetId),
+    env.DB.prepare("UPDATE materialization_files SET final_asset_id=NULL WHERE final_asset_id=?").bind(assetId),
+    env.DB.prepare("UPDATE materialization_items SET frozen_asset_id=NULL,status=CASE WHEN status='FROZEN' THEN 'RELINK_REQUIRED' ELSE status END,updated_at=? WHERE frozen_asset_id=?").bind(ts,assetId),
+    env.DB.prepare("UPDATE v2_ingest_candidates SET asset_id=NULL,updated_at=? WHERE asset_id=?").bind(ts,assetId),
+    env.DB.prepare("UPDATE automatic_project_items SET linked_asset_id=NULL,status=CASE WHEN linked_asset_id IS NOT NULL THEN 'RELINK_REQUIRED' ELSE status END,updated_at=? WHERE linked_asset_id=?").bind(ts,assetId),
+    env.DB.prepare("DELETE FROM assets WHERE id=?").bind(assetId),
+  ]);
+  let fileRemoved=false;
+  if (r2Key && Number(shared?.n||0)===0) { await env.MEDIA.delete(r2Key).catch(()=>undefined); fileRemoved=true; }
+  return { deleted: assetId, r2Key, fileRemoved, sharedR2Key: Number(shared?.n||0)>0, status: 200 } as const;
+}
+
+export async function deletePendingAssetsPermanently(env: Env, assetIds: string[], confirm: boolean) {
+  if (!confirm) return { error: "CONFIRM_REQUIRED", status: 400 } as const;
+  const ids=[...new Set((assetIds||[]).map(String).map(v=>v.trim()).filter(Boolean))].slice(0,200);
+  const results=[] as Array<Record<string,unknown>>;
+  for(const assetId of ids){const row=await env.DB.prepare("SELECT status FROM assets WHERE id=?").bind(assetId).first<{status:string}>();if(!row){results.push({assetId,error:"NOT_FOUND"});continue;}if(!String(row.status).toLowerCase().startsWith("pendente")){results.push({assetId,error:"NOT_PENDING",status:row.status});continue;}const deleted=await deleteAssetPermanently(env,assetId,true);results.push({assetId,...deleted});}
+  return { requested:ids.length,deleted:results.filter(r=>r.deleted).length,results };
 }

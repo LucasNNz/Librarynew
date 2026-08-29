@@ -141,3 +141,35 @@ export type AutomaticProject = {
   updated_at: number;
   completed_at?: number | null;
 };
+
+export type StorageAudit = {
+  auditId?: string;
+  status?: string;
+  inventoryTruncated?: boolean;
+  totalReferences?: number;
+  distinctReferences?: number;
+  r2Objects?: number;
+  r2Bytes?: number;
+  presentReferences?: number;
+  missingReferences?: number;
+  orphanObjects?: number;
+  sharedKeys?: number;
+  bySource?: Array<{source:string;references:number;distinctReferences:number;present:number;missing:number}>;
+  missing?: Array<{key:string;references:Array<Record<string,unknown>>}>;
+  orphan?: Array<{key:string;size:number}>;
+  shared?: Array<{key:string;references:Array<Record<string,unknown>>}>;
+};
+
+export type DispatcherHealth = {
+  ok: boolean;
+  expiredLeases: number;
+  queue: Array<Record<string,unknown>>;
+  sessions: Array<Record<string,unknown>>;
+  limits: Array<Record<string,unknown>>;
+};
+
+export type MaterializationStats = {
+  candidateStates: Array<Record<string,unknown>>;
+  operationStates: Array<Record<string,unknown>>;
+  hostHealth: Record<string,unknown>;
+};
