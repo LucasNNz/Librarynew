@@ -1,5 +1,16 @@
-# Assistente de infraestrutura — Corvo Library V2 0.10
+# Assistente de infraestrutura — Corvo Library V2 0.11
 
+
+## Modo rápido recomendado
+
+A tela principal não pede nomes de recursos nem credenciais R2. O fluxo é:
+
+1. Execute uma única vez `npm run setup:cloudflare` na raiz do projeto.
+2. O instalador cria/verifica D1, Queue e DLQ, confirma o bucket existente `corvoquiz-prod`, gera secrets, aplica migrations e publica o Worker. Se `CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql` estiver ao lado do projeto, restaura o catálogo histórico automaticamente.
+3. Copie apenas `CORVO_CORE_URL` e `CORVO_INTERNAL_KEY` exibidos pelo instalador para as variáveis persistentes da Vercel.
+4. Volte ao app e clique **Verificar e travar**.
+
+As opções de nomes de Worker/D1/R2/Queue ficam escondidas em **Mostrar opções avançadas**.
 A tela **Configurações** segue a regra **configure uma vez, preserve para sempre**.
 
 ## Contrato de persistência

@@ -1,4 +1,4 @@
-# Desenvolvimento contínuo — checkpoint 0.10
+# Desenvolvimento contínuo — checkpoint 0.11
 
 ## Núcleo implementado
 
@@ -27,7 +27,7 @@
 
 `IMPLEMENTADO` garante presença no contrato MCP V2. Equivalência comportamental crítica é progressivamente coberta pelos gates e continua sendo validada antes do corte.
 
-## Integridade 0.10
+## Integridade 0.11
 
 - `PRAGMA integrity_check`: PASS.
 - Assets: 929 / 849 aprovados / 77 pendentes / 3 rejeitados.
@@ -58,7 +58,7 @@
 - Executar build real nos ambientes conectados antes de Production.
 
 
-## Persistência de infraestrutura — 0.10
+## Persistência de infraestrutura — 0.11
 
 - Manifesto `v2_infrastructure_profiles` não secreto e singleton.
 - Estado padrão `LOCKED`; deploy e reabertura só leem.
@@ -66,4 +66,4 @@
 - Histórico imutável em `v2_infrastructure_config_events`.
 - Gate prova que reaplicar migrations preserva o perfil byte a byte.
 - `Verificar agora` só atualiza diagnóstico/`last_verified_at`.
-- Badge do frontend atualizado para `V2 CORE 0.10`.
+- Badge do frontend atualizado para `V2 CORE 0.11`.

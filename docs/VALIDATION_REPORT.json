@@ -1,7 +1,7 @@
 {
-  "checkpoint": "0.10.0",
+  "checkpoint": "0.11.0",
   "validation": "PASS",
-  "duration_seconds": 2.943,
+  "duration_seconds": 2.768,
   "restore": {
     "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
     "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",

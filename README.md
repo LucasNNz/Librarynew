@@ -1,4 +1,4 @@
-# Corvo Library V2 — checkpoint 0.10
+# Corvo Library V2 — checkpoint 0.11
 
 Reconstrução limpa da Corvo Library com **Vercel (UI/BFF)** + **Cloudflare Worker (Core)** + **D1 + R2 + Queue**.
 
@@ -19,7 +19,7 @@ Cloudflare Worker / MCP
 Worker-only: CORVO_SIGNING_KEY → URLs temporárias
 ```
 
-## Checkpoint 0.10
+## Checkpoint 0.11
 
 - Restauração histórica: **929 assets**, **849 aprovados**, **77 pendentes**, **3 rejeitados**, **174 universos aprovados**, **1.176 usos**.
 - 47 tabelas históricas preservadas + 14 tabelas `v2_*`; schema V2 **2.6.0**.
@@ -34,7 +34,7 @@ Worker-only: CORVO_SIGNING_KEY → URLs temporárias
 - 3 ferramentas extras V2 de diagnóstico/upload.
 
 
-### Configuração persistente 0.10
+### Configuração persistente 0.11
 
 A tela **Configurações** agora possui um manifesto persistente de infraestrutura:
 
@@ -45,7 +45,7 @@ A tela **Configurações** agora possui um manifesto persistente de infraestrutu
 - secrets continuam exclusivamente no Vercel/Cloudflare, nunca no D1;
 - `Verificar agora` testa bindings sem reconfigurar nada.
 
-## Gate 0.10
+## Gate 0.11
 
 O script `scripts/validate-checkpoint.py` executa restauração completa + todas as migrations, compara a dívida histórica com um baseline imutável, exige zero órfãos V2, valida paridade MCP, imports relativos, dependências proibidas, typechecks estruturais e o contrato de persistência da configuração.
 

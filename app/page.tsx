@@ -113,6 +113,8 @@ export default function Home() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupCopied, setSetupCopied] = useState(false);
+  const [setupCommandCopied, setSetupCommandCopied] = useState(false);
+  const [setupAdvanced, setSetupAdvanced] = useState(false);
   const [infraProfile, setInfraProfile] = useState<InfrastructureProfile | null>(null);
   const [infraEvents, setInfraEvents] = useState<Array<Record<string,unknown>>>([]);
   const [infraEditing, setInfraEditing] = useState(false);
@@ -350,6 +352,7 @@ export default function Home() {
   function openInfrastructureSetup(edit = false) {
     setInfraMessage("");
     setInfraEditing(edit || !infraProfile);
+    setSetupAdvanced(Boolean(edit && infraProfile));
     if (infraProfile) setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});
     setSetupOpen(true);
   }
@@ -382,6 +385,41 @@ export default function Home() {
     } finally {
       setSetupBusy(false);
     }
+  }
+
+  async function copyQuickSetupCommand() {
+    const command = "npm run setup:cloudflare";
+    try {
+      await navigator.clipboard.writeText(command);
+      setSetupCommandCopied(true);
+      setTimeout(() => setSetupCommandCopied(false), 1800);
+    } catch {
+      setSetupCommandCopied(false);
+    }
+  }
+
+  async function verifyAndLockInfrastructure() {
+    setSetupBusy(true); setInfraMessage("");
+    try {
+      const healthResponse = await fetch("/api/health", { cache:"no-store" });
+      const current = await healthResponse.json() as Health;
+      setHealth(current);
+      if (!current.core.ok) {
+        setInfraMessage(current.core.error || "O Core ainda não está totalmente conectado. Conclua Cloudflare e as 2 variáveis da Vercel e tente novamente.");
+        return;
+      }
+      if (!infraProfile) {
+        const saveResponse = await fetch("/api/infrastructure/config", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(infraDraft) });
+        const saved = await saveResponse.json();
+        if (!saveResponse.ok) { setInfraMessage(saved.error || `HTTP_${saveResponse.status}`); return; }
+        setInfraMessage(`Tudo certo. Configuração cravada na revisão ${saved.profile?.revision || 1}.`);
+      } else {
+        const verifyResponse = await fetch("/api/infrastructure/verify", { method:"POST" });
+        const verified = await verifyResponse.json();
+        setInfraMessage(verifyResponse.ok && verified.healthy ? "Infraestrutura verificada e saudável. Nenhuma configuração foi alterada." : (verified.error || "Configuração preservada, mas algum binding não respondeu."));
+      }
+      await Promise.all([refreshSettings(), refreshHealth()]);
+    } finally { setSetupBusy(false); }
   }
 
   async function copyInfrastructureChecklist() {
@@ -422,7 +460,7 @@ Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
     <section className="workspace">
       <header className="topbar">
         <div><b>CORVO LIBRARY V2</b><span>D1 histórico direto · R2 por binding · FAST PUSH em Queue</span></div>
-        <div className="envBadge">V2 CORE 0.10</div>
+        <div className="envBadge">V2 CORE 0.11</div>
       </header>
 
       <div className="content">
@@ -551,35 +589,42 @@ Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
 
         {setupOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Configurar infraestrutura">
           <div className="setupModal">
-            <div className="setupModalHead"><div><span className="eyebrow">ASSISTENTE DE INFRAESTRUTURA</span><h2>{infraProfile ? "Infraestrutura persistente" : "Conectar Corvo Core"}</h2><p>{infraProfile ? `Configuração cravada na revisão ${infraProfile.revision}. Abrir o app ou publicar uma atualização não altera estes valores.` : "Configure uma vez e salve. O manifesto não secreto fica no D1 e os secrets/bindings permanecem no Cloudflare/Vercel."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setInfraEditing(false);setInfraMessage("");}} aria-label="Fechar">×</button></div>
+            <div className="setupModalHead"><div><span className="eyebrow">CONFIGURAÇÃO RÁPIDA</span><h2>{infraProfile ? "Corvo Library já configurada" : "Conectar a Corvo Library"}</h2><p>{infraProfile ? `A revisão ${infraProfile.revision} está travada. Atualizações e novos deploys não mudam nada.` : "O fluxo recomendado tem só 3 passos. Os nomes técnicos já vêm preenchidos e ficam escondidos no modo avançado."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setInfraEditing(false);setInfraMessage("");setSetupAdvanced(false);}} aria-label="Fechar">×</button></div>
 
-            <div className="setupProgress">
-              <div className={health?.coreConfigured ? "done" : "current"}><b>1</b><span>Vercel BFF</span></div>
-              <div className={health?.core.d1 === "ok" ? "done" : "current"}><b>2</b><span>D1</span></div>
-              <div className={health?.core.r2 === "ok" ? "done" : "current"}><b>3</b><span>R2</span></div>
-              <div className={health?.core.queue === "ok" ? "done" : "current"}><b>4</b><span>Queue</span></div>
-              <div className={health?.core.ok ? "done" : "current"}><b>5</b><span>Teste</span></div>
+            <div className="quickSetupStatus">
+              <div className={health?.coreConfigured ? "done" : "current"}><b>1</b><span>Cloudflare Core</span><small>{health?.coreConfigured ? "BFF já aponta para o Core" : "Instalar recursos e Worker"}</small></div>
+              <div className={health?.core.ok ? "done" : health?.coreConfigured ? "current" : "waiting"}><b>2</b><span>Conectar Vercel</span><small>{health?.core.ok ? "Core respondeu com D1 + R2 + Queue" : "Adicionar apenas 2 variáveis"}</small></div>
+              <div className={health?.core.ok && infraProfile ? "done" : "waiting"}><b>3</b><span>Verificar e travar</span><small>{infraProfile ? `LOCKED · revisão ${infraProfile.revision}` : "Salvar uma única vez"}</small></div>
             </div>
 
-            <div className="persistBox">
-              <div className="persistHead"><div><span>MANIFESTO PERSISTENTE</span><strong>{infraProfile ? `🔒 LOCKED · REV ${infraProfile.revision}` : "NÃO INICIALIZADO"}</strong></div>{infraProfile && !infraEditing && <button className="secondary" onClick={() => setInfraEditing(true)}>Alterar configuração</button>}</div>
-              <div className="infraFields">
-                {([
-                  ["bffProjectName","Projeto Vercel"],["workerName","Worker"],["d1DatabaseName","D1"],["r2BucketName","R2 bucket"],["queueName","Queue"],["dlqName","DLQ"]
-                ] as Array<[keyof InfrastructureDraft,string]>).map(([field,label])=><label key={field}><span>{label}</span>{infraEditing || !infraProfile ? <input value={infraDraft[field]} onChange={(event:ChangeEvent<HTMLInputElement>)=>updateInfraDraft(field,event.target.value)} /> : <code>{infraDraft[field]}</code>}</label>)}
-              </div>
-              {(infraEditing || !infraProfile) && <div className="persistActions"><span>Esses valores só mudam quando você salvar explicitamente. Secrets não entram aqui.</span>{infraProfile && <button className="secondary" onClick={()=>{setInfraEditing(false);setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});setInfraMessage("");}}>Cancelar</button>}<button className="primary" disabled={infraSaving || !health?.coreConfigured} onClick={saveInfrastructureProfile}>{infraSaving ? "Salvando…" : infraProfile ? "Salvar nova revisão" : "Salvar e travar configuração"}</button></div>}
-              {infraMessage && <div className="infraMessage">{infraMessage}</div>}
+            {!infraProfile && <div className="quickSetupGrid">
+              <article className="quickSetupCard"><header><span>PASSO 1</span><strong>Instalar Cloudflare Core</strong></header><p>O instalador cria/verifica D1, Queue e DLQ, usa o bucket existente <b>corvoquiz-prod</b>, gera as chaves e publica o Worker. Se o arquivo <code>CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql</code> estiver ao lado do projeto, ele também restaura o catálogo automaticamente.</p><div className="commandBox"><code>npm run setup:cloudflare</code><button className="secondary" onClick={copyQuickSetupCommand}>{setupCommandCopied ? "✓ Copiado" : "Copiar comando"}</button></div><small>Você faz login no Cloudflare pelo Wrangler. Nenhuma Access Key do R2 entra na Library.</small></article>
+              <article className="quickSetupCard"><header><span>PASSO 2</span><strong>Adicionar 2 variáveis na Vercel</strong></header><p>No final, o instalador imprime exatamente estes dois valores. Coloque-os uma única vez no projeto Vercel e faça um redeploy.</p><div className="envPair"><code>CORVO_CORE_URL=https://...workers.dev</code><code>CORVO_INTERNAL_KEY=...</code></div><small>Essas variáveis ficam persistidas na Vercel e sobrevivem às próximas atualizações.</small></article>
+            </div>}
+
+            {infraProfile && <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId}</small></div><button className="secondary" onClick={()=>{setSetupAdvanced(true);setInfraEditing(true);}}>Alterar configuração</button></div>}
+
+            <div className="bindingSummary">
+              <div className={health?.core.d1 === "ok" ? "ok" : "pending"}><b>D1</b><span>{infraProfile?.d1DatabaseName || defaultInfrastructureDraft.d1DatabaseName}</span><em>{health?.core.d1 || "aguardando"}</em></div>
+              <div className={health?.core.r2 === "ok" ? "ok" : "pending"}><b>R2</b><span>{infraProfile?.r2BucketName || defaultInfrastructureDraft.r2BucketName}</span><em>{health?.core.r2 || "aguardando"}</em></div>
+              <div className={health?.core.queue === "ok" ? "ok" : "pending"}><b>QUEUE</b><span>{infraProfile?.queueName || defaultInfrastructureDraft.queueName}</span><em>{health?.core.queue || "aguardando"}</em></div>
+              <div className={health?.core.signing === "ok" ? "ok" : "pending"}><b>SECRETS</b><span>Worker / Vercel</span><em>{health?.core.signing || (health?.coreConfigured ? "parcial" : "aguardando")}</em></div>
             </div>
 
-            <div className="setupSteps">
-              <article><header><b>1. Vercel</b><em className={health?.coreConfigured ? "okState" : "waitState"}>{health?.coreConfigured ? "CONFIGURADO" : "PENDENTE"}</em></header><p>No projeto <strong>corvo-library-v2</strong>, adicione:</p><code>CORVO_CORE_URL=https://&lt;worker&gt;.workers.dev</code><code>CORVO_INTERNAL_KEY=&lt;chave-compartilhada&gt;</code></article>
-              <article><header><b>2. Cloudflare Worker</b><em className={health?.core.signing === "ok" ? "okState" : "waitState"}>{health?.core.signing === "ok" ? "CONFIGURADO" : "PENDENTE"}</em></header><p>Configure secrets somente no Worker:</p><code>CORVO_INTERNAL_KEY=&lt;mesma-chave-do-BFF&gt;</code><code>CORVO_SIGNING_KEY=&lt;chave-exclusiva-do-worker&gt;</code></article>
-              <article><header><b>3. Bindings nativos</b><em className={health?.core.d1 === "ok" && health?.core.r2 === "ok" && health?.core.queue === "ok" ? "okState" : "waitState"}>{health?.core.d1 === "ok" && health?.core.r2 === "ok" && health?.core.queue === "ok" ? "OK" : "PENDENTE"}</em></header><div className="miniBindings"><span><b>DB</b>D1 Corvo Library · {health?.core.d1 || "unknown"}</span><span><b>MEDIA</b>R2 corvoquiz-prod · {health?.core.r2 || "unknown"}</span><span><b>MATERIALIZE_QUEUE</b>FAST PUSH · {health?.core.queue || "unknown"}</span><span><b>MATERIALIZE_DLQ</b>fila de falhas</span></div></article>
-              <article><header><b>4. Banco</b><em className={health?.core.schema === "ok" ? "okState" : "waitState"}>{health?.core.schema === "ok" ? "SCHEMA OK" : "AGUARDANDO"}</em></header><p>Restaure a base histórica uma única vez e aplique as migrations <code>v2_*</code>. Depois disso os deploys não recriam nem convertem o catálogo.</p></article>
+            <div className="quickFinal">
+              <div><span>ESTADO</span><strong className={health?.core.ok && infraProfile ? "okState" : "waitState"}>{health?.core.ok && infraProfile ? "PRONTO E CRAVADO" : health?.core.ok ? "CORE ONLINE · FALTA TRAVAR" : coreState}</strong><small>{infraMessage || health?.core.error || (infraProfile ? "Nada muda até você clicar em Alterar configuração." : "Depois dos 2 passos acima, toque em Verificar e travar.")}</small></div>
+              <button className="primary finalButton" disabled={setupBusy} onClick={verifyAndLockInfrastructure}>{setupBusy ? "Verificando…" : infraProfile ? "Verificar agora" : "Verificar e travar"}</button>
             </div>
 
-            <div className="setupResult"><div><span>ESTADO ATUAL</span><strong className={health?.core.ok && infraProfile ? "okState" : "waitState"}>{health?.core.ok && infraProfile ? "CONFIGURAÇÃO CRAVADA E ONLINE" : health?.core.ok ? "CORE ONLINE · SALVE O MANIFESTO" : coreState}</strong><small>{health?.core.error || (infraProfile ? `Instância ${infraProfile.instanceId} · revisão ${infraProfile.revision}` : "Finalize os passos e salve a configuração uma única vez.")}</small></div><div className="setupActions"><button className="secondary" onClick={copyInfrastructureChecklist}>{setupCopied ? "✓ Copiado" : "Copiar checklist"}</button><button className="primary" disabled={setupBusy || !infraProfile} onClick={recheckInfrastructure}>{setupBusy ? "Verificando…" : "Verificar agora"}</button></div></div>
+            <button className="advancedToggle" onClick={()=>setSetupAdvanced(value=>!value)}>{setupAdvanced ? "Ocultar opções avançadas" : "Mostrar opções avançadas"}</button>
+            {setupAdvanced && <div className="persistBox advancedBox">
+              <div className="persistHead"><div><span>RECURSOS FIXOS</span><strong>{infraProfile ? `REV ${infraProfile.revision}` : "PADRÕES RECOMENDADOS"}</strong></div></div>
+              <div className="infraFields">{([
+                ["bffProjectName","Projeto Vercel"],["workerName","Worker"],["d1DatabaseName","D1"],["r2BucketName","R2 bucket"],["queueName","Queue"],["dlqName","DLQ"]
+              ] as Array<[keyof InfrastructureDraft,string]>).map(([field,label])=><label key={field}><span>{label}</span><input disabled={Boolean(infraProfile) && !infraEditing} value={infraDraft[field]} onChange={(event:ChangeEvent<HTMLInputElement>)=>updateInfraDraft(field,event.target.value)} /></label>)}</div>
+              {infraProfile && infraEditing && <div className="persistActions"><span>Uma alteração explícita cria uma nova revisão. Atualizações normais nunca passam por aqui.</span><button className="secondary" onClick={()=>{setInfraEditing(false);setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});setInfraMessage("");}}>Cancelar</button><button className="primary" disabled={infraSaving || !health?.core.ok} onClick={saveInfrastructureProfile}>{infraSaving ? "Salvando…" : "Salvar nova revisão"}</button></div>}
+              <div className="advancedHelp"><button className="secondary" onClick={copyInfrastructureChecklist}>{setupCopied ? "✓ Checklist copiado" : "Copiar checklist técnico"}</button></div>
+            </div>}
           </div>
         </div>}
 
