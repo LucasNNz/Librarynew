@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "corvo-core-v2",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "corvo-library-v2",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "corvoquiz-prod"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "MATERIALIZE_QUEUE",
+        "queue": "corvo-materialize-v2"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "corvo-materialize-v2",
+        "max_batch_size": 20,
+        "max_batch_timeout": 3,
+        "max_retries": 5,
+        "dead_letter_queue": "corvo-materialize-v2-dlq"
+      }
+    ]
+  }
+}

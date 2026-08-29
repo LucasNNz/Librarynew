@@ -1,0 +1,143 @@
+export type AssetStatus = "APPROVED" | "PENDING" | "REJECTED" | string;
+
+export type Asset = {
+  id: string;
+  name: string;
+  universe: string;
+  subject?: string | null;
+  kind: string;
+  status: AssetStatus;
+  rawStatus?: string;
+  tags: string[];
+  uses: number;
+  mimeType: string | null;
+  sizeBytes?: number;
+  r2Key: string;
+  previewUrl?: string | null;
+  qaStatus?: string;
+  lastUsedAt?: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CatalogResponse = {
+  items: Asset[];
+  total: number;
+  nextCursor?: string | null;
+};
+
+export type CatalogStats = {
+  total: number;
+  approved: number;
+  pending: number;
+  rejected: number;
+  universes: number;
+  bytes: number;
+  uses: number;
+};
+
+export type UniverseFacet = {
+  name: string;
+  total: number;
+  approved: number;
+  pending: number;
+  rejected: number;
+};
+
+export type Candidate = {
+  id: string;
+  operationId: string;
+  sourceUrl: string;
+  projectId?: string | null;
+  itemId?: string | null;
+  universe: string;
+  subject: string;
+  tags: string[];
+  status: string;
+  r2Key?: string | null;
+  previewUrl?: string | null;
+  mimeType?: string | null;
+  sizeBytes: number;
+  failureReason?: string | null;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FastPushRequest = {
+  urls: Array<{
+    url: string;
+    projectId?: string;
+    itemId?: string;
+    universe?: string;
+    subject?: string;
+    tags?: string[];
+  }>;
+};
+
+export type FastPushResponse = {
+  accepted: number;
+  operationId: string;
+  status: "QUEUED";
+};
+
+export type Operation = {
+  id: string;
+  type: string;
+  status: "QUEUED" | "PROCESSING" | "COMPLETED" | "COMPLETED_WITH_ERRORS" | "FAILED";
+  requested: number;
+  succeeded: number;
+  failed: number;
+  createdAt: string;
+  updatedAt: string;
+  error?: string | null;
+};
+
+export type LibraryRequest = {
+  id: string;
+  project: string;
+  raw_items: string;
+  item_count: number;
+  status: string;
+  created_at: number;
+};
+
+export type Batch = {
+  id: string;
+  name: string;
+  project?: string | null;
+  status: string;
+  manifest_text?: string | null;
+  created_at: number;
+  updated_at: number;
+  assets?: Array<Record<string, unknown>>;
+};
+
+export type ImportRecord = {
+  id: string;
+  file_name: string;
+  r2_key: string;
+  size_bytes: number;
+  status: string;
+  created_at: number;
+  manifest_text?: string | null;
+  warnings: string;
+};
+
+export type AutomaticProject = {
+  id: string;
+  name: string;
+  status: string;
+  pipeline_status?: string | null;
+  next_action?: string | null;
+  project_domain?: string | null;
+  queue_priority?: number;
+  state_version?: number;
+  total_items?: number;
+  approved_count?: number;
+  pending_count?: number;
+  failed_count?: number;
+  created_at: number;
+  updated_at: number;
+  completed_at?: number | null;
+};

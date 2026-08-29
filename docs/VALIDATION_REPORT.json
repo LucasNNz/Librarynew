@@ -1,0 +1,47 @@
+{
+  "version": "0.3.0",
+  "source_validation": {
+    "typescript_files_syntax_checked": 40,
+    "syntax_errors": 0,
+    "relative_imports_checked": 56,
+    "missing_relative_imports": 0,
+    "runtime_legacy_dependency_hits": 0
+  },
+  "d1_restore": {
+    "tables": 50,
+    "assets_total": 929,
+    "asset_statuses": {
+      "Aprovado": 849,
+      "Pendente": 77,
+      "Rejeitado": 3
+    },
+    "approved_universes": 174,
+    "all_universes": 175,
+    "asset_usage": 1176,
+    "settings_total": 39,
+    "removed_secret_settings": 0,
+    "v2_tables": 3,
+    "v2_schema_version": "2.0.0",
+    "assets_missing_r2_key": 0,
+    "unique_r2_keys": 921,
+    "duplicate_r2_key_groups": 8
+  },
+  "safe_dump": {
+    "removed_secret_settings": 3,
+    "removed_transaction_wrappers": 2,
+    "retained_sanitized_markers": 11,
+    "bytes": 24947407,
+    "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5"
+  },
+  "mcp": {
+    "historical_tools": 229,
+    "implemented_same_name": 40,
+    "substituted_by_architecture": 2,
+    "planned": 187
+  },
+  "build": {
+    "npm_install": "BLOCKED_NETWORK_TIMEOUT",
+    "full_next_build": "NOT_RUN",
+    "full_worker_typecheck": "NOT_RUN"
+  }
+}

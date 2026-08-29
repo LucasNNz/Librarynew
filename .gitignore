@@ -1,0 +1,10 @@
+node_modules
+.next
+.env
+.env.local
+.vercel
+.DS_Store
+# Local migration artifacts — never commit production data
+CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql
+*.sqlite
+*.sqlite3
