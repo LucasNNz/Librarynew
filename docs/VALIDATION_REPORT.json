@@ -1,7 +1,7 @@
 {
-  "checkpoint": "0.12.1",
+  "checkpoint": "0.12.2",
   "validation": "PASS",
-  "duration_seconds": 3.985,
+  "duration_seconds": 3.39,
   "restore": {
     "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
     "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",
@@ -99,6 +99,7 @@
     "secret_like_columns": []
   },
   "worker_bundle_build": {
+    "generated_bundle_exports_widened": true,
     "platform_browser_disabled": true,
     "platform_neutral": true,
     "node_builtins_externalized": true,

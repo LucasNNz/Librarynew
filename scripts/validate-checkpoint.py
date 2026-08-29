@@ -176,7 +176,14 @@ def worker_bundle_build_checks():
     text = path.read_text("utf8")
     wrangler = (ROOT / "cloudflare" / "wrangler.jsonc.example").read_text("utf8")
     deploy = (ROOT / "lib" / "cloudflare-control.ts").read_text("utf8")
+    generated = (ROOT / "lib" / "generated-core-bundle.ts").read_text("utf8")
     return {
+        "generated_bundle_exports_widened": (
+            'CORE_WORKER_BUNDLE_VERSION: string' in text
+            and 'CORE_WORKER_BUNDLE: string' in text
+            and 'CORE_WORKER_BUNDLE_VERSION: string' in generated
+            and 'CORE_WORKER_BUNDLE: string' in generated
+        ),
         "platform_browser_disabled": 'platform: "browser"' not in text,
         "platform_neutral": 'platform: "neutral"' in text,
         "node_builtins_externalized": re.search(r'external\s*:\s*\[\s*["\']node:\*["\']\s*\]', text) is not None,
@@ -284,6 +291,7 @@ def main():
         if mcp["duplicates"] or mcp["missing_implemented"] or mcp["incorrectly_registered_substitutes"]: errors.append("MCP registration contract mismatch")
 
         worker_bundle = worker_bundle_build_checks()
+        if not worker_bundle["generated_bundle_exports_widened"]: errors.append("Generated Core bundle exports must be widened to string to survive post-prebuild TypeScript checks")
         if not worker_bundle["platform_browser_disabled"]: errors.append("Worker prebuild still uses browser platform")
         if not worker_bundle["platform_neutral"]: errors.append("Worker prebuild must use neutral platform")
         if not worker_bundle["node_builtins_externalized"]: errors.append("Worker prebuild must externalize node:* runtime imports")
