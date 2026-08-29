@@ -3,7 +3,16 @@ export interface Env {
   MEDIA: R2Bucket;
   MATERIALIZE_QUEUE: Queue<CorvoQueueJob>;
   CORVO_INTERNAL_KEY: string;
+  CORVO_APP_KEY: string;
   CORVO_SIGNING_KEY: string;
+  CLOUDFLARE_CONTROL_TOKEN?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CORVO_WORKER_NAME?: string;
+  CORVO_D1_DATABASE_ID?: string;
+  CORVO_R2_BUCKET_NAME?: string;
+  CORVO_QUEUE_NAME?: string;
+  CORVO_DLQ_NAME?: string;
+  CORVO_APP_ORIGIN?: string;
 }
 
 export type MaterializeJob = {

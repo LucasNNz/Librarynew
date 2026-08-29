@@ -27,6 +27,7 @@ import { importZipByUrl, prepareZipUpload, processZipImport, syncR2Uncataloged }
 import { addCandidatesToMaterializationItem, addMaterializationItems, assetsForQa, cancelMaterializationBatch, cleanMaterializationTemporaries, createContinuousMaterializationQueue, getMaterializationBatchStatus, getMaterializationItemStatus, materializeBatchCompat, registerMaterializationQa } from "./core/materialization-compat";
 import { getAssetExportLink, processAssetExportJob, queueAssetExport, serveAssetExport } from "./core/asset-exports";
 import { dataHealth } from "./core/data-health";
+import { selfUpdateCore } from "./core/control-plane";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
@@ -46,6 +47,8 @@ async function health(env: Env) {
     r2 = "error";
   }
   const signing: "ok" | "error" = env.CORVO_SIGNING_KEY ? "ok" : "error";
+  const appAuth: "ok" | "error" = env.CORVO_APP_KEY ? "ok" : "error";
+  const control: "ok" | "error" = env.CLOUDFLARE_CONTROL_TOKEN ? "ok" : "error";
   let queueBacklog: number | null = null;
   try {
     const metrics = await env.MATERIALIZE_QUEUE.metrics();
@@ -54,7 +57,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok", service: "corvo-core", version: "0.11.0", d1, r2, schema, queue: "ok" as const, signing, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.12.0", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -88,6 +91,7 @@ export default {
 
     let response: Response;
     if (url.pathname === "/health" && request.method === "GET") response = json(await health(env));
+    else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
     else if (url.pathname === "/data-health" && request.method === "GET") response = json(await dataHealth(env));
     else if (url.pathname === "/assets" && request.method === "GET") response = json(await listAssets(request, env));
     else if (url.pathname === "/assets" && request.method === "POST") {

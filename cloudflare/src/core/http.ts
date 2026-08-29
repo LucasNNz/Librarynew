@@ -13,7 +13,7 @@ export function corsHeaders(request: Request) {
   const origin = request.headers.get("origin") || "";
   return {
     "access-control-allow-origin": origin || "*",
-    "access-control-allow-headers": "content-type,x-corvo-internal-key,authorization",
+    "access-control-allow-headers": "content-type,x-corvo-internal-key,x-corvo-app-key,authorization",
     "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
   };
 }

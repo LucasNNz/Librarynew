@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, collections, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
+import argparse, collections, gzip, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASELINE_PATH = ROOT / "docs" / "HISTORICAL_INTEGRITY_BASELINE.json"
@@ -16,7 +16,7 @@ EXPECTED = {
     "all_universes": 175,
     "asset_usage": 1176,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.6.0",
+    "schema_version": "2.7.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
@@ -134,6 +134,42 @@ def run_tsc(config: pathlib.Path):
     return {"status": "PASS" if proc.returncode == 0 else "FAIL", "returncode": proc.returncode, "output": (proc.stdout + proc.stderr).strip()[-12000:]}
 
 
+def self_sufficient_checks(restore: pathlib.Path):
+    page = (ROOT / "app" / "page.tsx").read_text("utf8")
+    core_client = (ROOT / "lib" / "core-client.ts").read_text("utf8")
+    browser = (ROOT / "lib" / "browser-connection.ts").read_text("utf8")
+    provision = (ROOT / "app" / "api" / "setup" / "cloudflare" / "provision" / "route.ts").read_text("utf8")
+    worker_control = (ROOT / "cloudflare" / "src" / "core" / "control-plane.ts").read_text("utf8")
+    package = json.loads((ROOT / "package.json").read_text("utf8"))
+    gzip_path = ROOT / "bootstrap" / "CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql.gz"
+    gzip_matches_restore = False
+    gzip_sha256 = None
+    if gzip_path.exists():
+        raw = gzip.decompress(gzip_path.read_bytes())
+        gzip_sha256 = hashlib.sha256(raw).hexdigest()
+        gzip_matches_restore = raw == restore.read_bytes()
+    forbidden_ui = [
+        "npm run setup:cloudflare", "Adicionar 2 variáveis", "Conectar Vercel",
+        "Projeto Vercel", "CORVO_CORE_URL=https://"
+    ]
+    ui_hits = [value for value in forbidden_ui if value.lower() in page.lower()]
+    package_setup_script = any("setup:cloudflare" in key or "setup-cloudflare" in str(value) for key,value in package.get("scripts",{}).items())
+    return {
+        "embedded_restore_exists": gzip_path.exists(),
+        "embedded_restore_matches_input": gzip_matches_restore,
+        "embedded_restore_sha256": gzip_sha256,
+        "manual_setup_ui_hits": ui_hits,
+        "manual_setup_package_script": package_setup_script,
+        "hosting_env_dependency": "process.env" in core_client or "CORVO_CORE_URL" in core_client,
+        "browser_stores_cloudflare_token": "cloudflareToken" in browser or "CLOUDFLARE_CONTROL_TOKEN" in browser,
+        "provision_moves_control_token_to_worker_secret": 'type: "secret_text", name: "CLOUDFLARE_CONTROL_TOKEN"' in (ROOT / "lib" / "cloudflare-control.ts").read_text("utf8"),
+        "worker_has_self_update": "selfUpdateCore" in worker_control and "/api/setup/core-bundle" in worker_control,
+        "core_bundle_endpoint_exists": (ROOT / "app" / "api" / "setup" / "core-bundle" / "route.ts").exists(),
+        "migration_registry_exists": (ROOT / "cloudflare" / "migrations" / "9007_v2_migration_registry.sql").exists(),
+        "setup_route_exists": "CLOUDFLARE_API_TOKEN_REQUIRED" in provision,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("restore_sql", help="Caminho para CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql")
@@ -231,6 +267,18 @@ def main():
         if set(mcp["extras"]) != EXPECTED_EXTRA_TOOLS: errors.append(f"unexpected MCP extras: {mcp['extras']}")
         if mcp["duplicates"] or mcp["missing_implemented"] or mcp["incorrectly_registered_substitutes"]: errors.append("MCP registration contract mismatch")
 
+        self_sufficient = self_sufficient_checks(restore)
+        if not self_sufficient["embedded_restore_exists"]: errors.append("embedded D1 bootstrap is missing")
+        if not self_sufficient["embedded_restore_matches_input"]: errors.append("embedded D1 bootstrap differs from validated restore")
+        if self_sufficient["manual_setup_ui_hits"]: errors.append(f"manual/PC setup instructions remain in UI: {self_sufficient['manual_setup_ui_hits']}")
+        if self_sufficient["manual_setup_package_script"]: errors.append("manual Cloudflare setup script remains a user-facing package script")
+        if self_sufficient["hosting_env_dependency"]: errors.append("runtime still depends on hosting environment variables for Core connection")
+        if self_sufficient["browser_stores_cloudflare_token"]: errors.append("browser connection layer stores Cloudflare control token")
+        if not self_sufficient["provision_moves_control_token_to_worker_secret"]: errors.append("Cloudflare control token is not persisted as a Worker secret")
+        if not self_sufficient["worker_has_self_update"]: errors.append("Worker self-update control plane missing")
+        if not self_sufficient["core_bundle_endpoint_exists"]: errors.append("Core bundle endpoint missing")
+        if not self_sufficient["migration_registry_exists"]: errors.append("web-managed migration registry missing")
+
         typecheck = {
             "worker_structural": run_tsc(ROOT / "cloudflare" / "tsconfig.validate.json"),
             "frontend_structural": run_tsc(ROOT / "tsconfig.validate.json"),
@@ -250,6 +298,7 @@ def main():
             "historical_integrity": fk,
             "logical_integrity": health,
             "configuration_persistence": config_persistence,
+            "self_sufficient_setup": self_sufficient,
             "mcp": mcp,
             "source": source,
             "typecheck": typecheck,

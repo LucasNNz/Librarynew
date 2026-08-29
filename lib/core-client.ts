@@ -1,6 +1,12 @@
-const coreUrl = () => process.env.CORVO_CORE_URL?.replace(/\/$/, "") || "";
-const internalKey = () => process.env.CORVO_INTERNAL_KEY || "";
-
+/**
+ * Server-side fallback only.
+ *
+ * Corvo Library V2 0.12 intentionally does not depend on hosting Environment
+ * Variables to locate/authenticate the Core. Once configured, the browser
+ * fetch bridge talks directly to the Worker using the persisted app key.
+ * These helpers keep pre-configuration BFF routes deterministic instead of
+ * silently falling back to a hidden provider configuration.
+ */
 export type CoreHealth = {
   ok: boolean;
   service?: string;
@@ -14,35 +20,13 @@ export type CoreHealth = {
 };
 
 export function coreConfigured() {
-  return Boolean(coreUrl() && internalKey());
+  return false;
 }
 
-export async function coreFetch(path: string, init: RequestInit = {}) {
-  if (!coreConfigured()) {
-    throw new Error("CORVO_CORE_NOT_CONFIGURED");
-  }
-
-  const headers = new Headers(init.headers);
-  headers.set("accept", "application/json");
-  headers.set("x-corvo-internal-key", internalKey());
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-
-  const response = await fetch(`${coreUrl()}${path}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-  });
-
-  return response;
+export async function coreFetch(_path: string, _init: RequestInit = {}): Promise<Response> {
+  throw new Error("CORVO_BROWSER_DIRECT_REQUIRED");
 }
 
 export async function getCoreHealth(): Promise<CoreHealth> {
-  if (!coreConfigured()) return { ok: false, d1: "unknown", r2: "unknown", queue: "unknown", error: "NOT_CONFIGURED" };
-  try {
-    const response = await coreFetch("/health");
-    const value = (await response.json()) as CoreHealth;
-    return response.ok ? value : { ...value, ok: false, error: value.error || `HTTP_${response.status}` };
-  } catch (error) {
-    return { ok: false, d1: "unknown", r2: "unknown", queue: "unknown", error: error instanceof Error ? error.message : "UNAVAILABLE" };
-  }
+  return { ok: false, d1: "unknown", r2: "unknown", queue: "unknown", error: "NOT_CONFIGURED_IN_THIS_BROWSER" };
 }

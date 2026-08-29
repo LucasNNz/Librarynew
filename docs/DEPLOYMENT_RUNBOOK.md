@@ -1,113 +1,51 @@
-# Runbook de implantação — Corvo Library V2
+# Runbook — Corvo Library V2 0.12
 
-A implantação é deliberadamente dividida em **Core Cloudflare** e **UI/BFF Vercel**. Nenhuma credencial R2 é copiada para o app.
+## Para o usuário final
 
-## 1. Gates locais obrigatórios
+A implantação da infraestrutura operacional não exige CLI local. Depois que o frontend estiver publicado, abra **Configurações** e execute o assistente autossuficiente com um Cloudflare API Token. D1, R2, Queue, DLQ, Worker, restore e manifesto são tratados pelo próprio app.
+
+O frontend não depende de `CORVO_CORE_URL` ou chaves configuradas manualmente na hospedagem.
+
+## Para desenvolvimento/CI
+
+Antes de publicar uma nova versão do código, mantenha os gates de engenharia:
 
 ```bash
-# na raiz
 python scripts/validate-checkpoint.py /caminho/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql
-
-# com dependências instaladas
 npm ci
 npm run build
-cd cloudflare
-npm ci
-npm run typecheck
 ```
 
-O gate Python separa inconsistências históricas preservadas de regressões V2. O build Next.js e o typecheck com os tipos reais de Wrangler continuam obrigatórios antes do corte.
+O `prebuild` gera um bundle autocontido do Corvo Core dentro do artefato do frontend. Esse bundle é usado tanto na primeira configuração quanto nas atualizações do Core.
 
-## 2. Provisionar Cloudflare
+## Primeira instalação pelo app
 
-```bash
-cd cloudflare
-npx wrangler whoami
-npx wrangler d1 create corvo-library-v2
-npx wrangler queues create corvo-materialize-v2
-npx wrangler queues create corvo-materialize-v2-dlq
-```
+O endpoint same-origin de setup usa o token fornecido temporariamente pelo usuário para chamar a API oficial da Cloudflare e:
 
-Obtenha o UUID de `corvo-library-v2` e, a partir da raiz:
+1. localizar/criar D1;
+2. verificar `corvoquiz-prod`;
+3. localizar/criar Queue + DLQ;
+4. publicar Worker com bindings `DB`, `MEDIA`, `MATERIALIZE_QUEUE`;
+5. guardar chaves e token como Worker secrets;
+6. importar o bootstrap D1 se necessário;
+7. habilitar o domínio `workers.dev` do Core;
+8. salvar a conexão no navegador e o manifesto não secreto no D1.
 
-```bash
-node scripts/render-wrangler.mjs <D1_DATABASE_ID>
-```
+## Atualização do Core
 
-O arquivo gerado vincula:
+A partir da primeira configuração o token de controle já vive no Worker. Uma nova versão do frontend pode solicitar `/control/update-core`; o Worker busca o bundle somente da origem do app gravada em `CORVO_APP_ORIGIN` e reaplica o próprio script preservando os mesmos D1/R2/Queue e secrets.
 
-- `DB` → D1 `corvo-library-v2`
-- `MEDIA` → bucket existente `corvoquiz-prod`
-- `MATERIALIZE_QUEUE` → `corvo-materialize-v2`
-- DLQ → `corvo-materialize-v2-dlq`
+Se o token Cloudflare for revogado, o Core continua operando normalmente para catálogo/R2/Queue; apenas operações administrativas de reconfiguração/auto-update exigirão informar um token novo.
 
-## 3. Secrets do Worker
+## Corte de produção
 
-Gere **duas chaves diferentes**. `CORVO_INTERNAL_KEY` autentica Vercel/MCP → Worker; `CORVO_SIGNING_KEY` existe somente no Worker e assina URLs temporárias.
+Antes de substituir a Library antiga valide:
 
-```bash
-cd cloudflare
-npx wrangler secret put CORVO_INTERNAL_KEY
-npx wrangler secret put CORVO_SIGNING_KEY
-```
-
-Nunca grave essas chaves em D1, Git ou no frontend.
-
-## 4. Restaurar D1
-
-Primeiro carregue o dump histórico sanitizado preparado pelo gate:
-
-```bash
-cd cloudflare
-npx wrangler d1 execute corvo-library-v2 --remote --file /caminho/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql --config wrangler.jsonc
-```
-
-Depois aplique apenas as migrations aditivas V2:
-
-```bash
-npx wrangler d1 migrations apply corvo-library-v2 --remote --config wrangler.jsonc
-```
-
-Nenhuma migration V2 converte ou recria as 47 tabelas históricas.
-
-## 5. Publicar Core e validar
-
-```bash
-npm run deploy
-```
-
-Verifique `/health` e `/data-health` usando `x-corvo-internal-key`. O corte só pode seguir quando:
-
-- D1 = `ok`
-- R2 = `ok`
-- schema = `ok`
-- signing = `ok`
-- `v2Orphans = 0`
-- assets sem `r2_key = 0`
-
-As orfandades históricas registradas em `HISTORICAL_INTEGRITY_BASELINE.json` não são apagadas; dispatcher e Supervisor V2 ignoram essas linhas.
-
-## 6. Vercel separado
-
-Projeto: `corvo-library-v2`.
-
-Variáveis **server-side**:
-
-```env
-CORVO_CORE_URL=https://<corvo-core-v2>.workers.dev
-CORVO_INTERNAL_KEY=<mesma-chave-interna-do-worker>
-```
-
-`CORVO_SIGNING_KEY` **não** vai para a Vercel.
-
-Publique Preview primeiro, valide Catálogo → R2 → FAST PUSH → Inbox → aprovação → download e somente então promova para Production.
-
-## 7. Teste de redeploy
-
-Após o primeiro PASS de produção:
-
-1. faça um novo deploy do frontend sem alterar Cloudflare;
-2. confirme que catálogo/imagens continuam disponíveis;
-3. faça um novo deploy do Worker sem alterar bindings;
-4. confirme novamente `/health`, `/data-health` e FAST PUSH;
-5. confirme que nenhuma tela pede Account ID/Access Key/Secret do R2.
+- `/health`: D1, R2, schema, appAuth, signing e control;
+- `/data-health`: zero órfãos V2;
+- catálogo real e imagens;
+- FAST PUSH → Queue → R2 → Inbox;
+- aprovação e download;
+- pacote final/ZIP;
+- redeploy do frontend sem reconfiguração;
+- atualização do Core sem reset de D1/R2/Queue.

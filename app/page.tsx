@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, UniverseFacet } from "../lib/contracts";
+import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
 type Health = {
   app: "ok";
   architecture: "CLOUDFLARE_CORE";
   coreConfigured: boolean;
-  core: { ok: boolean; d1?: string; r2?: string; schema?: string; queue?: string; signing?: string; queueBacklog?: number | null; error?: string };
+  core: { ok: boolean; version?: string; d1?: string; r2?: string; schema?: string; queue?: string; signing?: string; appAuth?: string; control?: string; queueBacklog?: number | null; error?: string };
 };
 
 type InfrastructureProfile = {
@@ -39,6 +40,7 @@ const defaultInfrastructureDraft: InfrastructureDraft = {
 };
 
 const nav = ["Catálogo", "Projetos", "Solicitações", "Lotes", "Importações", "Coleta automática", "Operação", "Políticas", "Estoque & giro", "Inbox candidatas", "Pendentes", "Rejeitados", "Configurações"];
+const EXPECTED_CORE_VERSION = "0.12.0";
 
 function Mark() {
   return <span className="mark" aria-hidden="true"><i /></span>;
@@ -113,7 +115,6 @@ export default function Home() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupCopied, setSetupCopied] = useState(false);
-  const [setupCommandCopied, setSetupCommandCopied] = useState(false);
   const [setupAdvanced, setSetupAdvanced] = useState(false);
   const [infraProfile, setInfraProfile] = useState<InfrastructureProfile | null>(null);
   const [infraEvents, setInfraEvents] = useState<Array<Record<string,unknown>>>([]);
@@ -121,10 +122,23 @@ export default function Home() {
   const [infraDraft, setInfraDraft] = useState<InfrastructureDraft>(defaultInfrastructureDraft);
   const [infraMessage, setInfraMessage] = useState("");
   const [infraSaving, setInfraSaving] = useState(false);
+  const [localConnection, setLocalConnection] = useState<BrowserConnection | null>(null);
+  const [cloudflareToken, setCloudflareToken] = useState("");
+  const [cloudflareAccountId, setCloudflareAccountId] = useState("");
+  const [cloudflareAccounts, setCloudflareAccounts] = useState<Array<{id:string;name:string}>>([]);
+  const [autoSetupStage, setAutoSetupStage] = useState("");
+  const [autoSetupBusy, setAutoSetupBusy] = useState(false);
+  const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
 
   const refreshHealth = useCallback(async () => {
     const response = await fetch("/api/health", { cache:"no-store" });
-    setHealth(await response.json());
+    const value = await response.json();
+    if (value && value.app === "ok" && value.core) {
+      setHealth(value as Health);
+      return;
+    }
+    const connected = Boolean(readBrowserConnection());
+    setHealth({ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:connected, core:{ ...value, ok:Boolean(value?.ok) } });
   }, []);
 
   const refreshStats = useCallback(async () => {
@@ -249,6 +263,12 @@ export default function Home() {
   }, [candidateState]);
 
   useEffect(() => {
+    const dispose = installCorvoFetchBridge();
+    setLocalConnection(readBrowserConnection());
+    return dispose;
+  }, []);
+
+  useEffect(() => {
     void Promise.all([refreshHealth(), refreshStats()]);
   }, [refreshHealth, refreshStats]);
 
@@ -352,7 +372,11 @@ export default function Home() {
   function openInfrastructureSetup(edit = false) {
     setInfraMessage("");
     setInfraEditing(edit || !infraProfile);
-    setSetupAdvanced(Boolean(edit && infraProfile));
+    setSetupAdvanced(false);
+    setCloudflareToken("");
+    setCloudflareAccounts([]);
+    setCloudflareAccountId(localConnection?.accountId || "");
+    setAutoSetupStage("");
     if (infraProfile) setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});
     setSetupOpen(true);
   }
@@ -387,15 +411,105 @@ export default function Home() {
     }
   }
 
-  async function copyQuickSetupCommand() {
-    const command = "npm run setup:cloudflare";
+  async function runAutomaticSetup() {
+    if (!cloudflareToken.trim()) { setInfraMessage("Cole o API Token da Cloudflare."); return; }
+    setAutoSetupBusy(true); setInfraMessage("");
     try {
-      await navigator.clipboard.writeText(command);
-      setSetupCommandCopied(true);
-      setTimeout(() => setSetupCommandCopied(false), 1800);
-    } catch {
-      setSetupCommandCopied(false);
-    }
+      setAutoSetupStage("Conectando à Cloudflare…");
+      const provisionResponse = await fetch("/api/setup/cloudflare/provision", {
+        method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ apiToken:cloudflareToken.trim(), accountId:cloudflareAccountId || undefined, workerName:infraDraft.workerName, d1DatabaseName:infraDraft.d1DatabaseName, r2BucketName:infraDraft.r2BucketName, queueName:infraDraft.queueName, dlqName:infraDraft.dlqName }),
+      });
+      const provision = await provisionResponse.json();
+      if (provisionResponse.status === 409 && provision.error === "ACCOUNT_SELECTION_REQUIRED") {
+        setCloudflareAccounts(Array.isArray(provision.accounts) ? provision.accounts : []);
+        setAutoSetupStage("Escolha a conta Cloudflare e continue.");
+        return;
+      }
+      if (provisionResponse.status === 409 && provision.error === "ACCOUNT_ID_REQUIRED") {
+        setAutoSetupStage("Informe o Account ID da sua conta Cloudflare e continue.");
+        setInfraMessage("O token é válido para recursos da conta, mas a Cloudflare não permitiu listar automaticamente o Account ID. Copie o Account ID do painel Cloudflare e cole no campo abaixo.");
+        return;
+      }
+      if (!provisionResponse.ok) throw new Error(provision.error || `PROVISION_HTTP_${provisionResponse.status}`);
+      const connection = provision.connection as BrowserConnection;
+      saveBrowserConnection(connection);
+      setLocalConnection(connection);
+      setCloudflareAccountId(connection.accountId);
+      setInfraDraft({ bffProjectName:"corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName });
+
+      setAutoSetupStage("Restaurando e preparando o D1…");
+      const restoreResponse = await fetch("/api/setup/cloudflare/restore", {
+        method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ apiToken:cloudflareToken.trim(), accountId:connection.accountId, databaseId:connection.d1DatabaseId }),
+      });
+      const restore = await restoreResponse.json();
+      if (!restoreResponse.ok) throw new Error(restore.error || `RESTORE_HTTP_${restoreResponse.status}`);
+
+      setAutoSetupStage("Verificando D1, R2, Queue e Worker…");
+      let latest: Health | null = null;
+      for (let attempt=0; attempt<20; attempt+=1) {
+        await new Promise(resolve=>setTimeout(resolve, attempt===0 ? 300 : 1000));
+        const response = await fetch("/api/health", {cache:"no-store"});
+        const raw = await response.json();
+        latest = raw?.app === "ok" ? raw as Health : {app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:{...raw,ok:Boolean(raw?.ok)}};
+        setHealth(latest);
+        if (latest.core.ok) break;
+      }
+      if (!latest?.core.ok) throw new Error(latest?.core.error || "CORE_HEALTH_NOT_READY");
+
+      setAutoSetupStage("Gravando a configuração permanente…");
+      const currentConfigResponse = await fetch("/api/infrastructure/config", {cache:"no-store"});
+      const currentConfig = currentConfigResponse.ok ? await currentConfigResponse.json() : null;
+      if (!currentConfig?.profile) {
+        const lockResponse = await fetch("/api/infrastructure/config", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ bffProjectName:"corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName }) });
+        const locked = await lockResponse.json();
+        if (!lockResponse.ok) throw new Error(locked.error || `LOCK_HTTP_${lockResponse.status}`);
+      } else if (infraProfile && infraEditing) {
+        const changeResponse = await fetch("/api/infrastructure/config", { method:"PATCH", headers:{"content-type":"application/json"}, body:JSON.stringify({ bffProjectName:infraProfile.bffProjectName || "corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName, expectedRevision:infraProfile.revision, confirmChange:true }) });
+        const changed = await changeResponse.json();
+        if (!changeResponse.ok) throw new Error(changed.error || `CHANGE_HTTP_${changeResponse.status}`);
+        setInfraEditing(false);
+      }
+      setCloudflareToken("");
+      setCloudflareAccounts([]);
+      setAutoSetupStage("Pronto. A configuração ficou gravada e travada.");
+      setInfraMessage("Configuração concluída dentro do próprio app. Nenhuma variável manual na hospedagem e nada instalado no computador.");
+      await Promise.all([refreshHealth(),refreshSettings(),refreshStats(),fetchCatalog(null,false)]);
+    } catch(error) {
+      setInfraMessage(error instanceof Error ? error.message : "AUTO_SETUP_FAILED");
+      setAutoSetupStage("A configuração parou neste ponto; nada existente foi apagado.");
+    } finally { setAutoSetupBusy(false); }
+  }
+
+  function forgetBrowserConnection() {
+    clearBrowserConnection();
+    setLocalConnection(null);
+    setHealth(null);
+    setInfraProfile(null);
+    setInfraMessage("Conexão local removida deste navegador. Os recursos Cloudflare não foram apagados.");
+  }
+
+  async function updateCoreFromApp() {
+    setCoreUpdateBusy(true); setInfraMessage("");
+    try {
+      const response = await fetch("/api/control/update-core", { method:"POST" });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error || `CORE_UPDATE_HTTP_${response.status}`);
+      setInfraMessage(`Atualização do Core enviada para ${value.targetVersion || EXPECTED_CORE_VERSION}. Verificando…`);
+      for (let attempt=0; attempt<24; attempt+=1) {
+        await new Promise(resolve=>setTimeout(resolve, attempt===0 ? 800 : 1400));
+        await refreshHealth();
+        const probe = await fetch("/api/health", { cache:"no-store" });
+        if (probe.ok) {
+          const raw = await probe.json();
+          const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+          if (version === EXPECTED_CORE_VERSION) { setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION} sem reconfigurar a infraestrutura.`); break; }
+        }
+      }
+    } catch(error) {
+      setInfraMessage(error instanceof Error ? error.message : "CORE_UPDATE_FAILED");
+    } finally { setCoreUpdateBusy(false); }
   }
 
   async function verifyAndLockInfrastructure() {
@@ -405,7 +519,7 @@ export default function Home() {
       const current = await healthResponse.json() as Health;
       setHealth(current);
       if (!current.core.ok) {
-        setInfraMessage(current.core.error || "O Core ainda não está totalmente conectado. Conclua Cloudflare e as 2 variáveis da Vercel e tente novamente.");
+        setInfraMessage(current.core.error || "O Core ainda não está totalmente conectado. Conclua a configuração automática dentro do app e tente novamente.");
         return;
       }
       if (!infraProfile) {
@@ -423,31 +537,21 @@ export default function Home() {
   }
 
   async function copyInfrastructureChecklist() {
-    const checklist = `CORVO LIBRARY V2 — CONFIGURAÇÃO DE INFRAESTRUTURA
+    const checklist = `CORVO LIBRARY V2 — MODO AUTOSSUFICIENTE
 
-VERCEL
-CORVO_CORE_URL=https://<worker>.workers.dev
-CORVO_INTERNAL_KEY=<mesma chave configurada no Worker>
-
-CLOUDFLARE WORKER — BINDINGS
-DB=D1 da Corvo Library
-MEDIA=R2 bucket corvoquiz-prod
-MATERIALIZE_QUEUE=Queue FAST PUSH
-MATERIALIZE_DLQ=Dead Letter Queue
-
-CLOUDFLARE WORKER — SECRETS
-CORVO_INTERNAL_KEY=<chave compartilhada apenas com o BFF/MCP>
-CORVO_SIGNING_KEY=<chave exclusiva do Worker para URLs temporárias>
-
-Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
+Tudo é configurado pela própria tela Configurações.
+1. Cole um Cloudflare API Token com acesso a Workers, D1, R2 e Queues.
+2. A Library reutiliza o bucket corvoquiz-prod e cria/verifica D1, Queue, DLQ e Worker.
+3. O app restaura o D1, publica o Core e grava a conexão neste navegador.
+4. O token de controle fica como secret do Worker; não vai para D1, hospedagem nem localStorage.
+5. Atualizações normais preservam a configuração. Só Alterar configuração muda a infraestrutura.`;
     try {
       await navigator.clipboard.writeText(checklist);
       setSetupCopied(true);
       setTimeout(() => setSetupCopied(false), 1800);
-    } catch {
-      setSetupCopied(false);
-    }
+    } catch { setSetupCopied(false); }
   }
+
 
   return <main className="shell">
     <aside className="sidebar">
@@ -460,11 +564,11 @@ Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
     <section className="workspace">
       <header className="topbar">
         <div><b>CORVO LIBRARY V2</b><span>D1 histórico direto · R2 por binding · FAST PUSH em Queue</span></div>
-        <div className="envBadge">V2 CORE 0.11</div>
+        <div className="envBadge">V2 CORE 0.12</div>
       </header>
 
       <div className="content">
-        <div className="titleRow"><div><h1>{active}</h1><p>{active === "Catálogo" ? "Sem conversão permanente: D1 estrutura, R2 armazena e o Worker materializa." : active === "Configurações" ? "Configuração persistente por bindings; atualização de código nunca redefine a infraestrutura." : "Reimplementação limpa por equivalência funcional."}</p></div>{active === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>
+        <div className="titleRow"><div><h1>{active}</h1><p>{active === "Catálogo" ? "Sem conversão permanente: D1 estrutura, R2 armazena e o Worker materializa." : active === "Configurações" ? "Autossuficiente: a própria Library configura e preserva Cloudflare sem instalação local ou variáveis manuais." : "Reimplementação limpa por equivalência funcional."}</p></div>{active === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>
 
         <section className="healthGrid">
           <article><small>APP VERCEL</small><strong>ONLINE</strong><span>Interface e BFF</span></article>
@@ -576,10 +680,12 @@ Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
         {active === "Estoque & giro" && <section className="modulePanel operationGrid"><div><span className="eyebrow">ESTOQUE</span><h2>{stats.approved.toLocaleString("pt-BR")} aprovados em {stats.universes.toLocaleString("pt-BR")} universos ativos</h2><p>Derivado diretamente da tabela histórica <code>assets</code>, sem conversão.</p><div className="recordList wide">{universes.slice(0,40).map(item=><article key={item.name}><div><strong>{item.name}</strong><span>{item.approved} aprovados · {item.pending} pendentes · {item.rejected} rejeitados</span></div><code>{item.total} total</code></article>)}</div></div><div><span className="eyebrow">GIRO</span><h2>Uso do catálogo</h2><div className="recordList">{(stockDetail?.rotation||[]).map((item,index)=><article key={`${String(item.bucket)}-${index}`}><div><strong>{String(item.bucket)}</strong><span>assets aprovados</span></div><code>{String(item.count||0)}</code></article>)}</div></div><div><span className="eyebrow">POLÍTICAS DE ESTOQUE</span><h2>Limites semânticos</h2><div className="recordList">{(stockDetail?.policies||[]).length===0?<div className="quiet">Nenhuma política ativa.</div>:(stockDetail?.policies||[]).slice(0,50).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.concept||"conceito")}</strong><span>{String(item.universe||"Sem universo")} · min {String(item.minimum||0)} / ideal {String(item.ideal||0)}</span></div><code>{String(item.maximum||0)} max</code></article>)}</div></div></section>}
 
         {active === "Configurações" && <section className="modulePanel configPanel">
-          <span className="eyebrow">INFRAESTRUTURA</span><h2>Configuração cravada por padrão</h2><p>Bindings e secrets ficam persistidos no Cloudflare/Vercel. O D1 guarda apenas o manifesto não secreto e sua revisão; deploys só leem, nunca resetam.</p>
-          <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : health?.core.ok ? "Core conectado — falta cravar o manifesto" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Configure os bindings, conecte o Core e salve o manifesto uma única vez."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
+          <span className="eyebrow">INFRAESTRUTURA AUTOSSUFICIENTE</span><h2>Configura uma vez e fica cravado</h2><p>A própria Corvo Library cria/verifica o Core na Cloudflare. Nada para instalar no computador e nenhuma variável manual na hospedagem do app. O D1 guarda somente o manifesto não secreto; chaves sensíveis ficam como secrets do Worker.</p>
+          <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : localConnection ? "Conexão local encontrada — verificando Core" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Cole uma única credencial Cloudflare e a Library cuida de D1, R2, Queue, Worker e restauração."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
           {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
-          <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || "catálogo e estados históricos"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || "FAST PUSH"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>CORVO_INTERNAL_KEY</b><span>Persistida no Vercel/Worker; nunca no D1</span><em>{health?.coreConfigured ? "configurado" : "aguardando"}</em></div><div><b>CORVO_SIGNING_KEY</b><span>Persistida apenas no Worker</span><em>{health?.core.signing || "aguardando"}</em></div></div>
+          <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || localConnection?.d1DatabaseName || "corvo-library-v2"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || localConnection?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || localConnection?.queueName || "corvo-materialize-v2"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>APP AUTH</b><span>Chave de sessão da Library · não é credencial Cloudflare</span><em>{health?.core.appAuth || (localConnection ? "salva" : "aguardando")}</em></div><div><b>CONTROLE</b><span>API Token Cloudflare · secret exclusivo do Worker</span><em>{health?.core.control || "aguardando"}</em></div></div>
+          {localConnection && <div className="notice compact"><strong>Conexão deste navegador salva</strong><span>{localConnection.coreUrl} · atualizações do frontend não apagam esta conexão.</span></div>}
+          {health?.core.ok && health.core.version && health.core.version !== EXPECTED_CORE_VERSION && <div className="setupCallout updateCallout"><div><strong>Atualização do Core disponível</strong><span>Worker {health.core.version} → {EXPECTED_CORE_VERSION}. A atualização usa o token já guardado no próprio Worker e não pede nova configuração.</span></div><button className="primary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : "Atualizar Core"}</button></div>}
           <div className="notice compact"><strong>Regra de persistência</strong><span>Atualizar/reabrir = preservar · alterar = somente por ação explícita · credenciais R2 no D1: {String(bindingStatus?.r2CredentialsStoredInD1??false)}</span></div>
           {infraEvents.length>0 && <div className="recordList wide">{infraEvents.slice(0,8).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.event_type||"EVENT")}</strong><span>revisão {String(item.next_revision||"")} · {new Date(Number(item.created_at||0)).toLocaleString("pt-BR")}</span></div><code>{String(item.source||"")}</code></article>)}</div>}
           <div className="recordList wide">{safeSettings.slice(0,60).map(item=><article key={item.key}><div><strong>{item.key}</strong><span>setting operacional persistente</span></div><code>{item.value}</code></article>)}</div>
@@ -589,41 +695,47 @@ Depois de configurar, volte à Library e clique em VERIFICAR AGORA.`;
 
         {setupOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Configurar infraestrutura">
           <div className="setupModal">
-            <div className="setupModalHead"><div><span className="eyebrow">CONFIGURAÇÃO RÁPIDA</span><h2>{infraProfile ? "Corvo Library já configurada" : "Conectar a Corvo Library"}</h2><p>{infraProfile ? `A revisão ${infraProfile.revision} está travada. Atualizações e novos deploys não mudam nada.` : "O fluxo recomendado tem só 3 passos. Os nomes técnicos já vêm preenchidos e ficam escondidos no modo avançado."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setInfraEditing(false);setInfraMessage("");setSetupAdvanced(false);}} aria-label="Fechar">×</button></div>
+            <div className="setupModalHead"><div><span className="eyebrow">CONFIGURAÇÃO AUTOSSUFICIENTE</span><h2>{infraProfile && !infraEditing ? "Corvo Library já configurada" : infraProfile ? "Alterar configuração" : "Conectar a Corvo Library"}</h2><p>{infraProfile && !infraEditing ? `A revisão ${infraProfile.revision} está travada. Abrir o app ou publicar uma nova versão não muda nada.` : "Tudo acontece aqui dentro. Nada para instalar no computador e nenhuma variável manual na hospedagem."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setInfraEditing(false);setInfraMessage("");setSetupAdvanced(false);setCloudflareToken("");}} aria-label="Fechar">×</button></div>
 
             <div className="quickSetupStatus">
-              <div className={health?.coreConfigured ? "done" : "current"}><b>1</b><span>Cloudflare Core</span><small>{health?.coreConfigured ? "BFF já aponta para o Core" : "Instalar recursos e Worker"}</small></div>
-              <div className={health?.core.ok ? "done" : health?.coreConfigured ? "current" : "waiting"}><b>2</b><span>Conectar Vercel</span><small>{health?.core.ok ? "Core respondeu com D1 + R2 + Queue" : "Adicionar apenas 2 variáveis"}</small></div>
-              <div className={health?.core.ok && infraProfile ? "done" : "waiting"}><b>3</b><span>Verificar e travar</span><small>{infraProfile ? `LOCKED · revisão ${infraProfile.revision}` : "Salvar uma única vez"}</small></div>
+              <div className={localConnection || infraProfile ? "done" : "current"}><b>1</b><span>Acesso Cloudflare</span><small>{localConnection || infraProfile ? "Conexão conhecida" : "Cole o API Token uma vez"}</small></div>
+              <div className={health?.core.ok ? "done" : localConnection ? "current" : "waiting"}><b>2</b><span>Configuração automática</span><small>{health?.core.ok ? "D1 + R2 + Queue + Worker OK" : "A Library cria/verifica tudo"}</small></div>
+              <div className={health?.core.ok && infraProfile ? "done" : "waiting"}><b>3</b><span>Gravado</span><small>{infraProfile ? `LOCKED · revisão ${infraProfile.revision}` : "Persistente nas próximas versões"}</small></div>
             </div>
 
-            {!infraProfile && <div className="quickSetupGrid">
-              <article className="quickSetupCard"><header><span>PASSO 1</span><strong>Instalar Cloudflare Core</strong></header><p>O instalador cria/verifica D1, Queue e DLQ, usa o bucket existente <b>corvoquiz-prod</b>, gera as chaves e publica o Worker. Se o arquivo <code>CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql</code> estiver ao lado do projeto, ele também restaura o catálogo automaticamente.</p><div className="commandBox"><code>npm run setup:cloudflare</code><button className="secondary" onClick={copyQuickSetupCommand}>{setupCommandCopied ? "✓ Copiado" : "Copiar comando"}</button></div><small>Você faz login no Cloudflare pelo Wrangler. Nenhuma Access Key do R2 entra na Library.</small></article>
-              <article className="quickSetupCard"><header><span>PASSO 2</span><strong>Adicionar 2 variáveis na Vercel</strong></header><p>No final, o instalador imprime exatamente estes dois valores. Coloque-os uma única vez no projeto Vercel e faça um redeploy.</p><div className="envPair"><code>CORVO_CORE_URL=https://...workers.dev</code><code>CORVO_INTERNAL_KEY=...</code></div><small>Essas variáveis ficam persistidas na Vercel e sobrevivem às próximas atualizações.</small></article>
-            </div>}
-
-            {infraProfile && <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId}</small></div><button className="secondary" onClick={()=>{setSetupAdvanced(true);setInfraEditing(true);}}>Alterar configuração</button></div>}
+            {infraProfile && !infraEditing ? <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId} · nada é redefinido por atualização.</small></div><div className="lockedActions">{health?.core.version && health.core.version !== EXPECTED_CORE_VERSION && <button className="secondary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : `Atualizar Core ${EXPECTED_CORE_VERSION}`}</button>}<button className="secondary" disabled={setupBusy} onClick={()=>void recheckInfrastructure()}>{setupBusy ? "Verificando…" : "Verificar agora"}</button><button className="primary" onClick={()=>{setInfraEditing(true);setCloudflareToken("");setAutoSetupStage("");}}>Alterar configuração</button></div></div> : <>
+              <div className="selfSetupCard">
+                <div className="selfSetupCopy"><span className="eyebrow">ÚNICA ENTRADA NECESSÁRIA</span><h3>API Token da Cloudflare</h3><p>Use um API Token da sua conta. Ele é usado pelo setup e depois fica guardado como <b>secret do próprio Worker</b>. Não é salvo no D1, não fica em variável da hospedagem e é removido do campo ao terminar.</p><div className="tokenPermissions"><b>Permissões do token</b><span>Workers Scripts Write · D1 Write · Workers R2 Storage Write · Queues Write</span><a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Abrir criação de API Token na Cloudflare ↗</a></div></div>
+                <label className="tokenField"><span>API Token</span><input type="password" autoComplete="off" value={cloudflareToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setCloudflareToken(event.target.value)} placeholder="Cole aqui o token da Cloudflare" /></label>
+                <label className="tokenField"><span>Account ID <small>Cloudflare → R2/Workers → Account ID</small></span><input value={cloudflareAccountId} onChange={(event:ChangeEvent<HTMLInputElement>)=>setCloudflareAccountId(event.target.value.trim())} placeholder="32 caracteres · pode ficar salvo como identificador não secreto" /></label>
+                {cloudflareAccounts.length>0 && <label className="tokenField"><span>Conta Cloudflare</span><select value={cloudflareAccountId} onChange={(event:ChangeEvent<HTMLSelectElement>)=>setCloudflareAccountId(event.target.value)}><option value="">Selecione a conta</option>{cloudflareAccounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
+                <div className="autoResourceLine"><span><b>D1</b>{infraDraft.d1DatabaseName}</span><span><b>R2 existente</b>{infraDraft.r2BucketName}</span><span><b>Queue</b>{infraDraft.queueName}</span><span><b>Worker</b>{infraDraft.workerName}</span></div>
+                <button className="primary autoSetupButton" disabled={autoSetupBusy || !cloudflareToken.trim()} onClick={()=>void runAutomaticSetup()}>{autoSetupBusy ? "Configurando…" : infraProfile ? "Aplicar alteração automaticamente" : "Configurar tudo automaticamente"}</button>
+                <div className="setupPrivacy"><strong>Sem instalação local</strong><span>O catálogo de restauração já acompanha o app. O bucket <b>corvoquiz-prod</b> é reutilizado; a Library não copia as mídias nem pede Access Key/Secret do R2.</span></div>
+                {autoSetupStage && <div className="autoSetupStage">{autoSetupBusy && <i />}<span>{autoSetupStage}</span></div>}
+              </div>
+            </>}
 
             <div className="bindingSummary">
-              <div className={health?.core.d1 === "ok" ? "ok" : "pending"}><b>D1</b><span>{infraProfile?.d1DatabaseName || defaultInfrastructureDraft.d1DatabaseName}</span><em>{health?.core.d1 || "aguardando"}</em></div>
-              <div className={health?.core.r2 === "ok" ? "ok" : "pending"}><b>R2</b><span>{infraProfile?.r2BucketName || defaultInfrastructureDraft.r2BucketName}</span><em>{health?.core.r2 || "aguardando"}</em></div>
-              <div className={health?.core.queue === "ok" ? "ok" : "pending"}><b>QUEUE</b><span>{infraProfile?.queueName || defaultInfrastructureDraft.queueName}</span><em>{health?.core.queue || "aguardando"}</em></div>
-              <div className={health?.core.signing === "ok" ? "ok" : "pending"}><b>SECRETS</b><span>Worker / Vercel</span><em>{health?.core.signing || (health?.coreConfigured ? "parcial" : "aguardando")}</em></div>
+              <div className={health?.core.d1 === "ok" ? "ok" : "pending"}><b>D1</b><span>{infraProfile?.d1DatabaseName || localConnection?.d1DatabaseName || defaultInfrastructureDraft.d1DatabaseName}</span><em>{health?.core.d1 || "aguardando"}</em></div>
+              <div className={health?.core.r2 === "ok" ? "ok" : "pending"}><b>R2</b><span>{infraProfile?.r2BucketName || localConnection?.r2BucketName || defaultInfrastructureDraft.r2BucketName}</span><em>{health?.core.r2 || "aguardando"}</em></div>
+              <div className={health?.core.queue === "ok" ? "ok" : "pending"}><b>QUEUE</b><span>{infraProfile?.queueName || localConnection?.queueName || defaultInfrastructureDraft.queueName}</span><em>{health?.core.queue || "aguardando"}</em></div>
+              <div className={health?.core.control === "ok" && health?.core.appAuth === "ok" ? "ok" : "pending"}><b>CONTROLE</b><span>Secrets no Worker</span><em>{health?.core.control === "ok" && health?.core.appAuth === "ok" ? "ok" : "aguardando"}</em></div>
             </div>
 
             <div className="quickFinal">
-              <div><span>ESTADO</span><strong className={health?.core.ok && infraProfile ? "okState" : "waitState"}>{health?.core.ok && infraProfile ? "PRONTO E CRAVADO" : health?.core.ok ? "CORE ONLINE · FALTA TRAVAR" : coreState}</strong><small>{infraMessage || health?.core.error || (infraProfile ? "Nada muda até você clicar em Alterar configuração." : "Depois dos 2 passos acima, toque em Verificar e travar.")}</small></div>
-              <button className="primary finalButton" disabled={setupBusy} onClick={verifyAndLockInfrastructure}>{setupBusy ? "Verificando…" : infraProfile ? "Verificar agora" : "Verificar e travar"}</button>
+              <div><span>ESTADO</span><strong className={health?.core.ok && infraProfile ? "okState" : "waitState"}>{health?.core.ok && infraProfile ? "PRONTO E CRAVADO" : autoSetupBusy ? "CONFIGURANDO" : coreState}</strong><small>{infraMessage || health?.core.error || (infraProfile ? "Nada muda até você clicar em Alterar configuração." : "Cole o token e toque em Configurar tudo automaticamente.")}</small></div>
+              {infraProfile && !infraEditing ? <button className="secondary finalButton" disabled={setupBusy} onClick={()=>void recheckInfrastructure()}>{setupBusy ? "Verificando…" : "Verificar saúde"}</button> : <button className="primary finalButton" disabled={autoSetupBusy || !cloudflareToken.trim()} onClick={()=>void runAutomaticSetup()}>{autoSetupBusy ? "Configurando…" : "Configurar e gravar"}</button>}
             </div>
 
-            <button className="advancedToggle" onClick={()=>setSetupAdvanced(value=>!value)}>{setupAdvanced ? "Ocultar opções avançadas" : "Mostrar opções avançadas"}</button>
+            <button className="advancedToggle" onClick={()=>setSetupAdvanced(value=>!value)}>{setupAdvanced ? "Ocultar opções avançadas" : "Opções avançadas"}</button>
             {setupAdvanced && <div className="persistBox advancedBox">
-              <div className="persistHead"><div><span>RECURSOS FIXOS</span><strong>{infraProfile ? `REV ${infraProfile.revision}` : "PADRÕES RECOMENDADOS"}</strong></div></div>
+              <div className="persistHead"><div><span>RECURSOS CLOUDFLARE</span><strong>{infraProfile ? `REV ${infraProfile.revision}` : "PADRÕES RECOMENDADOS"}</strong></div></div>
               <div className="infraFields">{([
-                ["bffProjectName","Projeto Vercel"],["workerName","Worker"],["d1DatabaseName","D1"],["r2BucketName","R2 bucket"],["queueName","Queue"],["dlqName","DLQ"]
+                ["workerName","Worker"],["d1DatabaseName","D1"],["r2BucketName","R2 bucket"],["queueName","Queue"],["dlqName","DLQ"]
               ] as Array<[keyof InfrastructureDraft,string]>).map(([field,label])=><label key={field}><span>{label}</span><input disabled={Boolean(infraProfile) && !infraEditing} value={infraDraft[field]} onChange={(event:ChangeEvent<HTMLInputElement>)=>updateInfraDraft(field,event.target.value)} /></label>)}</div>
-              {infraProfile && infraEditing && <div className="persistActions"><span>Uma alteração explícita cria uma nova revisão. Atualizações normais nunca passam por aqui.</span><button className="secondary" onClick={()=>{setInfraEditing(false);setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});setInfraMessage("");}}>Cancelar</button><button className="primary" disabled={infraSaving || !health?.core.ok} onClick={saveInfrastructureProfile}>{infraSaving ? "Salvando…" : "Salvar nova revisão"}</button></div>}
-              <div className="advancedHelp"><button className="secondary" onClick={copyInfrastructureChecklist}>{setupCopied ? "✓ Checklist copiado" : "Copiar checklist técnico"}</button></div>
+              <div className="advancedHelp"><button className="secondary" onClick={copyInfrastructureChecklist}>{setupCopied ? "✓ Resumo copiado" : "Copiar resumo técnico"}</button>{localConnection && <button className="dangerGhost" onClick={forgetBrowserConnection}>Remover conexão só deste navegador</button>}</div>
+              <p className="advancedWarning">Remover a conexão local não apaga D1, R2, Queue ou Worker. Para reconectar, basta voltar aqui e usar um API Token Cloudflare novamente.</p>
             </div>}
           </div>
         </div>}

@@ -1,8 +1,12 @@
 import type { Env } from "../types";
 
 export function authorized(request: Request, env: Env) {
-  const supplied = request.headers.get("x-corvo-internal-key") || request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
-  return Boolean(env.CORVO_INTERNAL_KEY && supplied && supplied === env.CORVO_INTERNAL_KEY);
+  const internal = request.headers.get("x-corvo-internal-key") || "";
+  const app = request.headers.get("x-corvo-app-key") || "";
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
+  if (env.CORVO_INTERNAL_KEY && (internal === env.CORVO_INTERNAL_KEY || bearer === env.CORVO_INTERNAL_KEY)) return true;
+  if (env.CORVO_APP_KEY && (app === env.CORVO_APP_KEY || bearer === env.CORVO_APP_KEY)) return true;
+  return false;
 }
 
 function base64Url(bytes: Uint8Array) {

@@ -1,56 +1,66 @@
-# Corvo Library V2 — checkpoint 0.11
+# Corvo Library V2 — checkpoint 0.12
 
-Reconstrução limpa da Corvo Library com **Vercel (UI/BFF)** + **Cloudflare Worker (Core)** + **D1 + R2 + Queue**.
+Reconstrução limpa da Corvo Library com **UI web** + **Cloudflare Worker (Core)** + **D1 + R2 + Queue**, com configuração autossuficiente pela própria interface.
 
-A V2 usa a V61.9 como especificação funcional e preserva o banco histórico 1:1. Não usa Turso/libSQL, `production-recovery`, `secret_cloudflare_connection` nem credenciais R2 salvas no banco.
+A V2 usa a V61.9 como especificação funcional e preserva o banco histórico 1:1. Não usa Turso/libSQL, `production-recovery`, `secret_cloudflare_connection` nem credenciais R2 salvas no D1.
 
 ## Arquitetura
 
 ```text
-Vercel UI/BFF
-     ↓ CORVO_INTERNAL_KEY
+Corvo Library (web)
+        │
+        │ app key local de baixo privilégio
+        ▼
 Cloudflare Worker / MCP
   ├─ D1       catálogo + estado
   ├─ R2       mídia (corvoquiz-prod)
-  └─ Queue    materialização assíncrona
+  ├─ Queue    materialização assíncrona
+  └─ secrets  controle/assinatura
         ↓
        DLQ
-
-Worker-only: CORVO_SIGNING_KEY → URLs temporárias
 ```
 
-## Checkpoint 0.11
+O frontend pode continuar hospedado na Vercel, mas **não depende de Environment Variables da Vercel para operar a Library**. Depois do setup, o navegador fala diretamente com o Corvo Core usando uma chave própria da aplicação. O token Cloudflare nunca é salvo no D1 nem no `localStorage`; após a primeira configuração ele existe somente como secret do Worker.
+
+## Configuração autossuficiente — 0.12
+
+A tela **Configurações** executa o provisionamento pela API oficial da Cloudflare. O usuário informa um API Token uma única vez e o app:
+
+1. localiza/cria o D1 `corvo-library-v2`;
+2. confirma e reutiliza o bucket R2 existente `corvoquiz-prod`;
+3. localiza/cria Queue e DLQ;
+4. gera as chaves internas;
+5. publica o Worker `corvo-core-v2` com bindings nativos;
+6. restaura o banco histórico embutido no app e aplica migrations V2;
+7. grava a conexão deste navegador;
+8. cria o manifesto não secreto `LOCKED` no D1.
+
+Nenhum Wrangler/npm precisa ser instalado no computador do usuário e nenhuma variável manual precisa ser adicionada na hospedagem.
+
+### Persistência
+
+- fechar e abrir o app preserva a conexão;
+- redeploy do frontend preserva a conexão;
+- migrations não fazem seed/reset do manifesto;
+- uma alteração explícita cria uma nova revisão;
+- a configuração Cloudflare permanece nos próprios recursos/Worker;
+- se o armazenamento local do navegador for limpo, **reconectar** usa novamente um API Token e reaproveita os recursos existentes, sem restaurar/copiar mídia novamente.
+
+### Atualização do Core
+
+O Worker guarda o token de controle como secret e conhece a origem do app. Quando uma versão futura do frontend exigir um Core novo, a tela pode pedir ao Worker para buscar o bundle publicado pelo próprio app e atualizar **o próprio Worker**, preservando D1/R2/Queue e os secrets. Isso evita uma nova configuração manual a cada release.
+
+## Estado funcional
 
 - Restauração histórica: **929 assets**, **849 aprovados**, **77 pendentes**, **3 rejeitados**, **174 universos aprovados**, **1.176 usos**.
 - 47 tabelas históricas preservadas + 14 tabelas `v2_*`; schema V2 **2.6.0**.
 - FAST PUSH URL → ACK → Queue → R2 → D1 → Inbox.
-- FAST APPROVE e aprovação de candidatas endurecidos para retry/idempotência e promoção `incoming/ → assets/`.
-- Upload direto com claim atômico: `PREPARED → UPLOADING → STORED → CONFIRMING → CONFIRMED`, recuperação de claim travado e sem binário no MCP.
+- Upload direto sem binário no MCP.
 - Catálogo, projetos, solicitações, lotes/imports, Supervisor, workers, coleta, políticas, estoque, pacotes/ZIP e auditoria D1↔R2.
-- Dispatcher ignora jobs históricos órfãos; Supervisor ignora decisões/candidatas órfãs, sem apagar o histórico.
-- Integridade lógica exposta em `/data-health` e `auditar_integridade_d1`.
-- Chave de assinatura separada da chave interna de API.
-- **227/229** nomes MCP históricos implementados; os outros **2** são substituídos pelos bindings Cloudflare seguros.
-- 3 ferramentas extras V2 de diagnóstico/upload.
+- **227/229** nomes MCP históricos implementados; os 2 restantes foram substituídos pela infraestrutura segura da V2.
 
+## Segurança
 
-### Configuração persistente 0.11
+O D1 não recebe token Cloudflare, Access Key, Secret Key, signing key ou master key. A credencial Cloudflare de controle é movida para um secret do Worker após o setup; o navegador conserva apenas `coreUrl` + `appKey` de aplicação para a sessão persistente da Library.
 
-A tela **Configurações** agora possui um manifesto persistente de infraestrutura:
-
-- a configuração é salva uma única vez e fica `LOCKED`;
-- cada alteração explícita cria uma nova revisão e evento de auditoria;
-- migrations/redeploys não fazem seed nem overwrite do manifesto;
-- o gate reaplica todas as migrations sobre uma configuração-sentinela e exige preservação byte a byte;
-- secrets continuam exclusivamente no Vercel/Cloudflare, nunca no D1;
-- `Verificar agora` testa bindings sem reconfigurar nada.
-
-## Gate 0.11
-
-O script `scripts/validate-checkpoint.py` executa restauração completa + todas as migrations, compara a dívida histórica com um baseline imutável, exige zero órfãos V2, valida paridade MCP, imports relativos, dependências proibidas, typechecks estruturais e o contrato de persistência da configuração.
-
-Resultado atual: **PASS**, incluindo o teste de persistência da configuração.
-
-O `next build` real e o build/typecheck com dependências reais de Wrangler continuam como gates externos porque o registry não concluiu a instalação nesta execução.
-
-Veja `docs/DEPLOYMENT_RUNBOOK.md` para provisionamento e corte.
+Veja `docs/SETUP_WIZARD.md`, `docs/ARCHITECTURE.md` e `docs/DEPLOYMENT_RUNBOOK.md`.

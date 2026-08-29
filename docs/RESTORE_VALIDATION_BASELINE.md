@@ -1,13 +1,13 @@
 # Baseline validado — restauração D1 V2
 
-Gate local executado sobre o dump histórico sanitizado + migrations `9000`–`9005`.
+Gate local executado sobre o dump histórico sanitizado + migrations `9000`–`9007`.
 
 | Verificação | Resultado |
 |---|---:|
 | Tabelas históricas | 47 |
-| Tabelas `v2_*` adicionadas | 12 |
-| Tabelas totais | 59 |
-| Schema V2 | 2.5.0 |
+| Tabelas `v2_*` adicionadas | 15 |
+| Tabelas totais | 62 |
+| Schema V2 | 2.7.0 |
 | Assets | 929 |
 | Aprovados | 849 |
 | Pendentes | 77 |

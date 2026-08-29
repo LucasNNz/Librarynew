@@ -1,40 +1,60 @@
-# Corvo Library V2 — Fundação
+# Corvo Library V2 — Arquitetura autossuficiente
 
 ## Regra estrutural
 
-- **D1** = catálogo, estado, filas lógicas, projetos, usos, candidatos, políticas.
-- **R2** = bytes de mídia. Nenhum segredo R2 é gravado em D1.
+- **D1** = catálogo, estado, filas lógicas, projetos, usos, candidatos e políticas.
+- **R2** = bytes de mídia; o bucket oficial continua `corvoquiz-prod`.
 - **Cloudflare Queue** = desacopla FAST PUSH da materialização.
-- **Corvo Core Worker** = única camada que possui bindings D1/R2/Queue.
-- **Vercel** = UI + BFF. Não conhece credenciais R2; conhece apenas `CORVO_CORE_URL` + uma chave interna do Core.
-- **MCP** = chama o Corvo Core e recebe ACK de operação. Não transporta a mídia quando recebe uma URL.
+- **Corvo Core Worker** = camada operacional com bindings D1/R2/Queue.
+- **Frontend web** = interface. Não precisa conhecer Access Key/Secret do R2 nem receber Environment Variables para localizar o Core.
+- **MCP** = chama o Core e recebe ACK de operação. Não transporta mídia quando recebe uma URL.
+
+## Primeira configuração
+
+```text
+Interface
+  │ usuário cola API Token Cloudflare uma vez
+  ▼
+Setup same-origin
+  ├─ D1 create/find
+  ├─ R2 verify corvoquiz-prod
+  ├─ Queue/DLQ create/find
+  ├─ gera app/internal/signing keys
+  ├─ publica Worker com bindings
+  └─ importa D1 histórico + migrations
+          │
+          ▼
+     Corvo Core ONLINE
+```
+
+Após o provisionamento:
+
+- `CLOUDFLARE_CONTROL_TOKEN` fica como **secret do Worker**;
+- `CORVO_INTERNAL_KEY`, `CORVO_APP_KEY` e `CORVO_SIGNING_KEY` ficam como **secrets do Worker**;
+- o navegador guarda somente `coreUrl`, `appKey` e identificadores não secretos da instalação;
+- D1 guarda o manifesto `v2_infrastructure_profiles`, sem segredo.
 
 ## FAST PUSH
 
 1. Cliente/MCP envia URLs + metadados para `/fast-push`.
-2. Core cria `operations` e `candidates` no D1.
-3. Core responde `202` com `operationId` imediatamente.
-4. Queue recebe um job por URL.
-5. Consumidor baixa a mídia e grava direto no R2.
-6. D1 recebe apenas estado, metadados e `r2_key`.
+2. Core cria operação/candidatas no D1.
+3. Core responde `202` com `operationId`.
+4. Queue recebe jobs.
+5. consumidor baixa a mídia e grava no R2.
+6. D1 recebe estado, metadados e `r2_key`.
 7. `/operations/:id` mostra progresso.
+
+## Atualizações
+
+O frontend e o Core têm ciclos independentes. O Core possui um token de controle próprio e uma origem confiável do app (`CORVO_APP_ORIGIN`). Quando necessário, `/control/update-core` busca o bundle da versão publicada no app e atualiza o Worker mantendo os bindings e secrets existentes. O endpoint não aceita código arbitrário fornecido pelo navegador.
 
 ## Princípios anti-regressão
 
-- Sem seed de produção embutido no app.
-- Sem fallback que simule bucket configurado.
+- Sem seed de produção embutido no runtime.
+- O dump histórico só existe como bootstrap de primeira instalação.
+- Sem fallback que finja bucket configurado.
 - Sem configuração criptografada dependente do token do banco.
-- `MISSING`, `LOCKED`, `UNAVAILABLE` e `MISCONFIGURED` nunca são tratados como o mesmo estado.
-- Deploy da UI não altera D1/R2.
-- Deploy do Core não executa bootstrap destrutivo.
-
-## Configuração imutável por padrão — 0.10
-
-A infraestrutura usa dois níveis de persistência:
-
-- **Provider state**: bindings e secrets vivem no Cloudflare/Vercel e sobrevivem a deploys.
-- **D1 manifest**: `v2_infrastructure_profiles` registra somente nomes não secretos, `instance_id`, revisão e timestamps.
-
-O perfil é singleton (`id=primary`), nasce `LOCKED` e não é tocado por migrations. Alterações passam exclusivamente por `PATCH /infrastructure/config`, exigem `expectedRevision` e `confirmChange=true`, incrementam a revisão e escrevem auditoria em `v2_infrastructure_config_events`.
-
-`POST /infrastructure/verify` testa a infraestrutura e atualiza somente `last_verified_at`; ele nunca altera bindings ou nomes configurados.
+- `MISSING`, `LOCKED`, `UNAVAILABLE` e `MISCONFIGURED` são estados diferentes.
+- deploy do frontend não altera D1/R2.
+- migrations não sobrescrevem o manifesto de infraestrutura.
+- alteração de infraestrutura exige ação explícita e nova revisão.

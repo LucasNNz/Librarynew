@@ -1,6 +1,6 @@
 {
   "name": "corvo-library-v2",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "engines": {
     "node": "22.x"
@@ -11,17 +11,22 @@
     "start": "next start",
     "typecheck": "tsc --noEmit --pretty false",
     "validate:structural": "tsc -p tsconfig.validate.json --pretty false && tsc -p cloudflare/tsconfig.validate.json --pretty false",
-    "setup:cloudflare": "node scripts/setup-cloudflare.mjs"
+    "prebuild": "node scripts/build-core-bundle.mjs",
+    "build:core-bundle": "node scripts/build-core-bundle.mjs"
   },
   "dependencies": {
     "next": "16.2.6",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.22.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "22.15.3",
     "@types/react": "19.1.2",
     "@types/react-dom": "19.1.2",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "esbuild": "^0.25.9"
   }
 }

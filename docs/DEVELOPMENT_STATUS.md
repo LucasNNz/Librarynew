@@ -1,4 +1,4 @@
-# Desenvolvimento contínuo — checkpoint 0.11
+# Desenvolvimento contínuo — checkpoint 0.12
 
 ## Núcleo implementado
 
@@ -27,7 +27,7 @@
 
 `IMPLEMENTADO` garante presença no contrato MCP V2. Equivalência comportamental crítica é progressivamente coberta pelos gates e continua sendo validada antes do corte.
 
-## Integridade 0.11
+## Integridade 0.12
 
 - `PRAGMA integrity_check`: PASS.
 - Assets: 929 / 849 aprovados / 77 pendentes / 3 rejeitados.
@@ -35,8 +35,8 @@
 - Usos: 1.176.
 - Assets sem `r2_key`: 0.
 - `r2_key` compartilhadas: 8 grupos históricos preservados.
-- Tabelas: 61 = 47 históricas + 14 `v2_*`.
-- Schema V2: 2.6.0.
+- Tabelas: 62 = 47 históricas + 15 `v2_*`.
+- Schema V2: 2.7.0.
 - Órfãos lógicos `v2_*`: **0**.
 - 11.505 violações FK históricas são reproduzidas exatamente pelo backup e estão congeladas em `HISTORICAL_INTEGRITY_BASELINE.json`; aumento ou grupo novo falha o gate.
 - Risco histórico ativo detectado: 54 worker jobs + 134 decisões + 60 candidatas de Supervisor sem item pai. Todos são preservados para auditoria e ignorados pelos fluxos V2.
@@ -44,26 +44,26 @@
 ## Gates
 
 - Worker/Core structural typecheck: PASS.
-- Frontend/BFF structural typecheck: PASS.
-- Restauração + migrations 9000–9006: PASS.
+- Frontend/setup structural typecheck: PASS.
+- Restauração + migrations 9000–9007: PASS.
 - Paridade MCP: PASS (227 históricos registrados, 2 substituídos, 0 duplicados).
 - Imports relativos/dependências legadas: PASS.
 - `next build` real: PENDENTE por instalação de dependências/registry.
-- Wrangler real/deploy: PENDENTE por dependências e provisionamento Cloudflare.
+- Provisionamento real Cloudflare: PENDENTE de teste ao vivo pelo assistente web autossuficiente.
 
 ## Bloqueios externos
 
-- Provisionar/vincular D1, Queue/DLQ e Worker na conta Cloudflare.
-- Criar o projeto Vercel separado `corvo-library-v2`.
-- Executar build real nos ambientes conectados antes de Production.
+- Executar o primeiro provisionamento real pelo assistente web em uma conta Cloudflare.
+- Executar build real no ambiente de hospedagem antes de Production.
+- Validar um ciclo real de auto-update do Core após a primeira instalação.
 
 
-## Persistência de infraestrutura — 0.11
+## Persistência de infraestrutura — 0.12
 
 - Manifesto `v2_infrastructure_profiles` não secreto e singleton.
 - Estado padrão `LOCKED`; deploy e reabertura só leem.
 - Botão explícito `Alterar configuração` habilita edição local; salvar exige revisão esperada e confirmação explícita.
 - Histórico imutável em `v2_infrastructure_config_events`.
-- Gate prova que reaplicar migrations preserva o perfil byte a byte.
+- Gate prova que reaplicar a migration persistente preserva o perfil byte a byte e que migrations futuras são registradas/aplicadas pela própria camada web.
 - `Verificar agora` só atualiza diagnóstico/`last_verified_at`.
-- Badge do frontend atualizado para `V2 CORE 0.11`.
+- Badge do frontend atualizado para `V2 CORE 0.12`.

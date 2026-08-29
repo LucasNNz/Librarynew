@@ -1,5 +1,3 @@
-declare const process: { env: Record<string, string | undefined> };
-
 declare namespace JSX {
   interface IntrinsicElements { [elemName: string]: any }
 }
@@ -38,4 +36,23 @@ declare module "next/server" {
   export class NextRequest extends Request {
     nextUrl: URL;
   }
+}
+
+declare const Buffer: { byteLength(value: string | ArrayBuffer | ArrayBufferView): number };
+declare const process: { env: Record<string, string | undefined>; cwd(): string };
+
+declare module "node:crypto" {
+  export function randomBytes(size: number): { toString(encoding: string): string };
+  export function createHash(algorithm: string): { update(value: string | ArrayBuffer | ArrayBufferView): any; digest(encoding: string): string };
+}
+declare module "node:fs/promises" {
+  export function readFile(path: string | URL, options?: unknown): Promise<any>;
+  export function readdir(path: string | URL): Promise<string[]>;
+}
+declare module "node:zlib" {
+  export function gunzipSync(value: any): { toString(encoding?: string): string };
+}
+declare module "node:path" {
+  const value: { join(...parts: string[]): string };
+  export default value;
 }
