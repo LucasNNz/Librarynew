@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import { id, nowMs } from "./ids";
 import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
-import { materializeScenesFromProjectScript } from "./project-script-parser";
+import { materializeScenesFromProjectScript, parseProjectScriptScenes } from "./project-script-parser";
 import { productionCompletionGate } from "./production-model";
 
 function encodeCursor(updatedAt: number, projectId: string) {
@@ -126,16 +126,20 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   // If an older project has SCRIPT READY but no scenes/items, parse the latest text script
   // before computing project state. This repairs pre-0.20.30 projects idempotently.
   let scriptRecovery:Record<string,unknown>|null=null;
-  const currentProductionSceneCount=await env.DB.prepare("SELECT COUNT(*) AS count FROM v2_production_scenes WHERE project_id=?").bind(projectId).first<{count:number}>().catch(()=>({count:0}));
-  if(Number(currentProductionSceneCount?.count||0)===0){
-    const script=await env.DB.prepare("SELECT id,file_name,r2_key,mime_type,size_bytes FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>();
-    if(script?.r2_key && Number(script.size_bytes||0)<=2*1024*1024){
-      const mime=String(script.mime_type||"").toLowerCase();
-      if(!mime || mime.startsWith("text/") || mime.includes("json")){
-        const object=await env.MEDIA.get(String(script.r2_key));
-        if(object){
-          const content=await object.text();
-          scriptRecovery=await materializeScenesFromProjectScript(env,{projectId,content,fileId:String(script.id||""),fileName:String(script.file_name||"SCRIPT.txt")}).catch(error=>({ok:false,error:error instanceof Error?error.message:String(error)}));
+  const activeVersion=Number(project.active_version||1);
+  const currentProductionSceneCount=await env.DB.prepare("SELECT COUNT(*) AS count FROM v2_production_scenes WHERE project_id=? AND version=?").bind(projectId,activeVersion).first<{count:number}>().catch(()=>({count:0}));
+  const script=await env.DB.prepare("SELECT id,file_name,r2_key,mime_type,size_bytes FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>();
+  if(script?.r2_key && Number(script.size_bytes||0)<=2*1024*1024){
+    const mime=String(script.mime_type||"").toLowerCase();
+    if(!mime || mime.startsWith("text/") || mime.includes("json")){
+      const object=await env.MEDIA.get(String(script.r2_key));
+      if(object){
+        const content=await object.text();
+        const expectedSceneCount=parseProjectScriptScenes(content).length;
+        const actualSceneCount=Number(currentProductionSceneCount?.count||0);
+        // Self-heal not only 0-scene projects, but any parser drift such as Digimon 72 questions / 60 scenes.
+        if(expectedSceneCount!==actualSceneCount){
+          scriptRecovery=await materializeScenesFromProjectScript(env,{projectId,content,fileId:String(script.id||""),fileName:String(script.file_name||"SCRIPT.txt"),productionOnly:actualSceneCount>0}).catch(error=>({ok:false,error:error instanceof Error?error.message:String(error),expectedSceneCount,actualSceneCount}));
         }
       }
     }

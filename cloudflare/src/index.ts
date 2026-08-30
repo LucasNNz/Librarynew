@@ -23,7 +23,7 @@ import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/setti
 import { alterInfrastructureProfile, getInfrastructureProfile, initializeInfrastructureProfile, verifyInfrastructureProfile } from "./core/infrastructure";
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, processFastApproveJob, processSupervisorDecisionsJob, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
-import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, processPackageJob, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage, servePackageFile, serveProjectMedia } from "./core/production";
+import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getFinalProjectFiles, getPackageLink, listReadyPackages, processPackageJob, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalExports, queueFinalPackage, servePackageFile, serveProjectMedia } from "./core/production";
 import { addProjectQaEvent, attachProjectReferencesInline, getProjectFileLink, listProjectFiles, readProjectFile, serveProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
@@ -74,17 +74,17 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.35", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.36", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
-const FAST_READ_CACHE_NAMESPACE = "0.20.35";
+const FAST_READ_CACHE_NAMESPACE = "0.20.36";
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
   const started=Date.now();
   const keyUrl=new URL(request.url);
   keyUrl.searchParams.delete("_");
   // Cache API entries can survive a Worker deployment. Namespace every fast
-  // read by the running Core release so 0.20.31 can never satisfy a 0.20.35
+  // read by the running Core release so 0.20.31 can never satisfy a 0.20.36
   // health/schema gate after self-update.
   keyUrl.searchParams.set("__corvo_release",FAST_READ_CACHE_NAMESPACE);
   const cacheKey=new Request(keyUrl.toString(),{method:"GET"});
@@ -160,7 +160,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.35",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.36",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -186,7 +186,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.35",
+        version:"0.20.36",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -440,6 +440,8 @@ export default {
     else if (url.pathname === "/packages" && request.method === "GET") response=json(await listReadyPackages(env,{projectId:url.searchParams.get("projectId")||undefined,status:url.searchParams.get("status")||undefined,limit:Number(url.searchParams.get("limit")||100)}));
     else if (/^\/packages\/[^/]+\/link$/.test(url.pathname) && request.method === "GET") { const packageId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getPackageLink(request,env,packageId,Number(url.searchParams.get("ttlMinutes")||30)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (/^\/packages\/[^/]+\/confirm$/.test(url.pathname) && request.method === "POST") { const packageId=decodeURIComponent(url.pathname.split("/")[2]); const value=await confirmPackageDownload(env,packageId,await request.json() as Parameters<typeof confirmPackageDownload>[2]); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
+    else if (/^\/projects\/[^/]+\/final-exports$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getFinalProjectFiles(request,env,projectId,Number(url.searchParams.get("ttlMinutes")||30)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
+    else if (/^\/projects\/[^/]+\/final-exports$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json().catch(()=>({})) as {types?:Parameters<typeof queueFinalExports>[1]["types"]}; response=json(await queueFinalExports(env,{projectId,types:body.types}),{status:202}); }
     else if (/^\/projects\/[^/]+\/production$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await projectProductionPackage(request,env,projectId); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
     else if (/^\/projects\/[^/]+\/thumbs$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); response=json(await projectThumbLinks(request,env,projectId,Number(url.searchParams.get("limit")||50))); }
     else if (/^\/projects\/[^/]+\/thumbs\/decide$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {decisions?:Parameters<typeof decideProjectThumbs>[2]}; response=json(await decideProjectThumbs(env,projectId,body.decisions||[])); }

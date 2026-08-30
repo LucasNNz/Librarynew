@@ -20,7 +20,7 @@ import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, d
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
-import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage } from "./core/production";
+import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getFinalArtifactLink, getFinalProjectFiles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalExports, queueFinalPackage } from "./core/production";
 import { addProjectQaEvent, attachProjectReferencesInline, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
 import { assignAssetsToSlots, listProductionModel, productionModelCounts, upsertProductionSlots } from "./core/production-model";
@@ -45,7 +45,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.35" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.36" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -965,6 +965,11 @@ function createServer(env: Env, request: Request) {
   server.registerTool("exportar_projeto_completo_zip", { description:"Alias de gerar_pacote_final; o ZIP permanece no R2 e depois é baixado por link temporário.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
   server.registerTool("gerar_zip", { description:"Compatibilidade histórica: enfileira geração do ZIP final do projeto.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
   server.registerTool("regenerar_zip_projeto", { description:"Gera nova revisão do pacote ZIP sem apagar versões anteriores no R2.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
+  server.registerTool("gerar_arquivos_finais_projeto", { description:"Gera/reutiliza de forma independente os 3 arquivos finais do Forma: imagens.zip, roteiro.txt e thumbs_titulos.zip. ACK assíncrono; não transporta binário pelo MCP.", inputSchema:{ projeto_id:z.string().min(1), tipos:z.array(z.enum(["PROJECT_IMAGES_ZIP","PROJECT_SCRIPT_TXT","PROJECT_PUBLICATION_ZIP"])).max(3).optional() } }, async(v)=>output(await queueFinalExports(env,{projectId:v.projeto_id,types:v.tipos})));
+  server.registerTool("obter_arquivos_finais_projeto", { description:"Retorna o estado e links diretos dos 3 arquivos finais independentes do projeto, sem binários.", inputSchema:{ projeto_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getFinalProjectFiles(request,env,v.projeto_id,v.validade_minutos||30)));
+  server.registerTool("obter_link_imagens_zip", { description:"Link temporário de um clique para imagens.zip do Forma.", inputSchema:{ projeto_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getFinalArtifactLink(request,env,v.projeto_id,"PROJECT_IMAGES_ZIP",v.validade_minutos||30)));
+  server.registerTool("obter_link_roteiro_txt", { description:"Link temporário de um clique para roteiro.txt ativo do Forma.", inputSchema:{ projeto_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getFinalArtifactLink(request,env,v.projeto_id,"PROJECT_SCRIPT_TXT",v.validade_minutos||30)));
+  server.registerTool("obter_link_thumbs_titulos_zip", { description:"Link temporário de um clique para thumbs_titulos.zip.", inputSchema:{ projeto_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getFinalArtifactLink(request,env,v.projeto_id,"PROJECT_PUBLICATION_ZIP",v.validade_minutos||30)));
   server.registerTool("listar_pacotes_prontos_para_download", { description:"Lista pacotes READY_FOR_DOWNLOAD armazenados no R2.", inputSchema:{ projeto_id:z.string().optional(), limite:z.number().int().min(1).max(200).optional() } }, async(v)=>output(await listReadyPackages(env,{projectId:v.projeto_id,limit:v.limite||100})));
   server.registerTool("obter_link_download_pacote", { description:"Gera link temporário direto ao R2/Worker para download no computador.", inputSchema:{ pacote_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getPackageLink(request,env,v.pacote_id,v.validade_minutos||30)));
   server.registerTool("confirmar_download_pacote", { description:"Registra confirmação do download sem apagar automaticamente o pacote.", inputSchema:{ pacote_id:z.string().min(1), maquina:z.string().optional(), sha256:z.string().optional() } }, async(v)=>output(await confirmPackageDownload(env,v.pacote_id,{machineName:v.maquina,sha256:v.sha256})));

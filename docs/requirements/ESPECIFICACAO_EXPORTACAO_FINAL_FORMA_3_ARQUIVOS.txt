@@ -1,0 +1,699 @@
+ESPECIFICACAO_EXPORTACAO_FINAL_FORMA_V1
+======================================
+
+OBJETIVO
+========
+Simplificar a saída final do projeto para que o usuário consiga baixar tudo o que precisa para o Forma em apenas 3 downloads rápidos, independentes e previsíveis.
+
+SAÍDA FINAL OBRIGATÓRIA
+=======================
+Cada projeto concluído deve disponibilizar exatamente estes 3 downloads principais:
+
+1) IMAGENS
+   imagens.zip
+
+2) ROTEIRO
+   roteiro.txt
+
+3) THUMBS + TÍTULOS
+   thumbs_titulos.zip
+
+Não criar um "pacote geral" obrigatório contendo tudo dentro.
+O usuário deve conseguir baixar cada um dos 3 arquivos separadamente, com um clique, diretamente para o PC.
+
+
+============================================================
+1. IMAGENS.ZIP — FORMATO COMPATÍVEL COM O FORMA
+============================================================
+
+O Forma recebe:
+- roteiro.txt separado
+- imagens.zip separado
+
+O imagens.zip deve ser simples e FLAT.
+
+ESTRUTURA CORRETA:
+
+imagens.zip
+├── 001-tomoro.jpg
+├── 001-chiropmon.jpg
+├── 002-reina.jpg
+├── 002-murasamemon.jpg
+├── 003-tomoro.jpg
+...
+└── 072-apollomon.jpg
+
+NÃO criar dentro do imagens.zip:
+- pasta por preset;
+- pasta por cena;
+- pasta por personagem;
+- pasta por asset;
+- pasta por universo;
+- IDs AST;
+- IDs internos;
+- manifests obrigatórios para o Forma;
+- estrutura administrativa do projeto.
+
+O ZIP deve conter SOMENTE os arquivos usados pelo roteiro, com os nomes finais exigidos pelo roteiro.
+
+REGRA PRINCIPAL
+===============
+Todo nome citado no roteiro deve existir exatamente dentro do imagens.zip.
+
+Exemplo:
+
+ROTEIRO:
+IMAGEM_A: 001-tomoro.jpg
+IMAGEM_B: 001-chiropmon.jpg
+
+ZIP:
+001-tomoro.jpg
+001-chiropmon.jpg
+
+VALIDAÇÃO OBRIGATÓRIA ANTES DE LIBERAR O ZIP
+=============================================
+O exportador deve validar:
+
+1. todas as referências de imagem do roteiro;
+2. todos os production slots resolvidos;
+3. todos os arquivos físicos existentes;
+4. nenhum arquivo necessário ausente;
+5. nenhum nome duplicado conflitante;
+6. nenhuma extensão falsa;
+7. nenhuma entrada extra administrativa.
+
+GATE:
+
+image_refs_script == arquivos_no_imagens_zip
+missing == 0
+duplicate_target_names == 0
+invalid_files == 0
+
+IMPORTANTE — EXTENSÃO REAL DO ARQUIVO
+=====================================
+Hoje existem casos em que:
+
+target_file:
+001-tomoro.jpg
+
+asset físico:
+char_main_01.png
+
+Isso NÃO pode ser resolvido apenas renomeando PNG para JPG.
+
+Se o roteiro exigir:
+001-tomoro.jpg
+
+o exportador precisa gerar JPEG real.
+
+Se o slot exigir PNG:
+001-tomoro.png
+
+o exportador deve preservar PNG real.
+
+Mesma regra para WEBP.
+
+Portanto:
+
+extensão_final == formato_real_dos_bytes
+
+Conversão de formato é ajuste técnico permitido.
+Não alterar semanticamente a imagem.
+
+TRANSPARÊNCIA
+=============
+Para presets/slots que exigem transparência real, preservar PNG.
+
+Exemplos conhecidos:
+- CENTRAL_2
+- FOCO_4
+- outros slots isolados que dependam de alpha
+
+Nesses casos, o roteiro também deve referenciar .png.
+
+Para imagens contextuais comuns, JPEG pode ser usado quando o roteiro pedir JPG.
+
+
+============================================================
+2. ROTEIRO.TXT
+============================================================
+
+O roteiro deve ser disponibilizado separadamente como:
+
+roteiro.txt
+
+Formato:
+- UTF-8;
+- conteúdo integral do SCRIPT aprovado;
+- sem encapsular em ZIP;
+- download direto;
+- exatamente a versão ativa do projeto.
+
+O Forma atualmente trabalha com:
+- até 100 perguntas;
+- até 250 imagens reconhecidas.
+
+Antes de liberar o projeto, validar:
+
+questions_script <= 100
+image_refs_script <= 250
+
+Além disso:
+
+questions_script == production_scenes_total
+
+PROBLEMA ENCONTRADO NO DIGIMON
+==============================
+O projeto possui 72 perguntas, porém o modelo estruturado do app chegou a:
+
+production_scenes_total = 60
+
+enquanto:
+
+production_slots_total = 102
+production_slots_resolved = 102
+
+As imagens das cenas 61–72 existem, mas parte desses slots ficou sem scene_id/contexto estruturado.
+
+Isso deve ser corrigido.
+
+REGRA NOVA
+==========
+O parser deve gerar uma PRODUCTION_SCENE para cada bloco numerado do roteiro.
+
+Exemplo:
+
+[1] -> CENA-001
+[2] -> CENA-002
+...
+[72] -> CENA-072
+
+Gate obrigatório:
+
+perguntas_no_script == production_scenes_total
+
+Se:
+72 perguntas
+60 production scenes
+
+o projeto NÃO deve ser considerado estruturalmente reconciliado.
+
+No caso correto:
+
+72 == 72
+
+
+============================================================
+3. THUMBS_TITULOS.ZIP
+============================================================
+
+O terceiro download deve reunir somente material editorial de publicação:
+
+thumbs_titulos.zip
+
+Estrutura sugerida:
+
+thumbs_titulos.zip
+├── thumbs/
+│   ├── thumb-01.jpg
+│   ├── thumb-02.jpg
+│   └── thumb-03.jpg
+└── titulos.txt
+
+O arquivo titulos.txt pode ser simples:
+
+TITULOS — DIGIMON BEATBREAK
+============================
+
+1. QUIZ ...
+2. ...
+3. ...
+
+Se existir um título selecionado:
+
+TITULO_SELECIONADO:
+...
+
+Não misturar nesse ZIP:
+- imagens das cenas;
+- roteiro;
+- assets internos;
+- arquivos de QA;
+- logs;
+- arquivos da biblioteca;
+- candidatas rejeitadas;
+- manifests administrativos.
+
+Objetivo:
+este ZIP serve apenas para o trabalho de publicação do vídeo.
+
+
+============================================================
+EXPERIÊNCIA DE DOWNLOAD NO APP
+============================================================
+
+Na tela do projeto concluído, mostrar uma área simples:
+
+ARQUIVOS FINAIS
+===============
+
+[ BAIXAR IMAGENS.ZIP ]
+102 imagens
+42,4 MB
+
+[ BAIXAR ROTEIRO.TXT ]
+72 perguntas
+
+[ BAIXAR THUMBS + TÍTULOS ]
+3 thumbs + titulos.txt
+
+Cada botão deve:
+- gerar ou reutilizar o artefato pronto;
+- devolver link temporário direto;
+- baixar para o PC;
+- não transportar binário pelo MCP;
+- não pedir permissão extra;
+- não exigir ticket manual;
+- não exigir PUT externo;
+- não abrir fluxo administrativo;
+- não depender de outra etapa.
+
+Objetivo operacional:
+1 clique = download.
+
+
+============================================================
+ARQUITETURA RECOMENDADA
+============================================================
+
+Manter 3 artefatos independentes no R2:
+
+PROJECT_IMAGES_ZIP
+PROJECT_SCRIPT_TXT
+PROJECT_PUBLICATION_ZIP
+
+Exemplo:
+
+projects/{project_id}/exports/
+├── imagens.zip
+├── roteiro.txt
+└── thumbs_titulos.zip
+
+Cada registro no D1 deve possuir:
+
+artifact_id
+project_id
+artifact_type
+status
+r2_key
+file_name
+size_bytes
+sha256
+created_at
+ready_at
+error
+
+STATUS:
+
+QUEUED
+PROCESSING
+READY_FOR_DOWNLOAD
+FAILED
+
+
+============================================================
+EXPORTAÇÃO DE IMAGENS — 1:N
+============================================================
+
+A Biblioteca continua armazenando somente uma cópia física do asset.
+
+Exemplo:
+
+AST-X usado em:
+003-tomoro.jpg
+038-tomoro.jpg
+060-tomoro.jpg
+
+No R2 da Library:
+1 arquivo físico.
+
+No imagens.zip:
+3 entradas com os nomes exigidos pelo roteiro.
+
+Isso NÃO deve gerar três novos assets na Library.
+
+É apenas materialização lógica no momento da exportação.
+
+ASSET 1 -> N PRODUCTION SLOTS
+PRODUCTION SLOTS -> N NOMES NO ZIP
+
+
+============================================================
+NÃO REFAZER PIPELINE PARA EXPORTAR
+============================================================
+
+Depois que:
+- QA estiver aprovado;
+- slots estiverem FROZEN;
+- produção estiver completa;
+
+gerar os arquivos finais a partir do estado persistido.
+
+Não repetir:
+- coleta;
+- busca;
+- QA;
+- aprovação;
+- relink;
+- rotação;
+- materialização original.
+
+O exportador deve consumir somente:
+- SCRIPT ativo;
+- production scenes;
+- production slots;
+- assets FROZEN;
+- thumbs aprovadas;
+- títulos aprovados/candidatos.
+
+
+============================================================
+FIXED LENGTH / R2
+============================================================
+
+A correção aplicada ao ZIP deve permanecer como padrão.
+
+O upload final para R2 não pode utilizar ReadableStream arbitrário de comprimento desconhecido.
+
+Usar:
+- FixedLengthStream; ou
+- body com tamanho conhecido.
+
+O Digimon confirmou que a correção funciona:
+
+package_status = READY_FOR_DOWNLOAD
+fixedLengthStream = true
+
+Essa implementação deve ser reutilizada também para:
+- imagens.zip;
+- thumbs_titulos.zip.
+
+
+============================================================
+VALIDAÇÃO FINAL — IMAGENS.ZIP
+============================================================
+
+Antes de marcar READY_FOR_DOWNLOAD:
+
+1. ler SCRIPT ativo;
+2. extrair todos os campos:
+   IMAGEM
+   IMAGEM_A
+   IMAGEM_B
+   IMAGEM1
+   IMAGEM2
+   IMAGEM3
+   IMAGEM4
+   IMAGEM_PRINCIPAL
+   IMAGEM_1
+   IMAGEM_2
+   IMAGEM_3
+   IMAGEM_4
+   IMAGEM_RESULTADO
+   e demais campos suportados;
+
+3. gerar lista única de nomes esperados;
+4. resolver cada nome para um production slot;
+5. confirmar asset físico no R2;
+6. materializar a entrada final com o nome correto;
+7. confirmar formato real;
+8. montar ZIP flat;
+9. reabrir índice do ZIP;
+10. comparar esperado x conteúdo real.
+
+Resultado obrigatório:
+
+missing = 0
+unexpected = 0
+duplicate_names = 0
+invalid_format = 0
+
+
+============================================================
+VALIDAÇÃO FINAL — ROTEIRO
+============================================================
+
+Antes do download:
+
+- UTF-8;
+- versão ativa;
+- sem truncamento;
+- número de perguntas correto;
+- dentro do limite do Forma;
+- todas as referências de imagens válidas;
+- production scenes reconciliadas.
+
+Gate:
+
+questions_script == production_scenes_total
+
+
+============================================================
+VALIDAÇÃO FINAL — THUMBS + TÍTULOS
+============================================================
+
+O artefato editorial não deve bloquear o imagens.zip ou roteiro.txt.
+
+Exemplo:
+
+Se imagens e roteiro estiverem prontos:
+- liberar imagens.zip;
+- liberar roteiro.txt.
+
+Se thumbs ainda estiverem em produção:
+- thumbs_titulos.zip pode continuar PROCESSING.
+
+Os 3 artefatos são independentes.
+
+Isso evita travar todo o projeto por causa de uma thumb.
+
+
+============================================================
+REUTILIZAÇÃO DE EXPORT
+============================================================
+
+Se nada mudou desde a última geração, não recriar o ZIP.
+
+Usar chave de revisão/hash.
+
+Exemplo:
+
+project_revision
+script_hash
+production_manifest_hash
+thumbs_revision
+titles_revision
+
+Se o manifesto das imagens for idêntntico:
+reutilizar imagens.zip existente.
+
+Se só os títulos mudaram:
+regenerar somente thumbs_titulos.zip.
+
+Se o roteiro mudou:
+regenerar roteiro.txt e, caso os nomes das imagens tenham mudado, imagens.zip.
+
+Objetivo:
+downloads rápidos e baixo custo.
+
+
+============================================================
+UI RECOMENDADA
+============================================================
+
+Não expor complexidade interna.
+
+Em vez de:
+- gerar pacote;
+- preparar pacote;
+- montar export;
+- manifest;
+- operação;
+- worker;
+- pacote de produção;
+
+mostrar apenas:
+
+ARQUIVOS FINAIS
+
+IMAGENS
+Pronto
+[ Baixar ZIP ]
+
+ROTEIRO
+Pronto
+[ Baixar TXT ]
+
+THUMBS + TÍTULOS
+Pronto
+[ Baixar ZIP ]
+
+Opcional:
+mostrar tamanho e data da última geração.
+
+
+============================================================
+O QUE CORRIGIR AGORA
+============================================================
+
+PRIORIDADE 1
+------------
+Corrigir parser/reconciliação para:
+
+72 perguntas
+-> 72 production scenes
+
+e não 60.
+
+PRIORIDADE 2
+------------
+Criar exportador específico:
+
+PROJECT_IMAGES_ZIP
+
+com:
+- ZIP flat;
+- somente imagens usadas pelo roteiro;
+- nomes exatos do roteiro;
+- 0 arquivos administrativos.
+
+PRIORIDADE 3
+------------
+Adicionar conversão técnica de formato:
+
+target .jpg -> JPEG real
+target .png -> PNG real
+target .webp -> WEBP real
+
+Nunca apenas trocar a extensão.
+
+PRIORIDADE 4
+------------
+Disponibilizar SCRIPT como artefato final direto:
+
+PROJECT_SCRIPT_TXT
+
+sem ZIP.
+
+PRIORIDADE 5
+------------
+Criar:
+
+PROJECT_PUBLICATION_ZIP
+
+contendo:
+- thumbs/
+- titulos.txt
+
+PRIORIDADE 6
+------------
+Tratar os 3 outputs independentemente.
+
+Um artefato faltante não bloqueia os outros.
+
+PRIORIDADE 7
+------------
+Adicionar 3 botões diretos na UI e respectivas ferramentas MCP de leitura/link:
+
+obter_link_imagens_zip
+obter_link_roteiro_txt
+obter_link_thumbs_titulos_zip
+
+ou uma única leitura:
+
+obter_arquivos_finais_projeto(projeto_id)
+
+retornando:
+
+{
+  imagens: {...},
+  roteiro: {...},
+  publicacao: {...}
+}
+
+Sem transportar binários pelo MCP.
+
+
+============================================================
+CONTRATO FINAL ESPERADO
+============================================================
+
+Projeto finalizado:
+
+IMAGENS
+status: READY_FOR_DOWNLOAD
+arquivo: imagens.zip
+
+ROTEIRO
+status: READY_FOR_DOWNLOAD
+arquivo: roteiro.txt
+
+PUBLICAÇÃO
+status: READY_FOR_DOWNLOAD
+arquivo: thumbs_titulos.zip
+
+Experiência desejada:
+
+abrir projeto
+-> ver 3 arquivos
+-> clicar
+-> baixar no PC
+
+Sem etapa intermediária.
+Sem confirmação adicional.
+Sem ticket manual.
+Sem reconstruir pipeline.
+Sem ZIP geral obrigatório.
+
+
+============================================================
+DEFINIÇÃO DE PRONTO
+============================================================
+
+Considerar a exportação final pronta quando:
+
+[ ] perguntas do SCRIPT == production scenes
+[ ] todos os image refs têm production slot
+[ ] todos os production slots estão resolvidos
+[ ] imagens.zip é flat
+[ ] nomes no ZIP == nomes no roteiro
+[ ] formato real == extensão final
+[ ] missing == 0
+[ ] unexpected == 0
+[ ] roteiro.txt é UTF-8 e versão ativa
+[ ] thumbs_titulos.zip contém somente thumbs + titulos.txt
+[ ] os 3 artefatos possuem link direto
+[ ] os 3 artefatos podem ser baixados independentemente
+[ ] não existe pedido de permissão no fluxo normal
+[ ] não existe PUT manual
+[ ] não existe dependência de materialização no chat
+[ ] artefatos idênticos são reutilizados
+[ ] geração ZIP usa FixedLengthStream/body de tamanho conhecido
+
+
+RESUMO
+======
+O objetivo não é criar um pacote sofisticado de projeto.
+
+O objetivo é entregar três arquivos extremamente simples:
+
+1. imagens.zip
+2. roteiro.txt
+3. thumbs_titulos.zip
+
+Esses três arquivos devem estar sempre visíveis na conclusão do projeto e ser baixáveis com um clique.
+
+Para o Forma, o ponto mais importante é:
+ROTEIRO.TXT + IMAGENS.ZIP FLAT, com os nomes exatos das imagens e formatos físicos corretos.
+
+A Library, QA, 1:N, pools, manifests e demais estruturas continuam existindo internamente, mas não devem aparecer nem complicar a experiência de download final.

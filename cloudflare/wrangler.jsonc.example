@@ -16,6 +16,9 @@
       "bucket_name": "corvoquiz-prod"
     }
   ],
+  "images": {
+    "binding": "IMAGES"
+  },
   "queues": {
     "producers": [
       {

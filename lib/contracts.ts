@@ -192,7 +192,36 @@ export type ProjectSlotSnapshot = {
   production?: {reference_pools_total:number;production_scenes_total:number;production_slots_total:number;production_slots_resolved:number};
   candidates: Record<string,unknown>;
   package?: Record<string,unknown>|null;
+  finalArtifacts?: {imagens?:Record<string,unknown>|null;roteiro?:Record<string,unknown>|null;publicacao?:Record<string,unknown>|null};
   slotAccess?: Array<Record<string,unknown>>;
+};
+
+
+export type FinalProjectArtifact = {
+  artifact_type:string;
+  label:string;
+  status:string;
+  stored_status?:string;
+  stale?:boolean;
+  expected_revision_hash?:string|null;
+  file_name:string;
+  size_bytes:number;
+  sha256?:string|null;
+  revision_hash?:string|null;
+  ready_at?:number|null;
+  error?:string|null;
+  download_url?:string|null;
+  package_id?:string|null;
+  direct_to_pc?:boolean;
+};
+
+export type FinalProjectFiles = {
+  project_id:string;
+  project_name?:string;
+  state_version?:number;
+  independent:boolean;
+  one_click_download:boolean;
+  artifacts:{imagens:FinalProjectArtifact;roteiro:FinalProjectArtifact;publicacao:FinalProjectArtifact};
 };
 
 export type StorageAudit = {

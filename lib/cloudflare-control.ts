@@ -99,6 +99,7 @@ export async function deployWorker(input: WorkerDeployInput) {
     bindings: [
       { type: "d1", name: "DB", id: input.databaseId },
       { type: "r2_bucket", name: "MEDIA", bucket_name: input.r2BucketName },
+      { type: "images", name: "IMAGES" },
       { type: "queue", name: "MATERIALIZE_QUEUE", queue_name: input.queueName },
       { type: "secret_text", name: "CORVO_INTERNAL_KEY", text: input.internalKey },
       { type: "secret_text", name: "CORVO_APP_KEY", text: input.appKey },

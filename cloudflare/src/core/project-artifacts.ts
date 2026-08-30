@@ -35,7 +35,7 @@ export async function listProjectArtifacts(request:Request,env:Env,projectId:str
     env.DB.prepare(`SELECT i.id AS item_row_id,i.item_key,i.status AS item_status,i.linked_asset_id,a.id AS asset_id,a.name,a.original_name,a.mime_type,a.size_bytes,a.created_at,a.updated_at
       FROM automatic_project_items i JOIN assets a ON a.id=i.linked_asset_id WHERE i.project_id=? AND i.linked_asset_id IS NOT NULL ORDER BY i.updated_at DESC LIMIT ?`).bind(projectId,safe).all<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,kind,status,name,mime_type,size_bytes,selected,slot_index,created_at,updated_at FROM v2_project_media WHERE project_id=? AND r2_key IS NOT NULL ORDER BY created_at DESC LIMIT ?").bind(projectId,safe).all<Record<string,unknown>>(),
-    env.DB.prepare("SELECT id,status,file_name,size_bytes,sha256,created_at,updated_at,r2_key FROM v2_download_packages WHERE project_id=? ORDER BY created_at DESC LIMIT ?").bind(projectId,Math.min(safe,100)).all<Record<string,unknown>>(),
+    env.DB.prepare("SELECT id,type,status,file_name,size_bytes,sha256,created_at,updated_at,r2_key,mime_type,revision_hash,error FROM v2_download_packages WHERE project_id=? ORDER BY created_at DESC LIMIT ?").bind(projectId,Math.min(safe,100)).all<Record<string,unknown>>(),
   ]);
 
   const artifacts:ProjectArtifact[]=[];
@@ -64,7 +64,8 @@ export async function listProjectArtifacts(request:Request,env:Env,projectId:str
   for(const row of packages.results||[]){
     const ready=Boolean(clean(row.r2_key))&&["READY_FOR_DOWNLOAD","DOWNLOADED"].includes(clean(row.status));
     const signed=ready?await createSignedPackageUrl(request,clean(row.id),env,1800):null;
-    artifacts.push({id:clean(row.id),source:"PACKAGE",stage:"EXPORT",name:clean(row.file_name)||`${clean(row.id)}.zip`,status:clean(row.status)||"UNKNOWN",mime_type:"application/zip",size_bytes:Number(row.size_bytes||0),created_at:Number(row.created_at||0),updated_at:Number(row.updated_at||0)||null,preview_url:null,download_url:signed,previewable:false,downloadable:Boolean(signed),metadata:{sha256:row.sha256||null}});
+    const mime=clean(row.mime_type)||(clean(row.type)==="PROJECT_SCRIPT_TXT"?"text/plain; charset=utf-8":"application/zip");
+    artifacts.push({id:clean(row.id),source:"PACKAGE",stage:clean(row.type)||"EXPORT",name:clean(row.file_name)||`${clean(row.id)}.${mime.startsWith("text/")?"txt":"zip"}`,status:clean(row.status)||"UNKNOWN",mime_type:mime,size_bytes:Number(row.size_bytes||0),created_at:Number(row.created_at||0),updated_at:Number(row.updated_at||0)||null,preview_url:null,download_url:signed,previewable:false,downloadable:Boolean(signed),metadata:{sha256:row.sha256||null,revision_hash:row.revision_hash||null,error:row.error||null}});
   }
 
   artifacts.sort((a,b)=>(b.created_at||0)-(a.created_at||0));

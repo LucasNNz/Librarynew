@@ -1,0 +1,40 @@
+{
+  "checkpoint": "0.20.36",
+  "gate": "FORMA_FINAL_EXPORT_3_FILES",
+  "passed": 25,
+  "total": 25,
+  "ok": true,
+  "checks": {
+    "three_artifact_types_source": true,
+    "exact_final_filenames": true,
+    "images_zip_flat_source": true,
+    "images_exact_script_refs_gate": true,
+    "real_byte_format_validation_conversion": true,
+    "alpha_presets_require_png": true,
+    "script_utf8_and_limits": true,
+    "parser_numbered_blocks": true,
+    "publication_zip_scope": true,
+    "independent_queueing": true,
+    "revision_hash_reuse": true,
+    "fixed_length_both_zip_paths": true,
+    "completed_project_export_allowed": true,
+    "five_mcp_final_tools": true,
+    "final_exports_http_routes": true,
+    "ui_three_final_cards": true,
+    "schema_2_22": true,
+    "embedded_worker_version": true,
+    "embedded_final_tools": true,
+    "embedded_final_routes": true,
+    "embedded_fixed_length": true,
+    "embedded_schema_2_22": true,
+    "embedded_images_binding": true,
+    "parser_smoke_72_questions_102_slots": true,
+    "embedded_node_check": true
+  },
+  "parser_smoke": {
+    "questions": 72,
+    "slots": 102,
+    "unique_targets": 102
+  },
+  "embedded_worker_sha256": "fbabcfb1a0717eb56f7f1ef4ed089991acf212ccc6e585f92b51b728d1ed28f3"
+}

@@ -1,0 +1,36 @@
+{
+  "questions": 72,
+  "slots": 102,
+  "unique_targets": 102,
+  "first": {
+    "itemKey": "CENA-001",
+    "number": 1,
+    "title": "Pergunta 1",
+    "subject": "Pergunta 1",
+    "universe": "",
+    "concept": "001-personagem.jpg",
+    "reference": "001-personagem.jpg",
+    "scriptExcerpt": "[1] Pergunta 1\nIMAGEM: 001-personagem.jpg\nIMAGEM_B: 001-apoio.jpg",
+    "preset": "",
+    "compositionClass": "CONTEXTUAL",
+    "targetFiles": [
+      "001-personagem.jpg",
+      "001-apoio.jpg"
+    ]
+  },
+  "last": {
+    "itemKey": "CENA-072",
+    "number": 72,
+    "title": "Pergunta 72",
+    "subject": "Pergunta 72",
+    "universe": "",
+    "concept": "072-personagem.jpg",
+    "reference": "072-personagem.jpg",
+    "scriptExcerpt": "[72] Pergunta 72\nIMAGEM: 072-personagem.jpg",
+    "preset": "",
+    "compositionClass": "CONTEXTUAL",
+    "targetFiles": [
+      "072-personagem.jpg"
+    ]
+  }
+}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import type { Asset, AutomaticProject, ProjectArtifactInventory, ProjectSlotSnapshot, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
+import type { Asset, AutomaticProject, FinalProjectFiles, ProjectArtifactInventory, ProjectSlotSnapshot, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
 import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
 type SchemaContractState = {
@@ -71,7 +71,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.35";
+const EXPECTED_CORE_VERSION = "0.20.36";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -365,6 +365,8 @@ export default function Home() {
   const [projectSlot, setProjectSlot] = useState<ProjectSlotSnapshot | null>(null);
   const [projectArtifacts, setProjectArtifacts] = useState<ProjectArtifactInventory | null>(null);
   const [projectArtifactsLoading, setProjectArtifactsLoading] = useState(false);
+  const [finalProjectFiles, setFinalProjectFiles] = useState<FinalProjectFiles | null>(null);
+  const [finalProjectFileBusyType, setFinalProjectFileBusyType] = useState<string | null>(null);
   const [projectSlotLoading, setProjectSlotLoading] = useState(false);
   const [projectBulkBusy, setProjectBulkBusy] = useState(false);
   const [projectMessage, setProjectMessage] = useState("");
@@ -796,6 +798,34 @@ export default function Home() {
     } finally { setProjectSlotLoading(false); }
   },[]);
 
+  const refreshFinalProjectFiles = useCallback(async (projectId:string) => {
+    try {
+      const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/final-exports?ttlMinutes=30`,{cache:"no-store"});
+      const value=await response.json().catch(()=>null);
+      if(response.ok)setFinalProjectFiles(value as FinalProjectFiles); else setFinalProjectFiles(null);
+    } catch { setFinalProjectFiles(null); }
+  },[]);
+
+  const downloadFinalProjectArtifact = useCallback(async (projectId:string,type:string,key:"imagens"|"roteiro"|"publicacao") => {
+    setFinalProjectFileBusyType(type);setProjectMessage("");
+    try{
+      const start=await fetch(`/api/projects/${encodeURIComponent(projectId)}/final-exports`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({types:[type]})});
+      const queued=await start.json().catch(()=>({}));if(!start.ok)throw new Error(String(queued?.error||`HTTP_${start.status}`));
+      const result=Array.isArray(queued?.artifacts)?queued.artifacts[0]:null;if(result?.error)throw new Error(String(result.error));
+      for(let attempt=0;attempt<90;attempt++){
+        const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/final-exports?ttlMinutes=30`,{cache:"no-store"});
+        const value=await response.json().catch(()=>null);if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+        setFinalProjectFiles(value as FinalProjectFiles);
+        const artifact=value?.artifacts?.[key];
+        if(artifact?.download_url&&["READY_FOR_DOWNLOAD","DOWNLOADED"].includes(String(artifact.status||""))){const anchor=document.createElement("a");anchor.href=String(artifact.download_url);anchor.download=String(artifact.file_name||"");anchor.rel="noreferrer";document.body.appendChild(anchor);anchor.click();anchor.remove();return;}
+        if(["FAILED"].includes(String(artifact?.status||"")))throw new Error(String(artifact?.error||"FINAL_ARTIFACT_FAILED"));
+        await new Promise(resolve=>setTimeout(resolve,1000));
+      }
+      throw new Error("FINAL_ARTIFACT_TIMEOUT");
+    }catch(error){setProjectMessage(error instanceof Error?error.message:"FINAL_EXPORT_FAILED");}
+    finally{setFinalProjectFileBusyType(null);}
+  },[]);
+
   const copyProjectTextRole = useCallback(async (projectId:string,role:string,label:string) => {
     try{
       const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/files/read?role=${encodeURIComponent(role)}`,{cache:"no-store"});
@@ -826,7 +856,7 @@ export default function Home() {
       if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
       setProjectMessage(action==="DELETE"?`${Number(value.deleted||0)} projeto(s) excluído(s) permanentemente.`:`${Number(value.updated||0)} projeto(s) atualizado(s).`);
       setSelectedProjectIds(new Set());
-      if(action==="DELETE"&&selectedProjectId&&ids.includes(selectedProjectId)){setSelectedProjectId(null);setProjectSlot(null);setProjectArtifacts(null);}
+      if(action==="DELETE"&&selectedProjectId&&ids.includes(selectedProjectId)){setSelectedProjectId(null);setProjectSlot(null);setProjectArtifacts(null);setFinalProjectFiles(null);}
       await refreshRecords("Projetos");
       if(selectedProjectId&&!(action==="DELETE"&&ids.includes(selectedProjectId)))await refreshProjectSlot(selectedProjectId);
     } catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_BULK_ACTION_FAILED");}
@@ -854,7 +884,7 @@ export default function Home() {
       const response=await fetch("/api/projects/bulk",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({projectIds:[projectId],action:"DELETE",confirm:true})});
       const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
       setProjectMessage("Projeto excluído permanentemente.");setSelectedProjectIds(current=>{const next=new Set(current);next.delete(projectId);return next;});
-      if(selectedProjectId===projectId){setSelectedProjectId(null);setProjectSlot(null);setProjectArtifacts(null);}await refreshRecords("Projetos");
+      if(selectedProjectId===projectId){setSelectedProjectId(null);setProjectSlot(null);setProjectArtifacts(null);setFinalProjectFiles(null);}await refreshRecords("Projetos");
     }catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_DELETE_FAILED");}finally{setProjectBulkBusy(false);}
   },[refreshRecords,selectedProjectId]);
 
@@ -1095,10 +1125,12 @@ export default function Home() {
     if(currentView!=="Projetos"||!selectedProjectId)return;
     void refreshProjectSlot(selectedProjectId);
     void refreshProjectArtifacts(selectedProjectId);
+    void refreshFinalProjectFiles(selectedProjectId);
     const slotTimer=setInterval(()=>void refreshProjectSlot(selectedProjectId),5000);
     const artifactTimer=setInterval(()=>void refreshProjectArtifacts(selectedProjectId),12000);
-    return()=>{clearInterval(slotTimer);clearInterval(artifactTimer);};
-  },[currentView,selectedProjectId,refreshProjectSlot,refreshProjectArtifacts]);
+    const finalTimer=setInterval(()=>void refreshFinalProjectFiles(selectedProjectId),7000);
+    return()=>{clearInterval(slotTimer);clearInterval(artifactTimer);clearInterval(finalTimer);};
+  },[currentView,selectedProjectId,refreshProjectSlot,refreshProjectArtifacts,refreshFinalProjectFiles]);
 
   useEffect(() => {
     if(currentView!=="Projetos")return;
@@ -1641,6 +1673,11 @@ Tudo é configurado pela própria tela Configurações.
                 const referenceArtifact=projectArtifacts?.artifacts.find(item=>item.source==="PROJECT_FILE"&&["REFERENCES","REFERENCIAS","REFERENCE_BRIEF","IMAGENS_NECESSARIAS","IMAGENS NECESSARIAS"].includes(String(item.role||item.stage||"").toUpperCase()))||null;
                 const pipeline:[ProjectStageKey,string,UiIconName][]=[["script","Roteiro","spark"],["reference","Referências","brain"],["collector","Coletor","search"],["visual","Analista visual","target"],["downloader","Baixador","download"]];
                 const itemsTotal=Number(projectSlot.items.total||0),target=Number(projectSlot.items.target||0),materialized=Number(projectSlot.items.materialized||0),approved=Math.max(Number(projectSlot.items.approved||0),Number(projectSlot.candidates.approved||0)),failed=Number(projectSlot.candidates.failed||0);
+                const finalEntries=[
+                  {key:"imagens" as const,type:"PROJECT_IMAGES_ZIP",title:"IMAGENS",file:"imagens.zip",detail:`${Number(projectSlot.production?.production_slots_resolved||0)} imagens/slots resolvidos`},
+                  {key:"roteiro" as const,type:"PROJECT_SCRIPT_TXT",title:"ROTEIRO",file:"roteiro.txt",detail:`${Number(projectSlot.production?.production_scenes_total||0)} perguntas/cenas`},
+                  {key:"publicacao" as const,type:"PROJECT_PUBLICATION_ZIP",title:"THUMBS + TÍTULOS",file:"thumbs_titulos.zip",detail:`${projectSlot.thumbs.count} thumbs · ${projectSlot.titles.count} títulos`},
+                ];
                 return <>
                   <header className="projectDetailHeader">
                     <div className="projectDetailIdentity"><div className="projectDetailCover"><span>{projectInitials(projectSlot.project.name)}</span></div><div><div className="projectDetailTitleLine"><h3>{projectSlot.project.name}</h3><span className={`projectStatusPill ${lifecycle.toLowerCase()}`}>{lifecycle==="ACTIVE"?"Em execução":lifecycle==="COMPLETED"?"Concluído":"Rejeitado"}</span></div><p>{projectSlot.project.project_domain||"Corvo Library"} · criado em {formatProjectMoment(projectSlot.project.created_at)} · <code>{projectSlot.project.id}</code></p>{Boolean(projectSlot.project.mcp_locked)&&<span className="projectLockedCallout">🔒 MCP bloqueado — reabertura somente por comando explícito</span>}</div></div>
@@ -1654,6 +1691,11 @@ Tudo é configurado pela própria tela Configurações.
                   <section className="projectSlotSection">
                     <header><div><span className="eyebrow">CONTEÚDO DO PROJETO</span><h4>Slots integrados</h4></div><span>{projectSlot.slots.filter(slot=>slot.state==="READY").length}/{projectSlot.slots.length} prontos</span></header>
                     <div className="projectSlotCards">{projectSlot.slots.map(slot=>{const textArtifact=slot.key==="script"?scriptArtifact:slot.key==="reference"?referenceArtifact:null;const textRole=slot.key==="script"?"SCRIPT":slot.key==="reference"?String(referenceArtifact?.role||"REFERENCES"):null;return <article className={`projectContentSlot state-${slot.state.toLowerCase()} ${slot.mcpOpen?"mcp-open":""} ${slot.key==="reference"?"reference-brief-slot":""}`} key={slot.key}><div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><p>{slot.summary}</p>{slot.key==="reference"&&<div className="referenceSlotPurpose"><b>TXT PARA O COLETOR</b><span>O agente de referências escreve aqui o que precisa ser buscado. O Coletor e o MCP podem ler o conteúdo imediatamente.</span></div>}{slot.mcpOpen&&<div className="slotMcpInstruction"><b>IA/MCP aberto</b>{slot.instruction&&<span>{slot.instruction}</span>}</div>}<div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><div className="projectSlotFooter"><small>{slot.progress}%</small><div className="projectSlotActions"><button disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void manualAddProjectSlot(slot.key)}>{slot.key==="reference"?"＋ TXT":"＋ Adicionar"}</button>{textArtifact?.preview_url&&<button onClick={()=>window.open(textArtifact.preview_url!,"_blank","noopener,noreferrer")}>Ver</button>}{textRole&&textArtifact&&<button onClick={()=>void copyProjectTextRole(projectSlot.project.id,textRole,slot.key==="reference"?"TXT de referências":"Roteiro")}>Copiar</button>}{textArtifact?.download_url&&<a href={textArtifact.download_url} target="_blank" rel="noreferrer">Baixar</a>}<button className={slot.mcpOpen?"mcpOpen active":"mcpOpen"} disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void configureSlotForMcp(slot.key,Boolean(slot.mcpOpen))}>{slot.mcpOpen?"● MCP aberto":"○ Abrir para MCP"}</button></div></div></article>})}</div>
+                  </section>
+
+                  <section className="projectFinalFilesSection">
+                    <header><div><span className="eyebrow">ARQUIVOS FINAIS</span><h4>3 downloads para o Forma</h4><p>Um clique em Baixar gera ou reutiliza o artefato e inicia o download assim que ele estiver pronto. Os três arquivos são independentes.</p></div></header>
+                    <div className="projectFinalFileGrid">{finalEntries.map(entry=>{const artifact=finalProjectFiles?.artifacts?.[entry.key];const ready=Boolean(artifact?.download_url)&&["READY_FOR_DOWNLOAD","DOWNLOADED"].includes(String(artifact?.status||""));const processing=["QUEUED","PROCESSING"].includes(String(artifact?.status||""))||finalProjectFileBusyType===entry.type;const stale=String(artifact?.status||"")==="STALE";return <article className={`projectFinalFileCard ${ready?"ready":processing?"processing":artifact?.status==="FAILED"?"failed":"waiting"}`} key={entry.key}><div className="projectFinalFileIcon"><UiIcon name={entry.key==="roteiro"?"spark":entry.key==="imagens"?"assets":"download"} size={22}/></div><div className="projectFinalFileBody"><span>{entry.title}</span><strong>{artifact?.file_name||entry.file}</strong><small>{entry.detail}</small>{artifact?.error&&<em title={String(artifact.error)}>{String(artifact.error).slice(0,130)}</em>}</div><div className="projectFinalFileAction"><b>{ready?"Pronto":processing?"Preparando":stale?"Atualização necessária":artifact?.status==="FAILED"?"Falhou":"Disponível sob demanda"}</b>{ready?<a className="primary" href={artifact!.download_url!} download={artifact!.file_name||entry.file}>Baixar</a>:<button className="primary" disabled={finalProjectFileBusyType===entry.type} onClick={()=>void downloadFinalProjectArtifact(projectSlot.project.id,entry.type,entry.key)}>{finalProjectFileBusyType===entry.type?"Preparando…":"Baixar"}</button>}{artifact?.size_bytes? <small>{formatBytes(Number(artifact.size_bytes))}</small>:null}</div></article>})}</div>
                   </section>
 
                   <section className="projectArtifactSection">

@@ -49,3 +49,9 @@ Antes de substituir a Library antiga valide:
 - pacote final/ZIP;
 - redeploy do frontend sem reconfiguração;
 - atualização do Core sem reset de D1/R2/Queue.
+
+## 0.20.36 — binding técnico de conversão para o Forma
+
+O Core 0.20.36 usa o binding Cloudflare Images `IMAGES` **somente** quando o formato real dos bytes do asset não coincide com a extensão pedida pelo `target_file` final (`.jpg`, `.png` ou `.webp`). O self-update do Core e `cloudflare/wrangler.jsonc.example` já incluem esse binding.
+
+Se todos os assets já estiverem no formato físico correto, o exportador não chama `IMAGES`. Se houver mismatch e o binding não estiver provisionado, o artefato falha explicitamente com `IMAGES_BINDING_REQUIRED`; o sistema nunca resolve o caso apenas trocando a extensão do arquivo.

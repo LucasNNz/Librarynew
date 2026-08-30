@@ -25,6 +25,7 @@ async function cloudflarePut(env: Env, bundle: string) {
     bindings: [
       { type: "d1", name: "DB", id: databaseId },
       { type: "r2_bucket", name: "MEDIA", bucket_name: r2BucketName },
+      { type: "images", name: "IMAGES" },
       { type: "queue", name: "MATERIALIZE_QUEUE", queue_name: queueName },
       { type: "secret_text", name: "CORVO_INTERNAL_KEY", text: env.CORVO_INTERNAL_KEY },
       { type: "secret_text", name: "CORVO_APP_KEY", text: env.CORVO_APP_KEY },
@@ -297,6 +298,11 @@ export async function applyMigrationsFromApp(env: Env) {
   if (preSchemaContract?.ready && collectorMigration && !applied.has(collectorMigration.name)) {
     await registerMigration(env,collectorMigration,"APPLIED","schema_contract_reconciled");
     applied.add(collectorMigration.name);
+  }
+  const finalExportsMigration=items.find(item=>item.name==="9022_v2_final_exports_forma.sql");
+  if(preSchemaContract?.ready&&finalExportsMigration&&!applied.has(finalExportsMigration.name)){
+    await registerMigration(env,finalExportsMigration,"APPLIED","schema_contract_reconciled");
+    applied.add(finalExportsMigration.name);
   }
 
   for(const item of items){

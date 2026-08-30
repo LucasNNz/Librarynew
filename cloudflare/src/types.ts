@@ -13,6 +13,7 @@ export interface Env {
   CORVO_QUEUE_NAME?: string;
   CORVO_DLQ_NAME?: string;
   CORVO_APP_ORIGIN?: string;
+  IMAGES?: any; // Optional Cloudflare Images binding used only for technical JPG/PNG/WEBP conversion during final Forma export.
 }
 
 export type MaterializeJob = {

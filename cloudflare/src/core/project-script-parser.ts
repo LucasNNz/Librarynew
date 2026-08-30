@@ -25,7 +25,8 @@ function stripMarkdown(value:string){
 function sceneHeader(line:string){
   const raw=stripMarkdown(line);
   const patterns=[
-    /^\[\s*0*(\d{1,4})\s*\]\s*(?:[-–—:|]\s*(.*))?$/i,
+    /^\[\s*0*(\d{1,4})\s*\]\s*(?:[-–—:|]\s*)?(.*)$/i,
+    /^(?:PERGUNTA|QUESTAO|QUESTÃO|QUESTION)\s*[-_:#]?\s*0*(\d{1,4})\s*(?:[-–—:|]\s*)?(.*)$/i,
     /^\[?\s*(?:CENA|SCENE)\s*[-_:#]?\s*0*(\d{1,4})\s*\]?\s*(?:[-–—:|]\s*(.*))?$/i,
     /^\[?\s*(CENA[-_ ]?0*\d{1,4})\s*\]?\s*(?:[-–—:|]\s*(.*))?$/i,
     /^(?:ID|SCENE_ID|CENA_ID)\s*[:=-]\s*\[?\s*(?:CENA|SCENE)?\s*[-_ ]?0*(\d{1,4})\s*\]?\s*(?:[-–—:|]\s*(.*))?$/i,
@@ -78,7 +79,10 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
   const boundaries:Array<{index:number;number:number;title:string}> = [];
   for(let index=0;index<lines.length;index++){
     const header=sceneHeader(lines[index]);
-    if(header)boundaries.push({index,...header});
+    if(!header)continue;
+    const previous=boundaries[boundaries.length-1];
+    if(previous&&previous.number===header.number&&index-previous.index<=3){if(!previous.title&&header.title)previous.title=header.title;continue;}
+    boundaries.push({index,...header});
   }
   if(!boundaries.length)return [];
 
@@ -118,7 +122,7 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
   return scenes;
 }
 
-export async function materializeScenesFromProjectScript(env:Env,input:{projectId:string;content:string;fileId?:string;fileName?:string}){
+export async function materializeScenesFromProjectScript(env:Env,input:{projectId:string;content:string;fileId?:string;fileName?:string;productionOnly?:boolean}){
   const projectId=clean(input.projectId);
   const project=await env.DB.prepare("SELECT id,active_version,status,pipeline_status FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
   if(!project)return {ok:false,error:"PROJECT_NOT_FOUND",status:404,sceneCount:0} as const;
@@ -130,6 +134,13 @@ export async function materializeScenesFromProjectScript(env:Env,input:{projectI
       env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PARSE_NO_SCENES","ATTENTION",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,reason:"NO_SCENE_HEADERS_RECOGNIZED"}),ts),
     ]);
     return {ok:true,sceneCount:0,created:0,updated:0,projectStatus:"ACTIVE",pipelineStatus:"INTERPRETANDO_ROTEIRO",nextAction:"PARSE_SCRIPT",warning:"NO_SCENE_HEADERS_RECOGNIZED"};
+  }
+
+  if(input.productionOnly){
+    const productionSeeds:ProductionSceneSeed[]=scenes.map(scene=>({sceneKey:scene.itemKey,number:scene.number,title:scene.title,universe:scene.universe,subject:scene.subject,concept:scene.concept,reference:scene.reference,scriptExcerpt:scene.scriptExcerpt,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass,slots:scene.targetFiles.map(targetFile=>({targetFile,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass}))}));
+    const production=await materializeProductionModel(env,{projectId,version:Number(project.active_version||1),scenes:productionSeeds});
+    await env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PRODUCTION_RECONCILED","OK",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,sceneCount:scenes.length,productionOnly:true,production}),ts).run().catch(()=>undefined);
+    return {ok:true,sceneCount:scenes.length,created:0,updated:0,production,productionOnly:true,projectStatus:project.status,pipelineStatus:project.pipeline_status,nextAction:null,items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
   }
 
   let created=0,updated=0;

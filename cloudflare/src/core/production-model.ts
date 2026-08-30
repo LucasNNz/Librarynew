@@ -61,7 +61,7 @@ export async function materializeProductionModel(env:Env,input:{projectId:string
       ON CONFLICT(project_id,version,scene_key) DO UPDATE SET scene_number=excluded.scene_number,title=excluded.title,universe=excluded.universe,subject=excluded.subject,concept=excluded.concept,semantic_reference=excluded.semantic_reference,script_excerpt=excluded.script_excerpt,preset=excluded.preset,context=excluded.context,composition_class=excluded.composition_class,status='READY',updated_at=excluded.updated_at`)
       .bind(sceneId,input.projectId,input.version,scene.sceneKey,scene.number,scene.title||scene.sceneKey,scene.universe||null,scene.subject||null,scene.concept||null,scene.reference||null,scene.scriptExcerpt||null,scene.preset||null,scene.context||null,scene.compositionClass||"CONTEXTUAL",ts,ts).run();
 
-    const seeds=scene.slots.length?scene.slots:[{targetFile:null,subject:scene.subject,reference:scene.reference,preset:scene.preset,context:scene.context,compositionClass:scene.compositionClass}];
+    const seeds=scene.slots;
     for(let i=0;i<seeds.length;i++){
       const seed=seeds[i]; const target=clean(seed.targetFile); const subject=clean(seed.subject)||subjectFromTarget(target)||clean(scene.subject)||clean(scene.title); const reference=clean(seed.reference)||clean(scene.reference)||subject;
       const key=poolKey(subject,reference); const poolId=await stableId("RPOOL",`${input.projectId}\n${input.version}\n${key}`,12);
@@ -192,8 +192,10 @@ export async function assignAssetsToSlots(env:Env,input:{projectId:string;assign
 
 export async function productionCompletionGate(env:Env,projectId:string){
   const counts=await productionModelCounts(env,projectId);
-  const pkg=await env.DB.prepare("SELECT status,id,file_name FROM v2_download_packages WHERE project_id=? ORDER BY created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>().catch(()=>null);
-  const project=await env.DB.prepare("SELECT automatic_zip FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
-  const packageReady=Number(project?.automatic_zip||0)===0||["READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(upper(pkg?.status));
-  return {...counts,package_ready:packageReady,package_status:pkg?.status||null,package_id:pkg?.id||null,can_complete:counts.production_slots_total>0&&counts.complete&&packageReady};
+  const rows=await env.DB.prepare("SELECT id,type,status,file_name,created_at FROM v2_download_packages WHERE project_id=? AND type IN ('PROJECT_IMAGES_ZIP','PROJECT_SCRIPT_TXT','PROJECT_PUBLICATION_ZIP') ORDER BY created_at DESC LIMIT 30").bind(projectId).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>));
+  const latest=new Map<string,Record<string,unknown>>();for(const row of rows.results||[]){const type=upper(row.type);if(!latest.has(type))latest.set(type,row);}
+  const ready=(type:string)=>["READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(upper(latest.get(type)?.status));
+  const artifacts={images:ready("PROJECT_IMAGES_ZIP"),script:ready("PROJECT_SCRIPT_TXT"),publication:ready("PROJECT_PUBLICATION_ZIP")};
+  const packageReady=artifacts.images&&artifacts.script&&artifacts.publication;
+  return {...counts,package_ready:packageReady,final_artifacts_ready:artifacts,package_status:packageReady?"READY_FOR_DOWNLOAD":"WAITING_FINAL_ARTIFACTS",package_id:latest.get("PROJECT_IMAGES_ZIP")?.id||null,can_complete:counts.production_slots_total>0&&counts.complete&&packageReady};
 }

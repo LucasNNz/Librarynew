@@ -1,4 +1,21 @@
-# Corvo Library V2 0.20.35 — Fixed-Length ZIP Export Recovery
+# Corvo Library V2 0.20.36 — Forma Final Export: 3 arquivos
+
+## Forma Final Export 0.20.36
+
+- saída final simplificada em três artefatos independentes: `imagens.zip`, `roteiro.txt` e `thumbs_titulos.zip`;
+- `imagens.zip` é flat e contém somente os nomes finais citados no SCRIPT;
+- gate de imagens compara SCRIPT ↔ production slots ↔ R2 ↔ índice do ZIP antes de READY;
+- formato físico é validado pelos bytes; mismatch JPG/PNG/WEBP exige conversão técnica pelo binding `IMAGES`, nunca simples troca de extensão;
+- `roteiro.txt` é UTF-8 e usa exatamente o SCRIPT ativo;
+- parser/reconciliação exige `questions_script == production_scenes_total` e repara drift como 72 perguntas / 60 cenas;
+- `thumbs_titulos.zip` contém apenas `thumbs/` + `titulos.txt` e não bloqueia os outros dois artefatos;
+- os dois ZIPs usam `FixedLengthStream`/body de tamanho conhecido;
+- revisão/hash independente permite reutilizar artefatos idênticos;
+- exportação pode ser regenerada a partir de projeto concluído sem reabrir/reexecutar coleta, QA ou slots;
+- UI mostra **ARQUIVOS FINAIS** com três downloads diretos;
+- MCP adiciona `gerar_arquivos_finais_projeto`, `obter_arquivos_finais_projeto` e três ferramentas de link direto;
+- schema D1 atualizado para `2.22.0` com `revision_hash` e `mime_type` em `v2_download_packages`;
+- Worker autoatualizável embutido sincronizado com 0.20.36.
 
 ## ZIP / R2 infrastructure recovery 0.20.35
 
@@ -109,10 +126,10 @@ Checkpoint operacional da Corvo Library V2 com **FAST READ**, Project Slots, age
 - rotas completas antigas permanecem disponíveis para diagnóstico e compatibilidade.
 
 ## Compatibilidade
-- App/Core/MCP: **0.20.35**;
-- schema: **2.21.0**;
+- App/Core/MCP: **0.20.36**;
+- schema: **2.22.0**;
 - Worker + D1 + R2 + Queue preservados;
-- migration `9021_v2_production_model.sql` é aditiva e não destrutiva;
-- Worker autoatualizável embutido sincronizado e validado em 0.20.35.
+- migrations `9021_v2_production_model.sql` e `9022_v2_final_exports_forma.sql` são aditivas e não destrutivas;
+- Worker autoatualizável embutido sincronizado e validado em 0.20.36.
 
 Consulte também `RELEASE_0_20_32_MCP3_PRODUCTION_PIPELINE.md`, `VALIDATION_0_20_32_MCP3_PRODUCTION_PIPELINE.json`, `BEHAVIOR_GATE_0_20_32_MCP3_PRODUCTION_PIPELINE.json` e os documentos das versões anteriores.

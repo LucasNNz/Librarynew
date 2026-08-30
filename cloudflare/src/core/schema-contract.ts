@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.21.0";
+const CONTRACT_VERSION = "2.22.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -60,6 +60,13 @@ const REQUIRED: TableSpec[] = [
     table: "v2_project_titles",
     columns: [
       { name:"slot_index", ddl:"ALTER TABLE v2_project_titles ADD COLUMN slot_index INTEGER" },
+    ],
+  },
+  {
+    table: "v2_download_packages",
+    columns: [
+      { name:"revision_hash", ddl:"ALTER TABLE v2_download_packages ADD COLUMN revision_hash TEXT" },
+      { name:"mime_type", ddl:"ALTER TABLE v2_download_packages ADD COLUMN mime_type TEXT" },
     ],
   },
 
