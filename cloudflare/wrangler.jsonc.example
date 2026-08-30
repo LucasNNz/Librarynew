@@ -26,9 +26,8 @@
     "consumers": [
       {
         "queue": "corvo-materialize-v2",
-        "max_batch_size": 1,
+        "max_batch_size": 10,
         "max_batch_timeout": 0,
-        "max_concurrency": 20,
         "max_retries": 4,
         "dead_letter_queue": "corvo-materialize-v2-dlq",
         "retry_delay": 5

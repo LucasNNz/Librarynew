@@ -148,12 +148,44 @@ export type AutomaticProject = {
   workflow_tags?: Array<{tag:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
 };
 
+export type ProjectArtifact = {
+  id:string;
+  source:"PROJECT_FILE"|"COLLECTED_CANDIDATE"|"APPROVED_ASSET"|"PROJECT_MEDIA"|"PACKAGE"|string;
+  stage:string;
+  name:string;
+  role?:string|null;
+  item_id?:string|null;
+  item_key?:string|null;
+  status:string;
+  mime_type?:string|null;
+  size_bytes:number;
+  created_at:number;
+  updated_at?:number|null;
+  preview_url?:string|null;
+  download_url?:string|null;
+  previewable:boolean;
+  downloadable:boolean;
+  metadata?:Record<string,unknown>;
+};
+
+export type ProjectArtifactInventory = {
+  project_id:string;
+  state_version:number;
+  total:number;
+  counts:Record<string,number>;
+  truncated:boolean;
+  artifacts:ProjectArtifact[];
+  visibility?:string;
+  links_ttl_seconds?:number;
+};
+
 export type ProjectSlotSnapshot = {
   project: AutomaticProject;
   activeTags: Array<{tag:string;status:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
   slots: Array<{key:string;label:string;state:string;summary:string;progress:number;mcpOpen?:boolean;instruction?:string|null;openedBy?:string|null;openedAt?:number|null}>;
   progress: number;
   script?: Record<string,unknown>|null;
+  referenceBrief?: Record<string,unknown>|null;
   thumbs: {count:number;selected:number;max:number};
   titles: {count:number;selected:number;max:number};
   items: Record<string,unknown>;

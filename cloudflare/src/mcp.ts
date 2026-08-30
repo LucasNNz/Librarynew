@@ -21,7 +21,8 @@ import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/setti
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage } from "./core/production";
-import { addProjectQaEvent, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
+import { addProjectQaEvent, attachProjectReferencesInline, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
+import { listProjectArtifacts } from "./core/project-artifacts";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getSourceRoutingPlan, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -43,7 +44,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.28" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.31" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -271,6 +272,9 @@ function createServer(env: Env, request: Request) {
         required_approved: z.number().int().min(1).max(100).optional(),
         universo: z.string().optional(),
         sujeito: z.string().optional(),
+        conceito: z.string().optional(),
+        referencia: z.string().optional(),
+        trecho_roteiro: z.string().optional(),
         tags: z.array(z.string()).max(40).optional(),
         urls: z.array(z.string().url()).min(1).max(50),
       })).min(1).max(50),
@@ -278,11 +282,14 @@ function createServer(env: Env, request: Request) {
   }, async (v) => output(await fastPushProjectCandidates(env, {
     projectId:v.project_id,
     operationId:v.operation_id,
-    items:v.items.map((item: {item_id:string;target_candidates?:number;required_approved?:number;universo?:string;sujeito?:string;tags?:string[];urls:string[]})=>({itemId:item.item_id,targetCandidates:item.target_candidates,requiredApproved:item.required_approved,universe:item.universo,subject:item.sujeito,tags:item.tags,urls:item.urls})),
+    items:v.items.map((item: {item_id:string;target_candidates?:number;required_approved?:number;universo?:string;sujeito?:string;conceito?:string;referencia?:string;trecho_roteiro?:string;tags?:string[];urls:string[]})=>({
+      itemId:item.item_id,targetCandidates:item.target_candidates,requiredApproved:item.required_approved,
+      universe:item.universo,subject:item.sujeito,concept:item.conceito,reference:item.referencia,scriptExcerpt:item.trecho_roteiro,tags:item.tags,urls:item.urls
+    })),
   })));
 
   server.registerTool("get_collection_snapshot", {
-    description: "Snapshot consolidado da coleta por cena. MATERIALIZED/APPROVED/REJECTED contam como materialização histórica; retorna apenas cenas COMPLETE/NEEDS_MORE e telemetria útil. wait_ms faz long-poll curto dentro de uma única chamada.",
+    description: "Snapshot consolidado da coleta por cena. Expõe goal_satisfied/collection_status no topo, preserva falhas históricas separadas da meta operacional e retorna telemetria compacta. wait_ms faz long-poll curto dentro de uma única chamada.",
     inputSchema: {
       project_id: z.string().min(1),
       operation_id: z.string().optional(),
@@ -702,8 +709,8 @@ function createServer(env: Env, request: Request) {
     inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["thumbs","reference","candidates"]), url:z.string().url().optional(), candidate_id:z.string().optional(), item_id:z.string().optional(), target_candidates:z.number().int().min(1).max(100).optional(), required_approved:z.number().int().min(1).max(100).optional(), agente:z.string().optional() },
   }, async(v)=>output(await fillProjectImageSlot(env,{projectId:v.projeto_id,slotKey:v.slot,url:v.url,candidateId:v.candidate_id,itemId:v.item_id,targetCandidates:v.target_candidates,requiredApproved:v.required_approved,origin:v.agente||"MCP_SLOT",requireOpen:true})));
   server.registerTool("preencher_slot_texto_projeto", {
-    description:"Preenche slot textual já aberto para MCP. SCRIPT grava roteiro inline; TITLES aceita até 3 linhas/opções.",
-    inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["script","titles"]), texto:z.string().min(1).max(2000000), agente:z.string().optional() },
+    description:"Preenche slot textual já aberto para MCP. SCRIPT grava roteiro inline; REFERENCE grava o TXT de referências do Coletor; TITLES aceita até 3 linhas/opções.",
+    inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["script","reference","titles"]), texto:z.string().min(1).max(2000000), agente:z.string().optional() },
   }, async(v)=>output(await fillProjectTextSlot(request,env,{projectId:v.projeto_id,slotKey:v.slot,text:v.texto,origin:v.agente||"MCP_SLOT",requireOpen:true})));
   server.registerTool("vincular_asset_slot_projeto", {
     description:"Vincula um AST-* já aprovado ao slot Aprovadas de um projeto aberto para MCP, sem duplicar o objeto no R2.",
@@ -941,11 +948,15 @@ function createServer(env: Env, request: Request) {
   server.registerTool("obter_plano_roteamento_fonte", { description:"Obtém o plano de roteamento mais recente por projeto/item/termo.", inputSchema:{ projeto_id:z.string().optional(), item_id:z.string().optional(), termo_coleta_id:z.string().optional() } }, async(v)=>output((await getSourceRoutingPlan(env,{projectId:v.projeto_id,itemId:v.item_id,collectionTermId:v.termo_coleta_id}))||{error:"NOT_FOUND"}));
 
   server.registerTool("anexar_script_projeto", { description:"CAMINHO PREFERENCIAL E OBRIGATORIO PARA SCRIPT textual: grava o roteiro diretamente no R2 e D1 em uma unica chamada MCP, sem ticket, sem URL externa e sem PUT. Idempotente pelo conteudo.", inputSchema:{ projeto_id:z.string().min(1), conteudo:z.string().min(1).max(2000000), nome_arquivo:z.string().min(1).optional() } }, async(v)=>output(await attachProjectScriptInline(request,env,{projectId:v.projeto_id,content:v.conteudo,fileName:v.nome_arquivo})));
+  server.registerTool("anexar_referencias_projeto", { description:"CAMINHO DIRETO DO AGENTE DE REFERENCIAS: grava em uma unica chamada o TXT que orienta o Coletor, imediatamente visivel no slot Referencias do Coletor e no inventario de arquivos. Nao exige ticket/PUT externo e e idempotente pelo conteudo.", inputSchema:{ projeto_id:z.string().min(1), conteudo:z.string().min(1).max(2000000), nome_arquivo:z.string().min(1).optional(), agente:z.string().optional() } }, async(v)=>output(await attachProjectReferencesInline(request,env,{projectId:v.projeto_id,content:v.conteudo,fileName:v.nome_arquivo,origin:v.agente||"MCP_REFERENCE_AGENT"})));
+  server.registerTool("obter_referencias_projeto", { description:"Le o TXT mais recente do slot Referencias do Coletor e devolve o conteudo copiavel mais links de visualizacao e download.", inputSchema:{ projeto_id:z.string().min(1), versao:z.number().int().positive().optional() } }, async(v)=>{let row:Record<string,unknown>|null=null;for(const role of ["REFERENCES","REFERENCIAS","REFERENCE_BRIEF","IMAGENS_NECESSARIAS","IMAGENS NECESSARIAS"]){row=await readProjectFile(env,v.projeto_id,role,v.versao);if(row)break;}if(!row)return output({error:"NOT_FOUND"});const link=await getProjectFileLink(request,env,String(row.id),15);return output({...row,...(link||{})});});
 
   server.registerTool("anexar_arquivo_projeto", { description:"Prepara upload direto para R2 somente para arquivo binario/anexo. Para SCRIPT textual use obrigatoriamente anexar_script_projeto; SCRIPT nao gera ticket externo por esta ferramenta.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), nome_arquivo:z.string().min(1), mime_type:z.string().optional(), tamanho_max:z.number().int().positive().optional() } }, async(v)=>{
     if(String(v.role||"").trim().toUpperCase()==="SCRIPT") return output({error:"SCRIPT_USE_INLINE_MCP",required_tool:"anexar_script_projeto",reason:"SCRIPT textual nao deve depender de uploadUrl/PUT externo"});
     return output(await prepareDirectUpload(request,env,{uploadType:"PROJECT_FILE",projectId:v.projeto_id,role:v.role,fileName:v.nome_arquivo,mimeType:v.mime_type,maxBytes:v.tamanho_max}));
   });
+  server.registerTool("listar_arquivos_projeto", { description:"Lista imediatamente todos os arquivos anexados ao projeto registrados no D1, com links temporários de preview e download. Use esta ferramenta após qualquer anexo; não depende de varredura do R2.", inputSchema:{ projeto_id:z.string().min(1) } }, async(v)=>output((await listProjectFiles(request,env,v.projeto_id))||{error:"NOT_FOUND"}));
+  server.registerTool("listar_artefatos_projeto", { description:"Inventário unificado e imediatamente visível ao MCP: SCRIPT/REQUIREMENTS/anexos, imagens coletadas, assets aprovados, thumbs/mídias e pacotes ZIP, com preview/download quando armazenados.", inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(1000).optional() } }, async(v)=>output((await listProjectArtifacts(request,env,v.projeto_id,v.limite||500))||{error:"NOT_FOUND"}));
   server.registerTool("obter_conteudo_arquivo_projeto", { description:"Lê inline o arquivo textual mais recente de uma role do projeto.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), versao:z.number().int().positive().optional() } }, async(v)=>output((await readProjectFile(env,v.projeto_id,v.role,v.versao))||{error:"NOT_FOUND"}));
   server.registerTool("baixar_arquivo_projeto", { description:"Gera link temporário de arquivo de projeto já armazenado no R2.", inputSchema:{ arquivo_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output((await getProjectFileLink(request,env,v.arquivo_id,v.validade_minutos||15))||{error:"NOT_FOUND"}));
   server.registerTool("registrar_qa_projeto", { description:"Registra evento QA do projeto sem reescrever arquivos ou assets.", inputSchema:{ projeto_id:z.string().min(1), status:z.string().min(1), detalhe:z.unknown().optional(), evento:z.string().optional() } }, async(v)=>output(await addProjectQaEvent(env,v.projeto_id,{status:v.status,detail:v.detalhe,event:v.evento})));

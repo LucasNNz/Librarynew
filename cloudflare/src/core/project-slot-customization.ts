@@ -1,13 +1,13 @@
 import type { Env } from "../types";
 import { id, nowMs, stableId } from "./ids";
 import { enqueueFastPushItems } from "./ingest";
-import { attachProjectScriptInline } from "./project-files";
+import { attachProjectReferencesInline, attachProjectScriptInline } from "./project-files";
 import { configureProjectItemPipeline } from "./project-pipeline-state";
 import { createProjectMediaFromCandidate, pushProjectTitles } from "./production";
 import { projectWriteGuard } from "./project-workflow";
 
 const clean=(value:unknown)=>String(value??"").trim();
-export const PROJECT_SLOT_KEYS=["script","thumbs","titles","reference","candidates","approved","zip"] as const;
+export const PROJECT_SLOT_KEYS=["script","reference","thumbs","titles","candidates","approved","zip"] as const;
 type ProjectSlotKey=(typeof PROJECT_SLOT_KEYS)[number];
 const validSlot=(value:unknown):ProjectSlotKey|null=>{const key=clean(value).toLowerCase();return (PROJECT_SLOT_KEYS as readonly string[]).includes(key)?key as ProjectSlotKey:null;};
 
@@ -26,22 +26,26 @@ export async function listProjectSlotAccess(env:Env,projectId?:string,onlyOpen=f
   const params:unknown[]=[]; let where=" WHERE 1=1";
   if(projectId){where+=" AND project_id=?";params.push(projectId);} if(onlyOpen)where+=" AND mcp_open=1";
   const rows=await env.DB.prepare(`SELECT project_id,slot_key,mcp_open,instruction,opened_by,opened_at,updated_at FROM v2_project_slot_access${where} ORDER BY updated_at DESC LIMIT 500`).bind(...params).all<Record<string,unknown>>();
-  return {items:(rows.results||[]).map(row=>({...row,mcp_open:Boolean(Number(row.mcp_open||0))}))};
+  const items:Array<Record<string,unknown>&{mcp_open:boolean}>=(rows.results||[]).map(row=>({...row,mcp_open:Boolean(Number(row.mcp_open||0))}));
+  if(projectId&&!items.some(row=>String(row.slot_key)==="reference"))items.unshift({project_id:projectId,slot_key:"reference",mcp_open:true,instruction:"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.",opened_by:"SYSTEM_DEFAULT",opened_at:null,updated_at:null});
+  return {items:onlyOpen?items.filter(row=>Boolean(row.mcp_open)):items};
 }
 
 async function requireOpenSlotForMcp(env:Env,projectId:string,slotKey:ProjectSlotKey){
   const row=await env.DB.prepare("SELECT mcp_open,instruction FROM v2_project_slot_access WHERE project_id=? AND slot_key=?").bind(projectId,slotKey).first<Record<string,unknown>>();
+  if(!row&&slotKey==="reference")return {ok:true,instruction:"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.",implicitDefault:true} as const;
   if(!row||Number(row.mcp_open||0)!==1)return {ok:false,error:"PROJECT_SLOT_NOT_OPEN",projectId,slotKey,status:409} as const;
   return {ok:true,instruction:row.instruction||null} as const;
 }
 
 export async function fillProjectTextSlot(request:Request,env:Env,input:{projectId:string;slotKey:string;text:string;origin?:string;requireOpen?:boolean}){
-  const slotKey=validSlot(input.slotKey);if(!slotKey||!["script","titles"].includes(slotKey))return {error:"TEXT_SLOT_REQUIRED",allowed:["script","titles"],status:400} as const;
+  const slotKey=validSlot(input.slotKey);if(!slotKey||!["script","reference","titles"].includes(slotKey))return {error:"TEXT_SLOT_REQUIRED",allowed:["script","reference","titles"],status:400} as const;
   const guard=await projectWriteGuard(env,input.projectId);if(!guard.ok)return guard;
   if(input.requireOpen){const open=await requireOpenSlotForMcp(env,input.projectId,slotKey);if(!open.ok)return open;}
   const text=String(input.text??"").trim();if(!text)return {error:"EMPTY_TEXT",status:400} as const;
   let result:unknown;
   if(slotKey==="script") result=await attachProjectScriptInline(request,env,{projectId:input.projectId,content:text,fileName:"SCRIPT.txt"});
+  else if(slotKey==="reference") result=await attachProjectReferencesInline(request,env,{projectId:input.projectId,content:text,fileName:"REFERENCIAS_COLETOR.txt",origin:input.origin||"MCP_REFERENCE_AGENT"});
   else {
     const titles=text.split(/\r?\n/).map(value=>value.trim()).filter(Boolean).slice(0,3).map(value=>({text:value,agentOrigin:input.origin||"MANUAL_SLOT"}));
     result=await pushProjectTitles(env,input.projectId,titles);

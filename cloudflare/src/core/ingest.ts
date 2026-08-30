@@ -4,12 +4,19 @@ import { limitedStream, safeRemoteUrl, transientHttpStatus } from "./net";
 import { createSignedCandidateUrl } from "./auth";
 import { recordIngestEvent, updateHostHealth } from "./materialization";
 import { createProjectMediaFromCandidate } from "./production";
-import { refreshProjectItemPipelineState } from "./project-pipeline-state";
+import { refreshProjectItemPipelineState, summarizeOperationCollectionGoal } from "./project-pipeline-state";
 import { projectWriteGuard } from "./project-workflow";
 import { refreshRecoveryAfterWrite, writeAssetRecoveryRecord, writeCandidateRecoveryRecord } from "./recovery-manifest";
 
 function normalizeTags(tags: unknown) {
   return Array.isArray(tags) ? [...new Set(tags.map(String).map(value => value.trim()).filter(Boolean))].slice(0, 40) : [];
+}
+
+async function touchProjectArtifactState(env:Env,projectId:unknown){
+  const value=String(projectId??"").trim();
+  if(!value)return;
+  const ts=nowMs();
+  await env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,value).run().catch(()=>undefined);
 }
 
 async function refreshTouchedItems(env: Env, rows: Array<{projectId?:string;itemId?:string}>) {
@@ -144,10 +151,15 @@ export async function getOperation(operationId: string, env: Env) {
   const row = await env.DB.prepare(`SELECT id,type,status,requested,succeeded,failed,created_at,updated_at,error
     FROM v2_ingest_operations WHERE id=?`).bind(operationId).first<Record<string, unknown>>();
   if (!row) return null;
+  const goal = await summarizeOperationCollectionGoal(env, operationId);
   return {
     id: row.id,
     type: row.type,
     status: row.status,
+    goalSatisfied: goal.goalSatisfied,
+    goal_satisfied: goal.goalSatisfied,
+    collectionStatus: goal.collectionStatus,
+    collection_status: goal.collectionStatus,
     requested: Number(row.requested || 0),
     succeeded: Number(row.succeeded || 0),
     failed: Number(row.failed || 0),
@@ -246,6 +258,7 @@ export async function approveCandidate(candidateId: string, env: Env) {
   await refreshRecoveryAfterWrite(env,"FAST_PUSH_APPROVED",assetId);
   const incomingDeleted = sourceKey !== finalKey ? await deleteIncomingObject(env, sourceKey) : false;
   await refreshProjectItemPipelineState(env, String(candidate.project_id || ""), String(candidate.item_id || "")).catch(() => undefined);
+  await touchProjectArtifactState(env,candidate.project_id);
   await recordIngestEvent(env, String(candidate.operation_id), candidateId, "CANDIDATE_APPROVED", "APPROVED", JSON.stringify({assetId,incomingDeleted}), null);
   return { ok: true, assetId, r2Key: finalKey, incomingDeleted, status: 200 } as const;
 }
@@ -260,6 +273,7 @@ export async function rejectCandidate(candidateId: string, env: Env) {
   await env.DB.prepare("UPDATE v2_ingest_candidates SET status='REJECTED',r2_key=NULL,updated_at=? WHERE id=?").bind(nowMs(), candidateId).run();
   await writeCandidateRecoveryRecord(env,candidateId,"CANDIDATE_REJECTED").catch(() => undefined);
   await refreshProjectItemPipelineState(env, candidate.project_id, candidate.item_id).catch(() => undefined);
+  await touchProjectArtifactState(env,candidate.project_id);
   await recordIngestEvent(env, candidate.operation_id, candidateId, "CANDIDATE_REJECTED", "REJECTED", JSON.stringify({incomingDeleted}), null);
   return { ok: true, incomingDeleted, status: 200 } as const;
 }
@@ -332,6 +346,7 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
     }
     const projectId = job.projectId || state.project_id, itemId = job.itemId || state.item_id;
     await refreshProjectItemPipelineState(env, projectId, itemId).catch(() => undefined);
+    await touchProjectArtifactState(env,projectId);
     const replenishment = await activateProjectItemCandidateReserve(env,{projectId,itemId,operationId:job.operationId}).catch(()=>({activated:0}));
     await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZED", "MATERIALIZED", JSON.stringify({r2Key,queueWaitMs,downloadMs,r2WriteMs,d1FinalizeMs,totalMaterializationMs,replacementActivated:Number(replenishment.activated||0)}), totalMaterializationMs);
   } catch (error) {
@@ -363,7 +378,10 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
   const totals = await env.DB.prepare("SELECT requested,succeeded,failed FROM v2_ingest_operations WHERE id=?").bind(job.operationId).first<{ requested: number; succeeded: number; failed: number }>();
   if (totals && totals.succeeded + totals.failed >= totals.requested) {
     const finalStatus = totals.failed === 0 ? "COMPLETED" : totals.succeeded > 0 ? "COMPLETED_WITH_ERRORS" : "FAILED";
-    await env.DB.prepare("UPDATE v2_ingest_operations SET status=?,updated_at=? WHERE id=?").bind(finalStatus, nowMs(), job.operationId).run();
+    const goal = await summarizeOperationCollectionGoal(env, job.operationId);
+    await env.DB.prepare(`UPDATE v2_ingest_operations SET status=?,
+      payload_json=json_set(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.goal_satisfied',?,'$.collection_status',?),updated_at=? WHERE id=?`)
+      .bind(finalStatus,goal.goalSatisfied?1:0,goal.collectionStatus,nowMs(),job.operationId).run();
   }
   message.ack();
 }

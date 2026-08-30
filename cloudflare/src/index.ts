@@ -25,6 +25,7 @@ import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, processFastApproveJob, processSupervisorDecisionsJob, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, processPackageJob, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage, servePackageFile, serveProjectMedia } from "./core/production";
 import { addProjectQaEvent, getProjectFileLink, listProjectFiles, readProjectFile, serveProjectFile } from "./core/project-files";
+import { listProjectArtifacts } from "./core/project-artifacts";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources, processCollectionJob } from "./core/collection";
 import { importZipByUrl, prepareZipUpload, processZipImport, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -73,7 +74,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.28", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.31", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
@@ -153,7 +154,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.28",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.31",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -179,7 +180,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.28",
+        version:"0.20.31",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -433,6 +434,7 @@ export default {
     else if (/^\/projects\/[^/]+\/titles$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {titles?:Parameters<typeof pushProjectTitles>[2]}; response=json(await pushProjectTitles(env,projectId,body.titles||[])); }
     else if (/^\/projects\/[^/]+\/titles\/decide$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {decisions?:Parameters<typeof decideProjectTitles>[2]}; response=json(await decideProjectTitles(env,projectId,body.decisions||[])); }
     else if (/^\/projects\/[^/]+\/files$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await listProjectFiles(request,env,projectId); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
+    else if (/^\/projects\/[^/]+\/artifacts$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await listProjectArtifacts(request,env,projectId,Number(url.searchParams.get("limit")||500)); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
     else if (/^\/projects\/[^/]+\/files\/read$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const role=url.searchParams.get("role")||"SCRIPT"; const value=await readProjectFile(env,projectId,role,url.searchParams.get("version")?Number(url.searchParams.get("version")):undefined); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
     else if (/^\/projects\/[^/]+\/qa$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); response=json(await addProjectQaEvent(env,projectId,await request.json() as Parameters<typeof addProjectQaEvent>[2])); }
     else if (/^\/project-file-links\/[^/]+$/.test(url.pathname) && request.method === "GET") { const fileId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getProjectFileLink(request,env,fileId,Number(url.searchParams.get("ttlMinutes")||15)); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }

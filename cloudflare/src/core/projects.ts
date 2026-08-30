@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { id, nowMs } from "./ids";
 import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
+import { materializeScenesFromProjectScript } from "./project-script-parser";
 
 function encodeCursor(updatedAt: number, projectId: string) {
   return btoa(JSON.stringify([updatedAt, projectId])).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
@@ -56,9 +57,22 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
   const project=await getAutomaticProject(env,projectId); if(!project)return null;
   const version=Number(project.state_version||1);
   if(sinceVersion!=null&&Number(sinceVersion)===version)return {project_id:projectId,state_version:version,changed:false};
+  const attachmentSummary=await env.DB.prepare(`SELECT
+    (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=?) AS project_files,
+    (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT') AS scripts,
+    (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role)='REQUIREMENTS') AS requirements,
+    (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS')) AS references,
+    (SELECT COUNT(*) FROM v2_ingest_candidates WHERE project_id=? AND r2_key IS NOT NULL) AS collected_files,
+    (SELECT COUNT(*) FROM v2_project_media WHERE project_id=? AND r2_key IS NOT NULL) AS project_media,
+    (SELECT COUNT(*) FROM v2_download_packages WHERE project_id=? AND r2_key IS NOT NULL) AS packages`).bind(projectId,projectId,projectId,projectId,projectId,projectId,projectId).first<Record<string,unknown>>();
+  const projectFiles=Number(attachmentSummary?.project_files||0);
+  const collectedFiles=Number(attachmentSummary?.collected_files||0);
+  const projectMedia=Number(attachmentSummary?.project_media||0);
+  const packages=Number(attachmentSummary?.packages||0);
   return {
     project_id:projectId,state_version:version,changed:true,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,
     counts:{ total:Number(project.total_items||0),approved:Number(project.approved_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),frozen:Number(project.frozen_count||0) },
+    attachments:{project_files:projectFiles,scripts:Number(attachmentSummary?.scripts||0),references:Number(attachmentSummary?.references||0),requirements:Number(attachmentSummary?.requirements||0),collected_files:collectedFiles,project_media:projectMedia,packages,total_visible:projectFiles+collectedFiles+projectMedia+packages,visibility:"MCP_IMMEDIATE_AFTER_D1_COMMIT"},
     lease:{status:project.supervisor_status,execution_id:project.supervisor_execution_id,expires_at:project.supervisor_lease_expires_at,last_seen_at:project.supervisor_last_seen_at},
     updated_at:project.updated_at,
   };
@@ -103,6 +117,29 @@ export async function configureAutomaticProject(env: Env, projectId: string, inp
 export async function reconcileAutomaticProject(env: Env, projectId: string) {
   const project = await getAutomaticProject(env, projectId); if (!project) return null;
   if(projectIsClosed(project)) return {error:"PROJECT_LOCKED",projectId,lifecycleStatus:project.lifecycle_status||project.status,explicitReopenRequired:true};
+
+  // Recovery invariant: a stored SCRIPT must never remain invisible to the pipeline.
+  // If an older project has SCRIPT READY but no scenes/items, parse the latest text script
+  // before computing project state. This repairs pre-0.20.30 projects idempotently.
+  let scriptRecovery:Record<string,unknown>|null=null;
+  const currentItemCount=await env.DB.prepare("SELECT COUNT(*) AS count FROM automatic_project_items WHERE project_id=?").bind(projectId).first<{count:number}>();
+  if(Number(currentItemCount?.count||0)===0){
+    const script=await env.DB.prepare("SELECT id,file_name,r2_key,mime_type,size_bytes FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>();
+    if(script?.r2_key && Number(script.size_bytes||0)<=2*1024*1024){
+      const mime=String(script.mime_type||"").toLowerCase();
+      if(!mime || mime.startsWith("text/") || mime.includes("json")){
+        const object=await env.MEDIA.get(String(script.r2_key));
+        if(object){
+          const content=await object.text();
+          scriptRecovery=await materializeScenesFromProjectScript(env,{projectId,content,fileId:String(script.id||""),fileName:String(script.file_name||"SCRIPT.txt")}).catch(error=>({ok:false,error:error instanceof Error?error.message:String(error)}));
+        }
+      }
+    }
+  }
+  if(scriptRecovery && Number((scriptRecovery as any)?.sceneCount||0)===0){
+    return { project:await getAutomaticProject(env,projectId), counts:{total:0,approved:0,frozen:0,collecting:0,materializing:0,waitingQa:0,relink:0,technical:0,waitingSeed:0,failed:0,pending:0}, createdWorkItems:0, scriptRecovery };
+  }
+
   const itemsResult = await env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId).all<Record<string,unknown>>();
   const items = itemsResult.results || [];
   const counts = { total:items.length, approved:0, frozen:0, collecting:0, materializing:0, waitingQa:0, relink:0, technical:0, waitingSeed:0, failed:0, pending:0 };
@@ -144,7 +181,7 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
     env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
       .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,createdWorkItems:statements.length}),ts),
   ]);
-  return { project: await getAutomaticProject(env,projectId), counts, createdWorkItems: statements.length };
+  return { project: await getAutomaticProject(env,projectId), counts, createdWorkItems: statements.length, scriptRecovery };
 }
 
 export async function processAutomaticProject(env: Env, projectId: string) {
@@ -189,4 +226,11 @@ export async function projectLog(env: Env, projectId:string, limit=200) {
   return result.results||[];
 }
 
-export async function getProjectSlot(env:Env,projectId:string){ return projectSlotSnapshot(env,projectId); }
+export async function getProjectSlot(env:Env,projectId:string){
+  const project=await getAutomaticProject(env,projectId);
+  if(project && !projectIsClosed(project) && Number(project.total_items||0)===0 && (String(project.status||"")==="WAITING_FILES" || String(project.pipeline_status||"")==="AGUARDANDO")){
+    const script=await env.DB.prepare("SELECT id FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' LIMIT 1").bind(projectId).first();
+    if(script)await reconcileAutomaticProject(env,projectId).catch(()=>undefined);
+  }
+  return projectSlotSnapshot(env,projectId);
+}

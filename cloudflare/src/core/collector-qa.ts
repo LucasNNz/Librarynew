@@ -3,7 +3,7 @@ import { createSignedCandidateUrl, createSignedFileUrl } from "./auth";
 import { activateProjectItemCandidateReserve, approveCandidate, rejectCandidate } from "./ingest";
 import { id, nowMs, stableId } from "./ids";
 import { safeRemoteUrl } from "./net";
-import { configureProjectItemPipeline, markProjectItemQaInProgress, refreshProjectItemPipelineState, resolveProjectItem, type ProjectPipelineItemState } from "./project-pipeline-state";
+import { configureProjectItemPipeline, markProjectItemQaInProgress, refreshProjectItemPipelineState, resolveProjectItem, summarizeOperationCollectionGoal, type ProjectPipelineItemState } from "./project-pipeline-state";
 import { projectWriteGuard, syncDerivedProjectWorkflow, updateProjectWorkflow } from "./project-workflow";
 
 function collectorClean(v: unknown) { return String(v ?? "").trim(); }
@@ -16,6 +16,9 @@ export type ProjectCandidatePushItem = {
   requiredApproved?: number;
   universe?: string;
   subject?: string;
+  concept?: string;
+  reference?: string;
+  scriptExcerpt?: string;
   tags?: string[];
   urls: string[];
 };
@@ -39,7 +42,10 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
 
   for (const raw of (input.items || []).slice(0, 50)) {
     const requestedRef = collectorClean(raw.itemId);
-    const item = await configureProjectItemPipeline(env, projectId, requestedRef, { targetCandidates: raw.targetCandidates, requiredApproved: raw.requiredApproved });
+    const item = await configureProjectItemPipeline(env, projectId, requestedRef, {
+      targetCandidates: raw.targetCandidates, requiredApproved: raw.requiredApproved,
+      universe: raw.universe, subject: raw.subject, concept: raw.concept, reference: raw.reference, scriptExcerpt: raw.scriptExcerpt,
+    });
     if (!item) {
       itemResults.set(requestedRef,{ item_id: requestedRef, accepted: 0, error: "ITEM_UPSERT_FAILED" });
       continue;
@@ -163,10 +169,15 @@ export async function operationMaterializationTelemetry(env: Env, operationId: s
     return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] || 0;
   };
   const total = numeric("total_materialization_ms"), queueWait = numeric("queue_wait_ms");
+  const goal = await summarizeOperationCollectionGoal(env, operationId);
   return {
     operationId,
     type: operation.type,
     status: operation.status,
+    goalSatisfied: goal.goalSatisfied,
+    goal_satisfied: goal.goalSatisfied,
+    collectionStatus: goal.collectionStatus,
+    collection_status: goal.collectionStatus,
     accepted: rows.length,
     queuedAttempts: Number(operation.requested || 0),
     standby: rows.filter(row => collectorClean(row.status).toUpperCase() === "DISCOVERED").length,
@@ -199,7 +210,15 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
     if ((!active && !operationActive) || Date.now() >= deadline) break;
     await collectorSleep(250);
   }
+  const aggregateStatus = telemetry?.collectionStatus || (states.length && states.every(state => state.collectionStatus === "COMPLETE") ? "COMPLETE"
+    : states.some(state => state.collectionStatus === "COLLECTING") ? "COLLECTING"
+    : states.some(state => state.collectionStatus === "NEEDS_MORE" || state.collectionStatus === "EMPTY") ? "NEEDS_MORE" : "EMPTY");
+  const goalSatisfied = telemetry?.goalSatisfied ?? (states.length > 0 && states.every(state => state.collectionStatus === "COMPLETE"));
   return {
+    goalSatisfied,
+    goal_satisfied: goalSatisfied,
+    collectionStatus: aggregateStatus,
+    collection_status: aggregateStatus,
     project: { id: project.id, name: project.name, status: project.status, pipelineStatus: project.pipeline_status, stateVersion: Number(project.state_version || 0) },
     operation: telemetry,
     items: states.map(state => ({
@@ -233,7 +252,7 @@ export async function getQaWorkPacket(request: Request, env: Env, input: { proje
   const where = projectId
     ? "WHERE i.project_id=? AND i.qa_status='READY_FOR_QA' AND COALESCE(p.mcp_locked,0)=0 AND COALESCE(p.lifecycle_status,'ACTIVE')='ACTIVE'"
     : "WHERE i.qa_status='READY_FOR_QA' AND COALESCE(p.mcp_locked,0)=0 AND COALESCE(p.lifecycle_status,'ACTIVE')='ACTIVE'";
-  const sql = `SELECT i.id,i.project_id,i.item_key,i.term,i.context,i.kind,i.universe,i.notes,i.target_file,i.composition_class,i.semantic_class,i.semantic_reference,i.search_plan,
+  const sql = `SELECT i.id,i.project_id,i.item_key,i.term,i.context,i.kind,i.universe,i.notes,i.target_file,i.composition_class,i.semantic_class,i.semantic_reference,i.search_plan,i.strategy_state,
       i.target_candidates,i.required_approved,i.materialized_count,i.approved_count,i.rejected_count,i.collection_status,i.qa_status,i.priority,
       p.name AS project_name
     FROM automatic_project_items i JOIN automatic_projects p ON p.id=i.project_id ${where}
@@ -249,17 +268,19 @@ export async function getQaWorkPacket(request: Request, env: Env, input: { proje
       .bind(item.project_id, item.id, candidatesPerItem).all<Record<string,unknown>>();
     const materialization = await env.DB.prepare("SELECT script_reference,visual_reference,concept,subject,universe FROM materialization_items WHERE item_id=? ORDER BY updated_at DESC LIMIT 1")
       .bind(item.id).first<Record<string,unknown>>().catch(() => null);
+    let strategy: Record<string,unknown> = {};
+    try { strategy = JSON.parse(String(item.strategy_state || "{}")) as Record<string,unknown>; } catch { strategy = {}; }
     items.push({
       project: { project_id: item.project_id, name: item.project_name },
       item: {
         item_id: item.id,
         item_key: item.item_key,
         term: item.term,
-        script_excerpt: materialization?.script_reference || item.context || null,
-        visual_reference: materialization?.visual_reference || item.semantic_reference || null,
-        concept: materialization?.concept || item.term,
-        universe: materialization?.universe || item.universe || null,
-        subject: materialization?.subject || item.term || null,
+        script_excerpt: materialization?.script_reference || strategy.collectorScriptExcerpt || item.context || null,
+        visual_reference: materialization?.visual_reference || strategy.collectorReference || item.semantic_reference || null,
+        concept: materialization?.concept || strategy.collectorConcept || item.semantic_reference || item.term,
+        universe: materialization?.universe || strategy.collectorUniverse || item.universe || null,
+        subject: materialization?.subject || strategy.collectorSubject || item.term || null,
         requirements: {
           kind: item.kind,
           target_file: item.target_file,

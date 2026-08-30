@@ -4,6 +4,8 @@ import { id, nowMs } from "./ids";
 import { recordIngestEvent } from "./materialization";
 import { refreshProjectItemPipelineState } from "./project-pipeline-state";
 import { refreshRecoveryAfterWrite, writeCandidateRecoveryRecord, writeImportRecoveryRecord } from "./recovery-manifest";
+import { materializeScenesFromProjectScript } from "./project-script-parser";
+import { reconcileAutomaticProject } from "./projects";
 
 function sanitizeFilename(value: string) {
   const clean=value.trim().replace(/[^a-zA-Z0-9._-]+/g,"-").replace(/^-+|-+$/g,"");
@@ -112,9 +114,20 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
       await env.DB.batch([
         env.DB.prepare("INSERT INTO automatic_project_files (id,project_id,role,version,file_name,r2_key,mime_type,size_bytes,created_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(fileId,claimed.project_id,claimed.role||"ANEXO",Number(max?.version||0)+1,claimed.file_name,claimed.r2_key,claimed.actual_mime||claimed.expected_mime||"application/octet-stream",claimed.size_bytes,ts),
         env.DB.prepare("UPDATE v2_direct_uploads SET status='CONFIRMED',project_file_id=?,failure_reason=NULL,updated_at=?,completed_at=? WHERE id=? AND status='CONFIRMING'").bind(fileId,ts,ts,uploadId),
-        env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),claimed.project_id,"FILE_ATTACHED","OK",JSON.stringify({fileId,role:claimed.role||"ANEXO",fileName:claimed.file_name}),ts),
+        env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),claimed.project_id,"FILE_ATTACHED","OK",JSON.stringify({fileId,role:claimed.role||"ANEXO",fileName:claimed.file_name,mcpVisibility:"IMMEDIATE"}),ts),
+        env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,claimed.project_id),
       ]);
-      return {ok:true,projectFileId:fileId,r2Key:claimed.r2_key,status:200} as const;
+      let scriptParse:unknown=null;
+      let reconciliation:unknown=null;
+      if(String(claimed.role||"").trim().toUpperCase()==="SCRIPT" && Number(claimed.size_bytes||0)<=2*1024*1024){
+        const stored=await env.MEDIA.get(String(claimed.r2_key));
+        if(stored){
+          const content=await stored.text();
+          scriptParse=await materializeScenesFromProjectScript(env,{projectId:String(claimed.project_id),content,fileId,fileName:String(claimed.file_name||"SCRIPT.txt")}).catch(error=>({ok:false,error:error instanceof Error?error.message:String(error),sceneCount:0}));
+          if(Number((scriptParse as any)?.sceneCount||0)>0)reconciliation=await reconcileAutomaticProject(env,String(claimed.project_id)).catch(error=>({error:error instanceof Error?error.message:String(error)}));
+        }
+      }
+      return {ok:true,projectFileId:fileId,r2Key:claimed.r2_key,mcpVisible:true,script_parse:scriptParse,reconciliation,status:200} as const;
     }
     const operationId=id("OP"); const candidateId=id("CAND");
     await env.DB.batch([
@@ -123,6 +136,7 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
         .bind(candidateId,operationId,`direct-upload://${uploadId}`,claimed.project_id||null,claimed.item_id||null,claimed.universe||"",claimed.subject||"",claimed.tags_json||"[]",claimed.r2_key,claimed.actual_mime||claimed.expected_mime||"application/octet-stream",claimed.size_bytes,null,ts,ts,ts,ts,ts,ts,0,0,0,0,0),
       env.DB.prepare("UPDATE v2_direct_uploads SET status='CONFIRMED',candidate_id=?,failure_reason=NULL,updated_at=?,completed_at=? WHERE id=? AND status='CONFIRMING'").bind(candidateId,ts,ts,uploadId),
     ]);
+    if(claimed.project_id)await env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,claimed.project_id).run().catch(()=>undefined);
     await writeCandidateRecoveryRecord(env,candidateId,"DIRECT_UPLOAD_CONFIRMED").catch(()=>undefined);
     await refreshRecoveryAfterWrite(env,"DIRECT_IMAGE_RECEIVED",candidateId);
     await refreshProjectItemPipelineState(env,claimed.project_id?String(claimed.project_id):null,claimed.item_id?String(claimed.item_id):null).catch(()=>undefined);

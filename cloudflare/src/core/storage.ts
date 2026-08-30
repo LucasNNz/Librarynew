@@ -3,7 +3,7 @@ import { validSignedCandidateRequest, validSignedFileRequest, validSignedSupervi
 
 export async function serveFile(request: Request, assetId: string, env: Env) {
   if (!(await validSignedFileRequest(request, assetId, env))) return new Response("Forbidden", { status: 403 });
-  const row = await env.DB.prepare("SELECT r2_key,mime_type FROM assets WHERE id = ?").bind(assetId).first<{ r2_key: string; mime_type: string | null }>();
+  const row = await env.DB.prepare("SELECT r2_key,mime_type,original_name,name FROM assets WHERE id = ?").bind(assetId).first<{ r2_key: string; mime_type: string | null; original_name?:string|null; name?:string|null }>();
   if (!row) return new Response("Not found", { status: 404 });
   const object = await env.MEDIA.get(row.r2_key);
   if (!object) return new Response("Object missing", { status: 404 });
@@ -13,6 +13,7 @@ export async function serveFile(request: Request, assetId: string, env: Env) {
   headers.set("cache-control", "private, max-age=900");
   headers.set("x-content-type-options", "nosniff");
   if (row.mime_type) headers.set("content-type", row.mime_type);
+  if(new URL(request.url).searchParams.get("mode")==="download") headers.set("content-disposition",`attachment; filename="${String(row.original_name||row.name||assetId).replace(/[\\/:*?"<>|\x00-\x1f]+/g,"-")}"`);
   return new Response(object.body, { headers });
 }
 
@@ -50,6 +51,7 @@ export async function serveCandidateFile(request: Request, candidateId: string, 
   headers.set("cache-control", "private, max-age=900");
   headers.set("x-content-type-options", "nosniff");
   if (row.mime_type) headers.set("content-type", row.mime_type);
+  if(new URL(request.url).searchParams.get("mode")==="download") headers.set("content-disposition",`attachment; filename="${candidateId}"`);
   return new Response(object.body, { headers });
 }
 

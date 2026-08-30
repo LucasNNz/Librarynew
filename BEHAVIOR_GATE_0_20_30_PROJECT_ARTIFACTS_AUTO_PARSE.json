@@ -1,0 +1,27 @@
+{
+  "checkpoint": "0.20.30",
+  "gate": "PROJECT_ARTIFACTS_AUTO_PARSE",
+  "status": "PASS",
+  "checks": {
+    "project_file_commit_touches_state_version": true,
+    "inline_script_touches_state_and_parses": true,
+    "collector_materialized_touches_state": true,
+    "qa_approve_touches_state": true,
+    "snapshot_attachment_summary": true,
+    "mcp_lists_project_files": true,
+    "mcp_lists_project_artifacts": true,
+    "artifact_inventory_sources": true,
+    "reconcile_self_heals_zero_items": true,
+    "slot_read_triggers_legacy_recovery": true,
+    "parser_supports_bracket_numeric": true,
+    "ui_has_artifacts_panel": true,
+    "http_artifacts_route": true,
+    "bundle_version_02030": true,
+    "bundle_has_script_parse": true,
+    "bundle_has_artifact_tools": true,
+    "bundle_has_state_touch": true,
+    "bundle_has_bracket_numeric_parser": true
+  },
+  "bundle_sha256": "aa9088d6855a1c4eb956a05172bfa7aec00389fee6e35f871b8f1c4387ad3d43",
+  "bundle_bytes": 2105962
+}

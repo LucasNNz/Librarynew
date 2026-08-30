@@ -34,31 +34,94 @@ export async function resolveProjectItem(env: Env, projectId: string, itemRef: s
     .bind(projectId, ref, ref, ref).first<Record<string, unknown>>();
 }
 
-export async function configureProjectItemPipeline(env: Env, projectId: string, itemRef: string, input: { targetCandidates?: number; requiredApproved?: number }): Promise<Record<string, unknown> | null> {
+export type ProjectItemPipelineConfig = {
+  targetCandidates?: number;
+  requiredApproved?: number;
+  universe?: string;
+  subject?: string;
+  concept?: string;
+  reference?: string;
+  scriptExcerpt?: string;
+};
+
+export async function configureProjectItemPipeline(env: Env, projectId: string, itemRef: string, input: ProjectItemPipelineConfig): Promise<Record<string, unknown> | null> {
   let item = await resolveProjectItem(env, projectId, itemRef);
   const project = await env.DB.prepare("SELECT id,active_version FROM automatic_projects WHERE id=?").bind(projectId).first<{id:string;active_version:number}>();
   if (!project) return null;
   const ref = pipelineClean(itemRef);
   if (!ref) return null;
+  const universe = pipelineClean(input.universe);
+  const subject = pipelineClean(input.subject);
+  const concept = pipelineClean(input.concept);
+  const reference = pipelineClean(input.reference);
+  const scriptExcerpt = pipelineClean(input.scriptExcerpt);
   if (!item) {
     const ts=nowMs();
     const itemId=await stableId("PITEM",`PROJECT_SCENE\n${projectId}\n${ref}`,12);
     const target=Math.max(1,Math.min(Number(input.targetCandidates??8),100));
     const required=Math.max(1,Math.min(Number(input.requiredApproved??1),target));
+    const strategyState = JSON.stringify({
+      collectorConcept: concept || undefined,
+      collectorReference: reference || undefined,
+      collectorScriptExcerpt: scriptExcerpt || undefined,
+      collectorSubject: subject || undefined,
+      collectorUniverse: universe || undefined,
+    });
     await env.DB.prepare(`INSERT OR IGNORE INTO automatic_project_items
-      (id,project_id,version,item_key,term,context,kind,status,priority,created_at,updated_at,target_candidates,required_approved,collection_status,qa_status,stage,strategy_state,composition_class)
-      VALUES (?,?,?,?,?,NULL,'contextual','COLLECTING',1,?,?,?,?,'EMPTY','WAITING_COLLECTION','DISCOVERY','{}','CONTEXTUAL')`)
-      .bind(itemId,projectId,Number(project.active_version||1),ref,ref,ts,ts,target,required).run();
+      (id,project_id,version,item_key,term,context,kind,universe,status,priority,created_at,updated_at,target_candidates,required_approved,collection_status,qa_status,stage,semantic_reference,strategy_state,composition_class)
+      VALUES (?,?,?,?,?,?,'contextual',?,'COLLECTING',1,?,?,?,?,'EMPTY','WAITING_COLLECTION','DISCOVERY',?,?,'CONTEXTUAL')`)
+      .bind(itemId,projectId,Number(project.active_version||1),ref,subject||concept||ref,scriptExcerpt||null,universe||null,ts,ts,target,required,reference||concept||null,strategyState).run();
     item=await resolveProjectItem(env,projectId,ref);
   }
   if (!item) return null;
   const target = Math.max(1, Math.min(Number(input.targetCandidates ?? item.target_candidates ?? 8), 100));
   const required = Math.max(1, Math.min(Number(input.requiredApproved ?? item.required_approved ?? 1), target));
-  await env.DB.prepare("UPDATE automatic_project_items SET target_candidates=?,required_approved=?,status=CASE WHEN upper(status) IN ('PARSING','PENDING') THEN 'COLLECTING' ELSE status END,updated_at=? WHERE id=?")
-    .bind(target, required, nowMs(), item.id).run();
+  let strategy: Record<string,unknown> = {};
+  try { strategy = JSON.parse(String(item.strategy_state || "{}")) as Record<string,unknown>; } catch { strategy = {}; }
+  if (concept) strategy.collectorConcept = concept;
+  if (reference) strategy.collectorReference = reference;
+  if (scriptExcerpt) strategy.collectorScriptExcerpt = scriptExcerpt;
+  if (subject) strategy.collectorSubject = subject;
+  if (universe) strategy.collectorUniverse = universe;
+  const ts = nowMs();
+  await env.DB.prepare(`UPDATE automatic_project_items SET
+      target_candidates=?,required_approved=?,
+      term=CASE WHEN ?<>'' THEN ? ELSE term END,
+      context=CASE WHEN ?<>'' THEN ? ELSE context END,
+      universe=CASE WHEN ?<>'' THEN ? ELSE universe END,
+      semantic_reference=CASE WHEN ?<>'' THEN ? WHEN ?<>'' AND COALESCE(semantic_reference,'')='' THEN ? ELSE semantic_reference END,
+      strategy_state=?,
+      status=CASE WHEN upper(status) IN ('PARSING','PENDING') THEN 'COLLECTING' ELSE status END,updated_at=? WHERE id=?`)
+    .bind(target,required,subject,subject,scriptExcerpt,scriptExcerpt,universe,universe,reference,reference,concept,concept,JSON.stringify(strategy),ts,item.id).run();
   await env.DB.prepare("UPDATE automatic_projects SET total_items=(SELECT COUNT(*) FROM automatic_project_items WHERE project_id=?),state_version=state_version+1,updated_at=? WHERE id=?")
-    .bind(projectId,nowMs(),projectId).run();
-  return { ...item, target_candidates: target, required_approved: required };
+    .bind(projectId,ts,projectId).run();
+  const updated = await resolveProjectItem(env,projectId,String(item.id));
+  return updated ? { ...updated, target_candidates: target, required_approved: required } : { ...item, target_candidates: target, required_approved: required };
+}
+
+export async function summarizeOperationCollectionGoal(env: Env, operationId: string) {
+  const operation = pipelineClean(operationId);
+  if (!operation) return { goalSatisfied: false, collectionStatus: "UNKNOWN" as const, items: [] as Array<Record<string,unknown>> };
+  const result = await env.DB.prepare(`SELECT DISTINCT i.id,i.item_key,i.collection_status,i.target_candidates,i.materialized_count,i.failed_count
+    FROM v2_ingest_candidates c JOIN automatic_project_items i
+      ON i.project_id=c.project_id AND (i.id=c.item_id OR i.item_key=c.item_id)
+    WHERE c.operation_id=? AND c.project_id IS NOT NULL AND c.item_id IS NOT NULL
+    ORDER BY i.id`).bind(operation).all<Record<string,unknown>>();
+  const items = (result.results || []).map(row => ({
+    item_id: row.id,
+    item_key: row.item_key,
+    collection_status: pipelineClean(row.collection_status).toUpperCase() || "EMPTY",
+    target_candidates: pipelineNumber(row.target_candidates),
+    materialized: pipelineNumber(row.materialized_count),
+    failed: pipelineNumber(row.failed_count),
+  }));
+  if (!items.length) return { goalSatisfied: false, collectionStatus: "UNKNOWN" as const, items };
+  const statuses = items.map(row => String(row.collection_status));
+  const collectionStatus = statuses.every(status => status === "COMPLETE") ? "COMPLETE"
+    : statuses.some(status => status === "COLLECTING") ? "COLLECTING"
+    : statuses.some(status => status === "NEEDS_MORE" || status === "EMPTY") ? "NEEDS_MORE"
+    : "COLLECTING";
+  return { goalSatisfied: collectionStatus === "COMPLETE", collectionStatus, items };
 }
 
 export async function refreshProjectItemPipelineState(env: Env, projectId?: string | null, itemRef?: string | null): Promise<ProjectPipelineItemState | null> {

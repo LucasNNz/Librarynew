@@ -1,0 +1,28 @@
+{
+  "checkpoint": "0.20.31",
+  "gate": "PASS",
+  "checks": {
+    "slot_order_script_reference": true,
+    "reference_default_mcp_open": true,
+    "reference_inline_attachment": true,
+    "mcp_direct_attach": true,
+    "mcp_direct_read": true,
+    "mcp_text_slot_reference": true,
+    "workflow_reference_brief": true,
+    "ui_reference_purpose": true,
+    "ui_copy_action": true,
+    "ui_view_action": true,
+    "ui_download_action": true,
+    "css_four_columns": true,
+    "css_readable_slot_text": true,
+    "css_reference_slot": true,
+    "css_responsive_3_2_1": true,
+    "bundle_version_02031": true,
+    "bundle_reference_attach": true,
+    "bundle_reference_tools": true,
+    "bundle_text_slot_reference": true,
+    "bundle_reference_slot": true,
+    "bundle_reference_snapshot_count": true,
+    "bundle_default_mcp_open": true
+  }
+}

@@ -113,9 +113,10 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
   await expireProjectWorkflowTags(env,projectId);
   await syncDerivedProjectWorkflow(env,projectId).catch(()=>undefined);
   const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>(); if(!project)return null;
-  const [tags,script,thumbs,titles,items,candidates,packages,slotAccess]=await Promise.all([
+  const [tags,script,referenceBrief,thumbs,titles,items,candidates,packages,slotAccess]=await Promise.all([
     env.DB.prepare("SELECT tag,status,owner_id,execution_id,last_seen_at,lease_expires_at,updated_at FROM v2_project_workflow_tags WHERE project_id=? AND status='ACTIVE' ORDER BY updated_at DESC").bind(projectId).all<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
+    env.DB.prepare("SELECT id,role,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS') ORDER BY created_at DESC,version DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END) selected FROM v2_project_media WHERE project_id=? AND kind='THUMB' AND status NOT IN ('THUMB_REJECTED','REJECTED')").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END) selected FROM v2_project_titles WHERE project_id=? AND status NOT IN ('TITLE_REJECTED','REJECTED')").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare(`SELECT COUNT(*) total,SUM(target_candidates) target,SUM(required_approved) required_approved,SUM(materialized_count) materialized,SUM(approved_count) approved,
@@ -130,19 +131,19 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
   const activeTags=(tags.results||[]).map(row=>({...row,tag:upper(row.tag)}));
   const target=Number(items?.target||0),materialized=Number(items?.materialized||0),required=Number(items?.required_approved||0),approved=Math.max(Number(items?.approved||0),Number(candidates?.approved||0));
   const accessMap=new Map((slotAccess.results||[]).map(row=>[String(row.slot_key),row]));
-  const slot=(key:string,label:string,state:string,summary:string,progress:number)=>{const access=accessMap.get(key);return {key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress))),mcpOpen:Boolean(Number(access?.mcp_open||0)),instruction:access?.instruction||null,openedBy:access?.opened_by||null,openedAt:access?.opened_at||null};};
-  const scriptReady=Boolean(script),thumbCount=Number(thumbs?.total||0),titleCount=Number(titles?.total||0),zipStatus=upper(packages?.status || (project.zip_r2_key ? "READY" : "MISSING"));
+  const slot=(key:string,label:string,state:string,summary:string,progress:number)=>{const access=accessMap.get(key);const implicitReference=key==="reference"&&!access;return {key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress))),mcpOpen:implicitReference?true:Boolean(Number(access?.mcp_open||0)),instruction:access?.instruction||(implicitReference?"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.":null),openedBy:access?.opened_by||(implicitReference?"SYSTEM_DEFAULT":null),openedAt:access?.opened_at||null};};
+  const scriptReady=Boolean(script),referenceReady=Boolean(referenceBrief),thumbCount=Number(thumbs?.total||0),titleCount=Number(titles?.total||0),zipStatus=upper(packages?.status || (project.zip_r2_key ? "READY" : "MISSING"));
   const slots=[
     slot("script","Roteiro",scriptReady?"READY":"MISSING",scriptReady?`SCRIPT v${Number(script?.version||1)}`:"Aguardando roteiro",scriptReady?100:0),
+    slot("reference","Referências do Coletor",referenceReady?"READY":activeTags.some(t=>t.tag==="REFERENCE_ANALYSIS_WORKING")?"WORKING":"WAITING",referenceReady?`${String(referenceBrief?.file_name||"REFERENCIAS_COLETOR.txt")} · v${Number(referenceBrief?.version||1)}`:"Aguardando TXT do agente de referências",referenceReady?100:activeTags.some(t=>t.tag==="REFERENCE_ANALYSIS_WORKING")?50:0),
     slot("thumbs","Thumbs",thumbCount?"READY":"MISSING",`${Math.min(thumbCount,3)}/3 opções`,thumbCount/3*100),
     slot("titles","Títulos",titleCount?"READY":"MISSING",`${Math.min(titleCount,3)}/3 opções`,titleCount/3*100),
-    slot("reference","Referências",activeTags.some(t=>t.tag==="REFERENCE_CHECKED")?"READY":activeTags.some(t=>t.tag==="REFERENCE_ANALYSIS_WORKING")?"WORKING":"WAITING",`${Number(items?.library_linked||0)} equivalentes vinculados`,activeTags.some(t=>t.tag==="REFERENCE_CHECKED")?100:activeTags.some(t=>t.tag==="REFERENCE_ANALYSIS_WORKING")?50:0),
     slot("candidates","Coleta / candidatas",target>0&&materialized>=target?"READY":target>0?"WORKING":"WAITING",target?`${materialized}/${target} MATERIALIZED · ${Number(candidates?.reserve||0)} reserva`:"Sem cenas de coleta",target?materialized/target*100:0),
     slot("approved","Imagens aprovadas",required>0&&approved>=required?"READY":required>0?"WORKING":"WAITING",required?`${approved}/${required} necessárias`:`${approved} aprovadas`,required?approved/required*100:(approved?100:0)),
     slot("zip","ZIP final",["READY","READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(zipStatus)?"READY":"WAITING",packages?.file_name?String(packages.file_name):"Ainda não gerado",packages?100:0),
   ];
   const progress=Math.round(slots.reduce((sum,s)=>sum+s.progress,0)/slots.length);
-  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},candidates:{...candidates},package:packages||null,slotAccess:slotAccess.results||[]};
+  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},candidates:{...candidates},package:packages||null,slotAccess:slotAccess.results||[]};
 }
 
 export async function setProjectLifecycle(env:Env,input:{projectIds:string[];action:"COMPLETE"|"REJECT"|"REOPEN";reason?:string}){

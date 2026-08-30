@@ -1,0 +1,44 @@
+{
+  "checkpoint": "0.20.29",
+  "gate": "COLLECTOR_REFINEMENTS",
+  "status": "PASS",
+  "checks": {
+    "queue_policy": {
+      "status": "PASS",
+      "policy": "LOW_LATENCY_CANDIDATE_V4",
+      "batch_size": 10,
+      "max_wait_time_ms": 0,
+      "max_concurrency": null,
+      "fanout_parallel": true,
+      "note": "Configuração restaurada ao perfil de baixa latência; a latência real depende do runtime Cloudflare e deve ser medida após deploy."
+    },
+    "collector_goal_semantics": {
+      "status": "PASS",
+      "audit_status_preserved": "COMPLETED_WITH_ERRORS",
+      "goal_satisfied": true,
+      "collection_status": "COMPLETE",
+      "exposed_by": [
+        "GET /operations/:id",
+        "operation telemetry",
+        "get_collection_snapshot top-level"
+      ]
+    },
+    "project_item_semantic_inheritance": {
+      "status": "PASS",
+      "accepted_fields": [
+        "universo",
+        "sujeito",
+        "conceito",
+        "referencia",
+        "trecho_roteiro"
+      ],
+      "qa_packet_prefers_supplied_semantics": true,
+      "fallback_to_item_key_avoided_when_semantics_exist": true
+    },
+    "embedded_worker_sync": {
+      "status": "PASS",
+      "worker_version": "0.20.29",
+      "source_and_embedded_bundle_contract_match": true
+    }
+  }
+}
