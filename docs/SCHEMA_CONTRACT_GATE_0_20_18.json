@@ -1,0 +1,26 @@
+{
+  "schema_version": "2.17.0",
+  "migration_count": 18,
+  "fast_push_insert": {
+    "ok": true,
+    "row": [
+      "QUEUED",
+      1000,
+      1000
+    ]
+  },
+  "materializar_lote_insert": {
+    "ok": true,
+    "row": [
+      "CENA-001",
+      "QUEUED",
+      "V2_QUEUE"
+    ],
+    "placeholders": 20,
+    "bindings": 20
+  },
+  "critical_candidate_columns_missing": [],
+  "auto_clean_in_boot": false,
+  "bundle_version_header": "0.20.18",
+  "bundle_sha256": "3d619e55131518496a9a9d342b2f962525449346e9a8e1da399cd50134293095"
+}

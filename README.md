@@ -1,4 +1,5 @@
-# Corvo Library V2 0.20.17 — Collector → Materialization → QA
+# Corvo Library V2 0.20.18 — Schema Contract Gate
+> 0.20.18 corrige drift Worker↔D1 no pipeline de materialização, adiciona schema gate/reconciliação idempotente e corrige o INSERT de `materializar_lote`.
 
 Checkpoint acumulativo baseado no 0.20.16. Consolida o fluxo Coletor → Queue → R2 → READY_FOR_QA → Analista, com FAST PUSH multi-cena, contadores por cena, QA em lote, telemetria e consumer concorrente.
 

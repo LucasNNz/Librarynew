@@ -10,5 +10,5 @@ export async function GET() {
   const dir = path.join(process.cwd(),"cloudflare","migrations");
   const names = (await readdir(dir)).filter(name=>/^\d+_.*\.sql$/.test(name)).sort();
   const items = await Promise.all(names.map(async name=>{const sql=await readFile(path.join(dir,name),"utf8");return{name,sql,checksum:createHash("sha256").update(sql).digest("hex")};}));
-  return NextResponse.json({version:"0.20.17",schemaVersion:"2.16.0",items},{headers:{"cache-control":"public, max-age=60"}});
+  return NextResponse.json({version:"0.20.18",schemaVersion:"2.17.0",items},{headers:{"cache-control":"public, max-age=60"}});
 }

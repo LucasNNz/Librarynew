@@ -1,0 +1,17 @@
+CORVO LIBRARY V2 — 0.20.18 SCHEMA CONTRACT GATE
+
+PASS — frontend structural TypeScript
+PASS — Worker structural TypeScript
+PASS — Worker embedded JavaScript syntax
+PASS — baseline + migrations 9000..9017
+PASS — schema_version 2.17.0
+PASS — FAST PUSH candidate INSERT includes discovered_at/queued_at
+PASS — materializar_lote SQL = 20 placeholders / 20 bindings
+PASS — simulated drift repair (22 missing columns repaired)
+PASS — idempotence (second reconciliation repaired 0 columns)
+PASS — health exposes critical schema contract
+PASS — MCP/HTTP/Queue pipeline gated by critical schema readiness
+PASS — automatic operational cleanup removed from normal boot
+PASS — embedded Worker bundle version 0.20.18
+
+Production data is preserved. No destructive migration is introduced by 0.20.18.

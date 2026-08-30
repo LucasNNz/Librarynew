@@ -18,6 +18,70 @@ async function tableExists(token: string, accountId: string, databaseId: string,
   } catch { return false; }
 }
 
+const CRITICAL_SCHEMA_COLUMNS: Record<string, Array<{name:string;ddl:string}>> = {
+  v2_ingest_candidates: [
+    {name:"discovered_at",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN discovered_at INTEGER"},
+    {name:"queued_at",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN queued_at INTEGER"},
+    {name:"download_started_at",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN download_started_at INTEGER"},
+    {name:"materialized_at",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN materialized_at INTEGER"},
+    {name:"queue_wait_ms",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN queue_wait_ms INTEGER"},
+    {name:"download_ms",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN download_ms INTEGER"},
+    {name:"r2_write_ms",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN r2_write_ms INTEGER"},
+    {name:"d1_finalize_ms",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN d1_finalize_ms INTEGER"},
+    {name:"total_materialization_ms",ddl:"ALTER TABLE v2_ingest_candidates ADD COLUMN total_materialization_ms INTEGER"},
+  ],
+  automatic_project_items: [
+    {name:"target_candidates",ddl:"ALTER TABLE automatic_project_items ADD COLUMN target_candidates INTEGER NOT NULL DEFAULT 8"},
+    {name:"required_approved",ddl:"ALTER TABLE automatic_project_items ADD COLUMN required_approved INTEGER NOT NULL DEFAULT 1"},
+    {name:"discovered_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN discovered_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"queued_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN queued_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"downloading_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN downloading_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"materialized_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN materialized_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"failed_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"approved_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN approved_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"rejected_count",ddl:"ALTER TABLE automatic_project_items ADD COLUMN rejected_count INTEGER NOT NULL DEFAULT 0"},
+    {name:"collection_status",ddl:"ALTER TABLE automatic_project_items ADD COLUMN collection_status TEXT NOT NULL DEFAULT 'EMPTY'"},
+    {name:"qa_status",ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_status TEXT NOT NULL DEFAULT 'WAITING_COLLECTION'"},
+    {name:"qa_ready_at",ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_ready_at INTEGER"},
+    {name:"qa_started_at",ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_started_at INTEGER"},
+    {name:"qa_completed_at",ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_completed_at INTEGER"},
+  ],
+};
+
+async function tableColumns(token:string,accountId:string,databaseId:string,table:string) {
+  const result=await queryD1<{name?:string}>(token,accountId,databaseId,`PRAGMA table_info(${table})`);
+  return new Set((result?.[0]?.results||[]).map(row=>String(row.name||"")).filter(Boolean));
+}
+
+async function reconcileCriticalSchemaRemote(token:string,accountId:string,databaseId:string) {
+  const repaired:string[]=[];
+  const missingTables:string[]=[];
+  for(const table of ["v2_ingest_candidates","automatic_project_items","v2_ingest_operations","v2_ingest_events"]){
+    if(!(await tableExists(token,accountId,databaseId,table))) missingTables.push(table);
+  }
+  if(missingTables.length) return {ready:false,contractVersion:"2.17.0",missingTables,missingColumns:[],repaired};
+  for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
+    let columns=await tableColumns(token,accountId,databaseId,table);
+    for(const spec of specs){
+      if(columns.has(spec.name)) continue;
+      try { await queryD1(token,accountId,databaseId,spec.ddl); }
+      catch(error){ columns=await tableColumns(token,accountId,databaseId,table); if(!columns.has(spec.name)) throw error; }
+      columns.add(spec.name); repaired.push(`${table}.${spec.name}`);
+    }
+  }
+  await queryD1(token,accountId,databaseId,"UPDATE v2_ingest_candidates SET discovered_at=COALESCE(discovered_at,created_at), queued_at=COALESCE(queued_at,created_at), materialized_at=CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN COALESCE(materialized_at,updated_at) ELSE materialized_at END");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
+  await queryD1(token,accountId,databaseId,"CREATE TABLE IF NOT EXISTS v2_schema_meta (key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL)");
+  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.17.0',?)",[Date.now()]);
+  const missingColumns:Array<{table:string;column:string}>=[];
+  for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
+    const columns=await tableColumns(token,accountId,databaseId,table);
+    for(const spec of specs) if(!columns.has(spec.name)) missingColumns.push({table,column:spec.name});
+  }
+  return {ready:missingColumns.length===0,contractVersion:"2.17.0",missingTables:[],missingColumns,repaired};
+}
+
 async function migrationFiles() {
   const dir = path.join(process.cwd(), "cloudflare", "migrations");
   const files = (await readdir(dir)).filter((name: string) => /^\d+_.*\.sql$/.test(name)).sort();
@@ -67,7 +131,7 @@ async function importD1(token: string, accountId: string, databaseId: string, sq
 const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
-  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql",
+  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
@@ -100,6 +164,15 @@ async function applyPendingMigrations(token: string, accountId: string, database
   const files = await migrationFiles();
   const applied = await ensureMigrationRegistry(token, accountId, databaseId, files);
   const executed: string[] = [];
+
+  const preSchemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId).catch(()=>null);
+  const collectorMigration=files.find(item=>item.name==="9016_v2_collector_qa_pipeline.sql");
+  if(preSchemaContract?.ready && collectorMigration && !applied.has(collectorMigration.name)){
+    const checksum=createHash("sha256").update(collectorMigration.sql).digest("hex");
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[collectorMigration.name,checksum,Date.now()]);
+    applied.add(collectorMigration.name);
+  }
+
   for (const item of files) {
     if (applied.has(item.name)) continue;
     await importD1(token, accountId, databaseId, item.sql);
@@ -107,7 +180,9 @@ async function applyPendingMigrations(token: string, accountId: string, database
     await queryD1(token, accountId, databaseId, "INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)", [item.name, checksum, Date.now()]);
     executed.push(item.name);
   }
-  return executed;
+  const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
+  if(!schemaContract.ready) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(schemaContract)}`);
+  return {executed,schemaContract};
 }
 
 export async function POST(request: NextRequest) {
@@ -123,12 +198,13 @@ export async function POST(request: NextRequest) {
     if (!hasAssets || body.force) {
       const sql = await bootstrapSql();
       const result = await importD1(token, accountId, databaseId, sql);
-      return NextResponse.json({ ok: true, imported: true, bytes: Buffer.byteLength(sql), migrationsApplied: (await migrationFiles()).map(item=>item.name), ...result }, { headers: { "cache-control": "no-store" } });
+      const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
+      return NextResponse.json({ ok: true, imported: true, bytes: Buffer.byteLength(sql), migrationsApplied: (await migrationFiles()).map(item=>item.name), schemaContract, ...result }, { headers: { "cache-control": "no-store" } });
     }
 
     // Existing historical/V2 database: never restore again. Only migrations that are not registered are applied.
-    const migrationsApplied = await applyPendingMigrations(token, accountId, databaseId);
-    return NextResponse.json({ ok: true, skippedHistoricalRestore: true, hadV2: hasV2, migrationsApplied }, { headers: { "cache-control": "no-store" } });
+    const migrationResult = await applyPendingMigrations(token, accountId, databaseId);
+    return NextResponse.json({ ok: true, skippedHistoricalRestore: true, hadV2: hasV2, migrationsApplied:migrationResult.executed, schemaContract:migrationResult.schemaContract }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "D1_RESTORE_FAILED" }, { status: 500, headers: { "cache-control": "no-store" } });
   }

@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { reconcileCriticalSchema } from "./schema-contract";
 
 const CF_API = "https://api.cloudflare.com/client/v4";
 
@@ -110,11 +111,27 @@ export async function applyMigrationsFromApp(env: Env) {
   const rows = await env.DB.prepare("SELECT name FROM v2_migrations_applied").all<{name:string}>();
   const applied = new Set((rows.results||[]).map(row=>String(row.name)));
   const executed:string[]=[];
+
+  // Repair drift BEFORE replaying pending migrations. If 9016 is absent from
+  // the registry but its contract is now satisfied by reconciliation, register
+  // it as satisfied instead of replaying brittle ALTER TABLE statements.
+  const preSchemaContract = await reconcileCriticalSchema(env).catch(()=>null);
+  const collectorMigration = items.find(item=>item.name==="9016_v2_collector_qa_pipeline.sql");
+  if (preSchemaContract?.ready && collectorMigration && !applied.has(collectorMigration.name)) {
+    await env.DB.prepare("INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)")
+      .bind(collectorMigration.name,collectorMigration.checksum||"",Date.now()).run();
+    applied.add(collectorMigration.name);
+  }
+
   for(const item of items){
     if(applied.has(item.name)) continue;
     await env.DB.exec(item.sql);
     await env.DB.prepare("INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)").bind(item.name,item.checksum||"",Date.now()).run();
     executed.push(item.name);
   }
-  return {ok:true,targetVersion:payload.version||null,schemaVersion:payload.schemaVersion||null,executed};
+  // Always reconcile the critical collector/QA contract, even if the migration
+  // registry says 9016 was already applied. This repairs schema drift safely.
+  const schemaContract = await reconcileCriticalSchema(env);
+  if (!schemaContract.ready) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(schemaContract)}`);
+  return {ok:true,targetVersion:payload.version||null,schemaVersion:payload.schemaVersion||null,executed,schemaContract};
 }

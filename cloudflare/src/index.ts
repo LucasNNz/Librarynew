@@ -37,16 +37,19 @@ import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 import { operationalCleanOnce } from "./core/operational-clean";
 import { fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
+import { inspectCriticalSchema, requireCriticalSchema } from "./core/schema-contract";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
   let r2: "ok" | "error" = "ok";
   let schema: "ok" | "missing" = "ok";
+  let schemaContract: Awaited<ReturnType<typeof inspectCriticalSchema>> | null = null;
   try {
     await env.DB.prepare("SELECT 1 AS ok").first();
     const legacy = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='assets'").first();
     const v2 = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v2_ingest_operations'").first();
-    if (!legacy || !v2) schema = "missing";
+    schemaContract = await inspectCriticalSchema(env);
+    if (!legacy || !v2 || !schemaContract.ready) schema = "missing";
   } catch {
     d1 = "error";
   }
@@ -66,7 +69,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.17", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.18", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -77,7 +80,9 @@ export default {
 
     if (url.pathname === "/mcp") {
       // ChatGPT custom MCP endpoint: intentionally public / no auth.
-      // All non-MCP Core routes remain protected below by CORVO_APP_KEY.
+      // Repair/verify the critical collector schema before any MCP tool can write.
+      const gate = await requireCriticalSchema(env);
+      if (!gate.ready) return json({ error:"SCHEMA_NOT_READY", schemaContract:gate }, { status:503 });
       return handleMcp(request, env, ctx);
     }
 
@@ -100,6 +105,12 @@ export default {
 
     if (!authorized(request, env)) return withCors(json({ error: "UNAUTHORIZED" }, { status: 401 }), request);
 
+    const criticalPipelinePath = /^(?:\/fast-push|\/candidates(?:\/|$)|\/collector(?:\/|$)|\/qa(?:\/|$)|\/materialization(?:\/|$)|\/operations\/[^/]+\/telemetry$)/.test(url.pathname);
+    if (criticalPipelinePath) {
+      const gate = await requireCriticalSchema(env);
+      if (!gate.ready) return withCors(json({ error:"SCHEMA_NOT_READY", schemaContract:gate }, { status:503 }), request);
+    }
+
     let response: Response;
     if (url.pathname === "/bootstrap" && request.method === "POST") {
       const catalogUrl = new URL(request.url);
@@ -118,7 +129,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.17",
+        version:"0.20.18",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -431,6 +442,11 @@ export default {
   },
 
   async queue(batch: MessageBatch<CorvoQueueJob>, env: Env) {
+    const gate = await requireCriticalSchema(env).catch(()=>null);
+    if (!gate?.ready) {
+      for (const message of batch.messages) message.retry({ delaySeconds: 5 });
+      return;
+    }
     await Promise.all(batch.messages.map(async message => {
       const job=message.body;
       try {

@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.17";
+const EXPECTED_CORE_VERSION = "0.20.18";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -671,24 +671,29 @@ export default function Home() {
       }
       if (!coreReady) throw new Error(`CORE_UPDATE_TIMEOUT:${EXPECTED_CORE_VERSION}`);
 
-      setReleaseGateMessage("Limpando apenas os dados operacionais…");
-      const cleanResponse = await fetchWithNetworkRetry(
-        "/api/control/operational-clean-once",
+      // Never let a newly published Worker serve pipeline writes against an
+      // older D1 contract. Migration application also performs schema drift
+      // reconciliation and returns the critical schema gate.
+      setReleaseGateMessage("Sincronizando schema do D1…");
+      const migrationResponse = await fetchWithNetworkRetry(
+        "/api/control/apply-migrations",
         { method:"POST", cache:"no-store" },
-        { attempts:4, baseDelayMs:600 },
+        { attempts:6, baseDelayMs:650 },
       );
-      const clean = await cleanResponse.json().catch(()=>({})) as any;
-      if (!cleanResponse.ok) throw new Error(clean?.detail || clean?.error || `OPERATIONAL_CLEAN_HTTP_${cleanResponse.status}`);
-      // CLEAN_ZERO is a one-shot release gate. Once the Core returns the
-      // persisted DONE marker (`idempotent: true`), assets/projects created
-      // after that baseline are legitimate production data and must never be
-      // interpreted as a failed cleanup on later boots.
-      const cleanBaselineAlreadyDone = clean?.idempotent === true && clean?.marker === "operational_clean_release_0_20_10";
-      if (!cleanBaselineAlreadyDone && (Number(clean?.assets || 0) !== 0 || Number(clean?.projects || 0) !== 0)) {
-        throw new Error(`OPERATIONAL_CLEAN_VERIFICATION_FAILED:${String(clean?.assets)}/${String(clean?.projects)}`);
+      const migration = await migrationResponse.json().catch(()=>({})) as any;
+      if (!migrationResponse.ok) throw new Error(migration?.detail || migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
+      if (migration?.schemaContract && migration.schemaContract.ready !== true) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(migration.schemaContract)}`);
+
+      const schemaProbeResponse = await fetch("/api/health", { cache:"no-store" });
+      const schemaProbe = await schemaProbeResponse.json().catch(()=>({})) as any;
+      if (!schemaProbeResponse.ok || schemaProbe?.core?.schemaContract?.ready !== true) {
+        throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaProbe?.core?.schemaContract || schemaProbe?.core || {})}`);
       }
 
-      setReleaseGateMessage(cleanBaselineAlreadyDone ? "Lendo o D1 real…" : "Confirmando o D1 vazio…");
+      // Production data is authoritative now. The old one-shot cleanup endpoint
+      // remains available for explicit maintenance, but is never called during
+      // normal boot after the Library has begun receiving real assets.
+      setReleaseGateMessage("Lendo o D1 real…");
       const read = (path:string) => fetchWithNetworkRetry(path, { cache:"no-store" }, { attempts:4, baseDelayMs:500 });
       const [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse, operationsResponse] = await Promise.all([
         read("/api/health"),
@@ -721,10 +726,6 @@ export default function Home() {
         nextOperations = Array.isArray(operationValue?.items) ? operationValue.items as Operation[] : [];
       }
 
-      if (!cleanBaselineAlreadyDone && (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0)) {
-        throw new Error("OPERATIONAL_CLEAN_FINAL_VERIFICATION_FAILED");
-      }
-
       // React 18+ agrupa estes setters: o usuário recebe um snapshot final, nunca
       // o estado anterior seguido de uma 'correção' visual.
       setHealth(nextHealth);
@@ -736,7 +737,7 @@ export default function Home() {
       setProjects(nextProjects);
       setRecentOperations(nextOperations);
       setLoading(false);
-      setReleaseGateMessage(cleanBaselineAlreadyDone ? "D1 real carregado." : "D1 limpo; configurações preservadas.");
+      setReleaseGateMessage("D1 real carregado.");
       setReleaseGateState("done");
     } catch (error) {
       setReleaseGateState("error");
@@ -1039,9 +1040,13 @@ export default function Home() {
           const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
           if (version === EXPECTED_CORE_VERSION) {
             const migrationResponse=await fetchWithNetworkRetry("/api/control/apply-migrations",{method:"POST"},{attempts:6,baseDelayMs:700});
-            const migration=await migrationResponse.json().catch(()=>({}));
+            const migration=await migrationResponse.json().catch(()=>({})) as any;
             if(!migrationResponse.ok)throw new Error(migration.error||`MIGRATION_HTTP_${migrationResponse.status}`);
-            setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; migrations aplicadas: ${(migration.executed||[]).length}. A infraestrutura permaneceu travada.`);
+            if(migration?.schemaContract?.ready!==true)throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(migration?.schemaContract||{})}`);
+            const schemaProbe=await fetch("/api/health",{cache:"no-store"});
+            const schemaHealth=await schemaProbe.json().catch(()=>({})) as any;
+            if(!schemaProbe.ok||schemaHealth?.core?.schemaContract?.ready!==true)throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaHealth?.core?.schemaContract||{})}`);
+            setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; schema ${migration.schemaContract.contractVersion} READY; migrations aplicadas: ${(migration.executed||[]).length}.`);
             ready=true;
             break;
           }

@@ -22,7 +22,7 @@ async function insertItemsAndQueue(env:Env,batchId:string,project:string,items:M
     const itemId=clean(raw.item_id);if(!itemId)continue;
     const existing=await findItem(env,batchId,itemId);if(existing)continue;
     const dbId=id("MIT");
-    statements.push(env.DB.prepare(`INSERT INTO materialization_items (id,batch_id,item_id,target_name,concept,visual_reference,universe,preset,slot,kind,subject,tags,script_reference,used_for,min_width,min_height,status,candidate_cursor,route_class,created_at,updated_at,requires_alpha,composition_class) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'QUEUED',0,'V2_QUEUE',?,?,?,?,?)`)
+    statements.push(env.DB.prepare(`INSERT INTO materialization_items (id,batch_id,item_id,target_name,concept,visual_reference,universe,preset,slot,kind,subject,tags,script_reference,used_for,min_width,min_height,status,candidate_cursor,route_class,created_at,updated_at,requires_alpha,composition_class) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'QUEUED',0,'V2_QUEUE',?,?,?,?)`)
       .bind(dbId,batchId,itemId,clean(raw.arquivo_alvo)||`${itemId}.bin`,clean(raw.conceito)||itemId,clean(raw.referencia_visual)||null,clean(raw.universo)||null,clean(raw.preset)||null,clean(raw.slot)||null,clean(raw.tipo)||null,clean(raw.sujeito)||null,JSON.stringify(tags(raw.tags)),clean(raw.referencia_roteiro)||null,clean(raw.usado_para)||null,Math.max(1,Number(raw.min_width||64)),Math.max(1,Number(raw.min_height||64)),ts,ts,raw.transparencia_necessaria?1:0,raw.transparencia_necessaria?"ISOLATED":"CONTEXTUAL"));
     const candidates=asCandidateRows(raw as unknown as Record<string,unknown>);
     for(let i=0;i<candidates.length;i++){
