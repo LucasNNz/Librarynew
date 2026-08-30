@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.16";
+const EXPECTED_CORE_VERSION = "0.20.17";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";

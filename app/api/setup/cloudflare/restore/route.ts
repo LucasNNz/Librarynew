@@ -67,7 +67,7 @@ async function importD1(token: string, accountId: string, databaseId: string, sq
 const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
-  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql",
+  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {

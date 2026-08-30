@@ -1,0 +1,35 @@
+CORVO LIBRARY V2 0.20.17 — VALIDATION
+
+Frontend structural TypeScript: PASS
+Worker structural TypeScript: PASS
+Embedded Worker JavaScript syntax: PASS
+Embedded Worker version: 0.20.17 PASS
+MCP hot-path contracts embedded: PASS
+HTTP collector/QA routes embedded: PASS
+Queue batch processing concurrent: PASS
+Queue consumer retry delay 5s: PASS
+Known-length remote materialization path preserved: PASS
+
+Migration gate:
+Factory-Zero baseline + migrations 9000 through 9016: PASS
+Schema version after 9016: 2.16.0
+
+State-machine gate:
+8 MATERIALIZED + 3 FAILED, target=8:
+collection_status=COMPLETE PASS
+qa_status=READY_FOR_QA PASS
+materialized_count=8 PASS
+failed_count=3 PASS
+
+Post-QA gate:
+2 APPROVED + 6 REJECTED, required_approved=3:
+collection_status remains COMPLETE PASS
+qa_status=IN_QA PASS
+requirement_status=NEEDS_RELINK PASS
+remaining_approved=1 PASS
+
+When required_approved=1 with 2 approved:
+qa_status=QA_COMPLETE PASS
+collection_status remains COMPLETE PASS
+
+No destructive migration introduced.

@@ -2,7 +2,7 @@ import type { Env } from "../types";
 import { nowMs } from "./ids";
 
 const RELEASE_KEY = "factory_zero_release_0_20_5";
-const SCHEMA_VERSION = "2.13.0";
+const SCHEMA_VERSION = "2.16.0";
 
 const CONTENT_TABLES = [
   "asset_consultations","asset_usage","batch_assets","assets",

@@ -26,12 +26,11 @@
     "consumers": [
       {
         "queue": "corvo-materialize-v2",
-        "max_batch_size": 20,
-        "max_batch_timeout": 3,
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
         "max_retries": 5,
         "dead_letter_queue": "corvo-materialize-v2-dlq",
-        "max_concurrency": 5,
-        "retry_delay": 30
+        "retry_delay": 5
       }
     ]
   }

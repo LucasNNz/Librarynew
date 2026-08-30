@@ -30,6 +30,7 @@ import { exploreR2 } from "./core/r2-explorer";
 import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from "./core/pending-r2-reconcile";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
+import { fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -40,7 +41,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.16" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.17" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -256,6 +257,58 @@ function createServer(env: Env, request: Request) {
     });
     return output(await fastPush(synthetic, env));
   });
+
+  server.registerTool("fast_push_project_candidates", {
+    description: "FAST PUSH consolidado por projeto/cena. Aceita URLs de múltiplas cenas em uma chamada, persiste target_candidates/required_approved e retorna ACK rápido; Queue/R2 continuam no Data Plane.",
+    inputSchema: {
+      project_id: z.string().min(1),
+      operation_id: z.string().optional(),
+      items: z.array(z.object({
+        item_id: z.string().min(1),
+        target_candidates: z.number().int().min(1).max(100).optional(),
+        required_approved: z.number().int().min(1).max(100).optional(),
+        universo: z.string().optional(),
+        sujeito: z.string().optional(),
+        tags: z.array(z.string()).max(40).optional(),
+        urls: z.array(z.string().url()).min(1).max(50),
+      })).min(1).max(50),
+    },
+  }, async (v) => output(await fastPushProjectCandidates(env, {
+    projectId:v.project_id,
+    operationId:v.operation_id,
+    items:v.items.map((item: {item_id:string;target_candidates?:number;required_approved?:number;universo?:string;sujeito?:string;tags?:string[];urls:string[]})=>({itemId:item.item_id,targetCandidates:item.target_candidates,requiredApproved:item.required_approved,universe:item.universo,subject:item.sujeito,tags:item.tags,urls:item.urls})),
+  })));
+
+  server.registerTool("get_collection_snapshot", {
+    description: "Snapshot consolidado da coleta por cena. MATERIALIZED/APPROVED/REJECTED contam como materialização histórica; retorna apenas cenas COMPLETE/NEEDS_MORE e telemetria útil. wait_ms faz long-poll curto dentro de uma única chamada.",
+    inputSchema: {
+      project_id: z.string().min(1),
+      operation_id: z.string().optional(),
+      item_ids: z.array(z.string()).max(100).optional(),
+      wait_ms: z.number().int().min(0).max(5000).optional(),
+    },
+  }, async (v) => output(await getProjectCollectionSnapshot(env,{projectId:v.project_id,operationId:v.operation_id,itemIds:v.item_ids,waitMs:v.wait_ms})));
+
+  server.registerTool("get_qa_work_packet", {
+    description: "Pacote compacto para o Analista. Retorna somente cenas READY_FOR_QA e somente candidatas MATERIALIZED com preview; nunca inclui QUEUED/DOWNLOADING/RETRYING/FAILED nem logs administrativos.",
+    inputSchema: {
+      project_id: z.string().optional(),
+      limite_cenas: z.number().int().min(1).max(30).optional(),
+      candidatas_por_cena: z.number().int().min(1).max(50).optional(),
+    },
+  }, async (v) => output(await getQaWorkPacket(request,env,{projectId:v.project_id,limitItems:v.limite_cenas,candidatesPerItem:v.candidatas_por_cena})));
+
+  server.registerTool("submit_qa_decisions", {
+    description: "Decisões QA em lote sobre candidatas MATERIALIZED. APPROVE promove incoming/ para assets/ e cria AST-*; REJECT remove o temporário. Retorna assets, deleções e requisitos restantes por cena.",
+    inputSchema: {
+      decisions: z.array(z.object({candidate_id:z.string().min(1),decision:z.enum(["APPROVE","REJECT"]),observation:z.string().optional()})).min(1).max(100),
+    },
+  }, async (v) => output(await submitQaDecisions(request,env,{decisions:v.decisions.map((d: {candidate_id:string;decision:"APPROVE"|"REJECT";observation?:string})=>({candidateId:d.candidate_id,decision:d.decision,observation:d.observation}))})));
+
+  server.registerTool("get_materialization_telemetry", {
+    description: "Telemetria compacta de uma operação: accepted/materialized/failed, queue wait, download, R2, D1, média e p95 sem retornar log histórico extenso.",
+    inputSchema: { operation_id:z.string().min(1) },
+  }, async (v) => output((await operationMaterializationTelemetry(env,v.operation_id)) || {error:"NOT_FOUND"}));
 
   server.registerTool("materializar_urls_lote", {
     description: "Alias V2 do FAST PUSH: agenda materialização de URLs em Queue e retorna operation_id sem transportar binários pelo MCP.",

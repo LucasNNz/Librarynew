@@ -36,6 +36,7 @@ import { maintenanceStatus, runPendingMaintenance } from "./core/maintenance";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 import { operationalCleanOnce } from "./core/operational-clean";
+import { fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
@@ -65,7 +66,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.16", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.17", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -117,7 +118,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.16",
+        version:"0.20.17",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -378,12 +379,35 @@ export default {
     else if (/^\/materialization\/batches\/[^/]+\/qa$/.test(url.pathname) && request.method === "POST") { const batchId=decodeURIComponent(url.pathname.split("/")[3]); const body=await request.json() as {decisions?:Parameters<typeof registerMaterializationQa>[2]}; response=json(await registerMaterializationQa(env,batchId,body.decisions||[])); }
     else if (/^\/materialization\/batches\/[^/]+\/cancel$/.test(url.pathname) && request.method === "POST") { const batchId=decodeURIComponent(url.pathname.split("/")[3]); const value=await cancelMaterializationBatch(env,batchId); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
     else if (/^\/materialization\/batches\/[^/]+\/clean$/.test(url.pathname) && request.method === "POST") { const batchId=decodeURIComponent(url.pathname.split("/")[3]); const body=await request.json() as {confirm?:boolean}; const value=await cleanMaterializationTemporaries(env,batchId,Boolean(body.confirm)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
+    else if (url.pathname === "/collector/project-candidates" && request.method === "POST") {
+      const body = await request.json() as {projectId:string;operationId?:string;items:Array<{itemId:string;targetCandidates?:number;requiredApproved?:number;universe?:string;subject?:string;tags?:string[];urls:string[]}>};
+      const value = await fastPushProjectCandidates(env, body);
+      response = "error" in value ? json(value,{status:typeof value.status==="number"?value.status:400}) : json(value,{status:202});
+    }
+    else if (/^\/collector\/projects\/[^/]+\/snapshot$/.test(url.pathname) && request.method === "GET") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[3]);
+      const itemIds=url.searchParams.getAll("itemId");
+      const value=await getProjectCollectionSnapshot(env,{projectId,operationId:url.searchParams.get("operationId")||undefined,itemIds:itemIds.length?itemIds:undefined,waitMs:Number(url.searchParams.get("waitMs")||0)});
+      response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value);
+    }
+    else if (url.pathname === "/qa/work-packet" && request.method === "GET") {
+      response=json(await getQaWorkPacket(request,env,{projectId:url.searchParams.get("projectId")||undefined,limitItems:Number(url.searchParams.get("limitItems")||10),candidatesPerItem:Number(url.searchParams.get("candidatesPerItem")||20)}));
+    }
+    else if (url.pathname === "/qa/decisions" && request.method === "POST") {
+      const body=await request.json() as {decisions:Array<{candidateId:string;decision:"APPROVE"|"REJECT";observation?:string}>};
+      response=json(await submitQaDecisions(request,env,body));
+    }
     else if (url.pathname === "/fast-push" && request.method === "POST") {
       const value = await fastPush(request, env);
       response = "error" in value ? json({ error: value.error }, { status: typeof value.status === "number" ? value.status : 400 }) : json({ accepted: value.accepted, operationId: value.operationId, status: value.status }, { status: typeof value.httpStatus === "number" ? value.httpStatus : 202 });
     }
-    else if (url.pathname.startsWith("/operations/") && request.method === "GET") {
-      const value = await getOperation(decodeURIComponent(url.pathname.slice(12)), env);
+    else if (/^\/operations\/[^/]+\/telemetry$/.test(url.pathname) && request.method === "GET") {
+      const operationId=decodeURIComponent(url.pathname.split("/")[2]);
+      const value=await operationMaterializationTelemetry(env,operationId);
+      response=value?json(value):json({error:"NOT_FOUND"},{status:404});
+    }
+    else if (/^\/operations\/[^/]+$/.test(url.pathname) && request.method === "GET") {
+      const value = await getOperation(decodeURIComponent(url.pathname.split("/")[2]), env);
       response = value ? json(value) : json({ error: "NOT_FOUND" }, { status: 404 });
     }
     else if (url.pathname === "/candidates" && request.method === "GET") response = json({ items: await listCandidates(request, env) });
@@ -407,7 +431,7 @@ export default {
   },
 
   async queue(batch: MessageBatch<CorvoQueueJob>, env: Env) {
-    for (const message of batch.messages) {
+    await Promise.all(batch.messages.map(async message => {
       const job=message.body;
       try {
         if (!job.kind || job.kind === "MATERIALIZE_URL") await materialize(message as Message<MaterializeJob>, env);
@@ -424,8 +448,8 @@ export default {
         else { message.ack(); }
       } catch (error) {
         console.error("QUEUE_JOB_FAILED",job.kind,error);
-        message.retry({delaySeconds:15});
+        message.retry({delaySeconds:5});
       }
-    }
+    }));
   },
 };

@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import { createSignedUploadUrl, validSignedUploadRequest } from "./auth";
 import { id, nowMs } from "./ids";
 import { recordIngestEvent } from "./materialization";
+import { refreshProjectItemPipelineState } from "./project-pipeline-state";
 import { refreshRecoveryAfterWrite, writeCandidateRecoveryRecord, writeImportRecoveryRecord } from "./recovery-manifest";
 
 function sanitizeFilename(value: string) {
@@ -118,12 +119,13 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
     const operationId=id("OP"); const candidateId=id("CAND");
     await env.DB.batch([
       env.DB.prepare("INSERT INTO v2_ingest_operations (id,type,status,requested,succeeded,failed,payload_json,created_at,updated_at) VALUES (?,'DIRECT_UPLOAD','COMPLETED',1,1,0,?, ?,?)").bind(operationId,JSON.stringify({uploadId}),ts,ts),
-      env.DB.prepare(`INSERT INTO v2_ingest_candidates (id,operation_id,source_url,project_id,item_id,universe,subject,tags_json,status,r2_key,mime_type,size_bytes,failure_reason,attempts,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?, 'MATERIALIZED',?,?,?,?,0,?,?)`)
-        .bind(candidateId,operationId,`direct-upload://${uploadId}`,claimed.project_id||null,claimed.item_id||null,claimed.universe||"",claimed.subject||"",claimed.tags_json||"[]",claimed.r2_key,claimed.actual_mime||claimed.expected_mime||"application/octet-stream",claimed.size_bytes,null,ts,ts),
+      env.DB.prepare(`INSERT INTO v2_ingest_candidates (id,operation_id,source_url,project_id,item_id,universe,subject,tags_json,status,r2_key,mime_type,size_bytes,failure_reason,attempts,created_at,updated_at,discovered_at,queued_at,download_started_at,materialized_at,queue_wait_ms,download_ms,r2_write_ms,d1_finalize_ms,total_materialization_ms) VALUES (?,?,?,?,?,?,?,?, 'MATERIALIZED',?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(candidateId,operationId,`direct-upload://${uploadId}`,claimed.project_id||null,claimed.item_id||null,claimed.universe||"",claimed.subject||"",claimed.tags_json||"[]",claimed.r2_key,claimed.actual_mime||claimed.expected_mime||"application/octet-stream",claimed.size_bytes,null,ts,ts,ts,ts,ts,ts,0,0,0,0,0),
       env.DB.prepare("UPDATE v2_direct_uploads SET status='CONFIRMED',candidate_id=?,failure_reason=NULL,updated_at=?,completed_at=? WHERE id=? AND status='CONFIRMING'").bind(candidateId,ts,ts,uploadId),
     ]);
     await writeCandidateRecoveryRecord(env,candidateId,"DIRECT_UPLOAD_CONFIRMED").catch(()=>undefined);
     await refreshRecoveryAfterWrite(env,"DIRECT_IMAGE_RECEIVED",candidateId);
+    await refreshProjectItemPipelineState(env,claimed.project_id?String(claimed.project_id):null,claimed.item_id?String(claimed.item_id):null).catch(()=>undefined);
     await recordIngestEvent(env,operationId,candidateId,"DIRECT_UPLOAD_CONFIRMED","MATERIALIZED",String(claimed.r2_key),null);
     return {ok:true,candidateId,operationId,r2Key:claimed.r2_key,status:200} as const;
   }catch(error){

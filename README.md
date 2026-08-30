@@ -1,5 +1,7 @@
-# Corvo Library V2 0.20.16 — FAST PUSH Known-Length R2
+# Corvo Library V2 0.20.17 — Collector → Materialization → QA
 
-Checkpoint acumulativo baseado no 0.20.15. Corrige a materialização remota do FAST PUSH/MCP para gravar no R2 apenas bytes de tamanho conhecido e sincroniza a versão real do Core para 0.20.16.
+Checkpoint acumulativo baseado no 0.20.16. Consolida o fluxo Coletor → Queue → R2 → READY_FOR_QA → Analista, com FAST PUSH multi-cena, contadores por cena, QA em lote, telemetria e consumer concorrente.
 
-Veja `RELEASE_0_20_16_FAST_PUSH_KNOWN_LENGTH.md`.
+A coleta fecha por **MATERIALIZED**, não por APPROVED.
+
+Veja `RELEASE_0_20_17_COLLECTOR_MATERIALIZATION_QA_PIPELINE.md` e `VALIDATION_0_20_17.txt`.

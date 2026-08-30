@@ -142,7 +142,7 @@ function desiredQueueConsumer(workerName: string, dlqName: string) {
     type: "worker" as const,
     script_name: workerName,
     dead_letter_queue: dlqName,
-    settings: { batch_size: 10, max_retries: 4, retry_delay: 10 },
+    settings: { batch_size: 10, max_concurrency: null, max_retries: 4, max_wait_time_ms: 1000, retry_delay: 5 },
   };
 }
 
