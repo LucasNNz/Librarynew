@@ -1,0 +1,18 @@
+{
+  "version": "0.20.39",
+  "checks": {
+    "source_fixed_writable": true,
+    "source_digest_is_writable": true,
+    "source_no_digest_dot_writable": true,
+    "source_final_failure_acks": true,
+    "source_failure_persists_status": true,
+    "source_fastread_alias_safe": true,
+    "bundle_fixed_writable": true,
+    "bundle_digest_is_writable": true,
+    "bundle_no_digest_dot_writable": true,
+    "bundle_final_failure_acks": true,
+    "bundle_fastread_alias_safe": true,
+    "parser_72_preserved": true
+  },
+  "passed": true
+}

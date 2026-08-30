@@ -294,3 +294,11 @@
 .projectFinalFileAction{display:flex;min-width:92px;flex-direction:column;align-items:flex-end;gap:7px}.projectFinalFileAction>b{font-size:10px;color:#8396aa}.projectFinalFileCard.ready .projectFinalFileAction>b{color:#64d4ab}.projectFinalFileCard.failed .projectFinalFileAction>b{color:#e17f8d}.projectFinalFileAction button,.projectFinalFileAction a{border:1px solid rgba(119,140,170,.17);border-radius:7px;background:#0c1725;color:#a9b8c9;padding:7px 10px;font-size:10px;font-weight:850;text-decoration:none;cursor:pointer}.projectFinalFileAction a.primary{background:rgba(75,143,111,.16);border-color:rgba(75,193,142,.25);color:#91e4c1}.projectFinalFileAction button:disabled{opacity:.36;cursor:default}.projectFinalFileAction small{font-size:9px;color:#647990}
 @media(max-width:1080px){.projectFinalFileGrid{grid-template-columns:1fr}.projectFinalFileCard{min-height:92px}}
 @media(max-width:720px){.projectFinalFilesSection>header{align-items:flex-start;flex-direction:column}.projectFinalFileCard{grid-template-columns:42px minmax(0,1fr)}.projectFinalFileAction{grid-column:2;align-items:flex-start;flex-direction:row;flex-wrap:wrap}.projectFinalFileGrid{padding:10px}}
+
+/* 0.20.38 — persistent visual tags per slot */
+.projectContentSlot.has-slot-tags{border-color:var(--slot-tag-glow,rgba(227,182,70,.38));box-shadow:0 0 0 1px var(--slot-tag-glow,rgba(227,182,70,.22)),0 0 20px color-mix(in srgb,var(--slot-tag-glow,rgba(227,182,70,.32)) 48%,transparent);position:relative}
+.slotVisualTags{position:absolute;top:8px;right:9px;z-index:4;display:flex;align-items:center;gap:4px;max-width:46%;padding:3px 4px;border-radius:999px;background:rgba(5,11,19,.72);border:1px solid rgba(160,176,199,.12);backdrop-filter:blur(8px)}
+.slotVisualTag{display:grid;place-items:center;min-width:24px;height:24px;padding:0 4px;border-radius:7px;border:1px solid rgba(255,255,255,.12);background:rgba(15,27,43,.92);font-size:14px;line-height:1;cursor:help;box-shadow:0 0 10px var(--slot-tag-glow,rgba(227,182,70,.18))}
+.slotVisualTag.more{font-size:9px;font-weight:900;color:#c8d3df;letter-spacing:.02em}
+.projectContentSlot.has-slot-tags .projectContentSlotHead{padding-right:78px}
+@media(max-width:720px){.slotVisualTags{top:7px;right:7px}.slotVisualTag{min-width:22px;height:22px;font-size:13px}.projectContentSlot.has-slot-tags .projectContentSlotHead{padding-right:72px}}

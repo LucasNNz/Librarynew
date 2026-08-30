@@ -182,7 +182,7 @@ export type ProjectArtifactInventory = {
 export type ProjectSlotSnapshot = {
   project: AutomaticProject;
   activeTags: Array<{tag:string;status:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
-  slots: Array<{key:string;label:string;state:string;summary:string;progress:number;mcpOpen?:boolean;instruction?:string|null;openedBy?:string|null;openedAt?:number|null}>;
+  slots: Array<{key:string;label:string;state:string;summary:string;progress:number;mcpOpen?:boolean;instruction?:string|null;openedBy?:string|null;openedAt?:number|null;tags?:Array<{id:string;project_id:string;slot_id:string;tag_key:string;emoji:string;label:string;note?:string|null;created_by?:string|null;created_at:number;updated_at:number;active:boolean}>}>;
   progress: number;
   script?: Record<string,unknown>|null;
   referenceBrief?: Record<string,unknown>|null;
@@ -194,6 +194,7 @@ export type ProjectSlotSnapshot = {
   package?: Record<string,unknown>|null;
   finalArtifacts?: {imagens?:Record<string,unknown>|null;roteiro?:Record<string,unknown>|null;publicacao?:Record<string,unknown>|null};
   slotAccess?: Array<Record<string,unknown>>;
+  slotTags?: {total:number;bySlot:Record<string,Array<Record<string,unknown>>>};
 };
 
 

@@ -30,7 +30,7 @@ type ResolvedZipEntry = ZipEntry & { sizeBytes:number };
 type Central = {name:Uint8Array;crc:number;size:number;offset:number;time:number;date:number};
 type FixedLengthStreamShape = {readable:ReadableStream<Uint8Array>;writable:WritableStream<Uint8Array>};
 type FixedLengthStreamConstructor = new(expectedLength:number)=>FixedLengthStreamShape;
-type DigestStreamShape = {writable:WritableStream<Uint8Array>;digest:Promise<ArrayBuffer>};
+type DigestStreamShape = WritableStream<Uint8Array> & {digest:Promise<ArrayBuffer>};
 type DigestStreamConstructor = new(algorithm:string)=>DigestStreamShape;
 
 function getFixedLengthStreamConstructor():FixedLengthStreamConstructor{
@@ -102,13 +102,13 @@ export async function fixedLengthZipStream(env:Env,entries:ZipEntry[]){
   const digestStream=new DigestStreamCtor("SHA-256");
   const [r2Branch,hashBranch]=zipped.stream.tee();
   const completion=r2Branch.pipeTo(fixed.writable);
-  const hashCompletion=hashBranch.pipeTo(digestStream.writable);
+  const hashCompletion=hashBranch.pipeTo(digestStream);
   const sha256=(async()=>{await hashCompletion;const digest=await digestStream.digest;return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");})();
   return{stream:fixed.readable,expectedSize,completion,sha256,getSize:()=>zipped.getSize()};
 }
 
 function zipInfrastructureFailure(message:string){
-  return /known length|FixedLengthStream|FIXED_LENGTH_STREAM|ZIP_ENTRY_SIZE_MISMATCH|ZIP_R2_SIZE_MISMATCH/i.test(message);
+  return /known length|FixedLengthStream|FIXED_LENGTH_STREAM|ZIP_ENTRY_SIZE_MISMATCH|ZIP_R2_SIZE_MISMATCH|pipeTo.*WritableStream/i.test(message);
 }
 
 async function projectExportGuard(env:Env,projectId:string){
@@ -392,8 +392,12 @@ export async function processPackageJob(env:Env,job:PackageJob){
       env.DB.prepare("UPDATE v2_ingest_operations SET status='FAILED',failed=1,error=?,updated_at=? WHERE id=?").bind(message,done,job.operationId),
       env.DB.prepare("UPDATE v2_control_jobs SET status='FAILED',error=?,updated_at=?,completed_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(message,done,done,job.operationId),
       env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),job.projectId,isFinal?"FINAL_ARTIFACT_FAILED":infra?"PACKAGE_EXPORT_BLOCKED":"PACKAGE_EXPORT_FAILED",isFinal?"FAILED":infra?"PACKAGE_BLOCKED_INFRASTRUCTURE":"FAILED",JSON.stringify({packageId:job.packageId,type,error:message,independent:isFinal}),done),
+      env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,updated_at=? WHERE id=?").bind(done,job.projectId),
     ]);await updateProjectWorkflow(env,{projectId:job.projectId,clear:["DOWNLOADER_WORKING"],metadata:{packageId:job.packageId,type,error:message,infra,independent:isFinal}}).catch(()=>undefined);
     if(infra&&!isFinal)await env.DB.prepare("UPDATE automatic_projects SET status='PACKAGE_BLOCKED_INFRASTRUCTURE',pipeline_status='PACKAGE_BLOCKED_INFRASTRUCTURE',next_action='CORRIGIR_EXPORTADOR_ZIP_FIXED_LENGTH_STREAM',state_version=state_version+1,updated_at=? WHERE id=?").bind(done,job.projectId).run().catch(()=>undefined);
+    // Final artifacts are independent. Their failure is already durably persisted above;
+    // returning lets the queue ACK the message instead of retrying it and flipping FAILED back to PROCESSING.
+    if(isFinal)return{packageId:job.packageId,type,status:"FAILED",error:message,independent:true};
     throw error;
   }
 }

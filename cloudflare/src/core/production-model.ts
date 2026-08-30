@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { id, nowMs, stableId } from "./ids";
 import { projectWriteGuard } from "./project-workflow";
+import { listProjectTagsFlat } from "./slot-tags";
 
 const clean=(value:unknown)=>String(value??"").trim();
 const upper=(value:unknown)=>clean(value).toUpperCase();
@@ -95,7 +96,9 @@ export async function listProductionModel(env:Env,input:{projectId:string;limit?
     env.DB.prepare(`SELECT s.*,a.name asset_name,a.r2_key asset_r2_key,a.mime_type asset_mime_type FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? ORDER BY COALESCE((SELECT scene_number FROM v2_production_scenes sc WHERE sc.id=s.scene_id),999999),s.slot_index,s.created_at LIMIT ?`).bind(input.projectId,version,limit),
     env.DB.prepare("SELECT * FROM v2_reference_pools WHERE project_id=? AND version=? ORDER BY pool_key LIMIT ?").bind(input.projectId,version,limit),
   ]);
-  return {project_id:input.projectId,version,counts:await productionModelCounts(env,input.projectId),reference_pools:pools.results||[],production_scenes:scenes.results||[],production_slots:slots.results||[]};
+  const visualTags=await listProjectTagsFlat(env,input.projectId).catch(()=>[]);const bySlot=new Map<string,any[]>();for(const tag of visualTags as any[]){const key=String(tag.slot_id||"");const list=bySlot.get(key)||[];list.push(tag);bySlot.set(key,list);}
+  const productionSlots=(slots.results||[]).map(slot=>{const merged=[...(bySlot.get(String(slot.id||""))||[]),...(bySlot.get(String(slot.slot_key||""))||[])];const seen=new Set<string>();return {...slot,tags:merged.filter((tag:any)=>{const key=String(tag.tag_key||tag.id||"");if(seen.has(key))return false;seen.add(key);return true;})};});
+  return {project_id:input.projectId,version,counts:await productionModelCounts(env,input.projectId),reference_pools:pools.results||[],production_scenes:scenes.results||[],production_slots:productionSlots,slot_tags_total:(visualTags as any[]).length};
 }
 
 

@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.22.0";
+const CONTRACT_VERSION = "2.23.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -90,7 +90,7 @@ export async function inspectCriticalSchema(env:Env) {
     const columns = await tableColumns(env, spec.table);
     for (const column of spec.columns) if (!columns.has(column.name)) missingColumns.push({table:spec.table,column:column.name});
   }
-  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access","v2_reference_pools","v2_production_scenes","v2_production_slots"]) if (!(await tableExists(env,table))) missingTables.push(table);
+  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access","v2_reference_pools","v2_production_scenes","v2_production_slots","v2_slot_tags"]) if (!(await tableExists(env,table))) missingTables.push(table);
   return {
     ready: missingTables.length===0 && missingColumns.length===0,
     contractVersion: CONTRACT_VERSION,
@@ -108,6 +108,14 @@ export async function reconcileCriticalSchema(env:Env) {
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_unique ON v2_project_workflow_tags(project_id,tag)");
     await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_workflow_active ON v2_project_workflow_tags(project_id,status,lease_expires_at,updated_at DESC)");
     repaired.push("table:v2_project_workflow_tags");
+    before=await inspectCriticalSchema(env);
+  }
+  if(before.missingTables.includes("v2_slot_tags")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_slot_tags (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,slot_id TEXT NOT NULL,tag_key TEXT NOT NULL,emoji TEXT NOT NULL,label TEXT NOT NULL,note TEXT,created_by TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1,removed_at INTEGER)`);
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_slot_tags_unique ON v2_slot_tags(project_id,slot_id,tag_key)");
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_slot_tags_active ON v2_slot_tags(project_id,active,updated_at DESC)");
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_slot_tags_key ON v2_slot_tags(tag_key,active,updated_at DESC)");
+    repaired.push("table:v2_slot_tags");
     before=await inspectCriticalSchema(env);
   }
   if(before.missingTables.includes("v2_project_slot_access")){
@@ -128,7 +136,7 @@ export async function reconcileCriticalSchema(env:Env) {
     repaired.push("tables:production_model");
     before=await inspectCriticalSchema(env);
   }
-  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access','v2_reference_pools','v2_production_scenes','v2_production_slots'].includes(table));
+  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access','v2_reference_pools','v2_production_scenes','v2_production_slots','v2_slot_tags'].includes(table));
   if (hardMissing.length) return { ...before, repaired, error:"CRITICAL_TABLE_MISSING" };
 
   for (const spec of REQUIRED) {

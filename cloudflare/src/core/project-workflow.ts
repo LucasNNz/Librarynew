@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { id, nowMs } from "./ids";
+import { listProjectTagsFlat } from "./slot-tags";
 
 const clean=(v:unknown)=>String(v??"").trim();
 const upper=(v:unknown)=>clean(v).toUpperCase();
@@ -113,7 +114,7 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
   await expireProjectWorkflowTags(env,projectId);
   await syncDerivedProjectWorkflow(env,projectId).catch(()=>undefined);
   const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>(); if(!project)return null;
-  const [tags,script,referenceBrief,thumbs,titles,items,candidates,packages,slotAccess,production]=await Promise.all([
+  const [tags,script,referenceBrief,thumbs,titles,items,candidates,packages,slotAccess,production,visualSlotTags]=await Promise.all([
     env.DB.prepare("SELECT tag,status,owner_id,execution_id,last_seen_at,lease_expires_at,updated_at FROM v2_project_workflow_tags WHERE project_id=? AND status='ACTIVE' ORDER BY updated_at DESC").bind(projectId).all<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,role,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS') ORDER BY created_at DESC,version DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
@@ -132,12 +133,14 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
       (SELECT COUNT(*) FROM v2_production_scenes WHERE project_id=?) production_scenes_total,
       (SELECT COUNT(*) FROM v2_reference_pools WHERE project_id=?) reference_pools_total
       FROM v2_production_slots WHERE project_id=?`).bind(projectId,projectId,projectId).first<Record<string,unknown>>().catch(()=>null),
+    listProjectTagsFlat(env,projectId).catch(()=>[]),
   ]);
   const activeTags=(tags.results||[]).map(row=>({...row,tag:upper(row.tag)}));
   const target=Number(items?.target||0),materialized=Number(items?.materialized||0),required=Number(items?.required_approved||0),approved=Math.max(Number(items?.approved||0),Number(candidates?.approved||0));
   const productionTotal=Number(production?.production_slots_total||0),productionResolved=Number(production?.production_slots_resolved||0);
   const accessMap=new Map((slotAccess.results||[]).map(row=>[String(row.slot_key),row]));
-  const slot=(key:string,label:string,state:string,summary:string,progress:number)=>{const access=accessMap.get(key);const implicitReference=key==="reference"&&!access;return {key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress))),mcpOpen:implicitReference?true:Boolean(Number(access?.mcp_open||0)),instruction:access?.instruction||(implicitReference?"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.":null),openedBy:access?.opened_by||(implicitReference?"SYSTEM_DEFAULT":null),openedAt:access?.opened_at||null};};
+  const slotTagMap=new Map<string,any[]>();for(const tag of visualSlotTags as any[]){const key=String(tag.slot_id||"");if(!key)continue;const list=slotTagMap.get(key)||[];list.push(tag);slotTagMap.set(key,list);}
+  const slot=(key:string,label:string,state:string,summary:string,progress:number)=>{const access=accessMap.get(key);const implicitReference=key==="reference"&&!access;return {key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress))),mcpOpen:implicitReference?true:Boolean(Number(access?.mcp_open||0)),instruction:access?.instruction||(implicitReference?"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.":null),openedBy:access?.opened_by||(implicitReference?"SYSTEM_DEFAULT":null),openedAt:access?.opened_at||null,tags:slotTagMap.get(key)||[]};};
   const packageRows=packages.results||[];const latestByType=new Map<string,Record<string,unknown>>();for(const row of packageRows){const type=upper(row.type);if(type&&!latestByType.has(type))latestByType.set(type,row);}const imagesExport=latestByType.get("PROJECT_IMAGES_ZIP"),scriptExport=latestByType.get("PROJECT_SCRIPT_TXT"),publicationExport=latestByType.get("PROJECT_PUBLICATION_ZIP"),legacyPackage=packageRows.find(row=>["PROJECT_PRODUCTION_ZIP","FULL_PROJECT_ZIP"].includes(upper(row.type)));
   const scriptReady=Boolean(script),referenceReady=Boolean(referenceBrief),thumbCount=Number(thumbs?.total||0),titleCount=Number(titles?.total||0),zipStatus=upper(imagesExport?.status||legacyPackage?.status || (project.zip_r2_key ? "READY" : "MISSING"));
   const slots=[
@@ -150,7 +153,7 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
     slot("zip","Imagens ZIP",["READY","READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(zipStatus)?"READY":"WAITING",imagesExport?.file_name?String(imagesExport.file_name):legacyPackage?.file_name?String(legacyPackage.file_name):"Ainda não gerado",imagesExport||legacyPackage?100:0),
   ];
   const progress=Math.round(slots.reduce((sum,s)=>sum+s.progress,0)/slots.length);
-  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},production:{production_slots_total:productionTotal,production_slots_resolved:productionResolved,production_scenes_total:Number(production?.production_scenes_total||0),reference_pools_total:Number(production?.reference_pools_total||0)},candidates:{...candidates},package:legacyPackage||imagesExport||null,finalArtifacts:{imagens:imagesExport||null,roteiro:scriptExport||null,publicacao:publicationExport||null},slotAccess:slotAccess.results||[]};
+  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},production:{production_slots_total:productionTotal,production_slots_resolved:productionResolved,production_scenes_total:Number(production?.production_scenes_total||0),reference_pools_total:Number(production?.reference_pools_total||0)},candidates:{...candidates},package:legacyPackage||imagesExport||null,finalArtifacts:{imagens:imagesExport||null,roteiro:scriptExport||null,publicacao:publicationExport||null},slotAccess:slotAccess.results||[],slotTags:{total:(visualSlotTags as any[]).length,bySlot:Object.fromEntries(slotTagMap)}};
 }
 
 export async function setProjectLifecycle(env:Env,input:{projectIds:string[];action:"COMPLETE"|"REJECT"|"REOPEN";reason?:string}){

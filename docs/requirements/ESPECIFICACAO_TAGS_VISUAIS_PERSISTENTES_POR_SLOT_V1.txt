@@ -1,0 +1,428 @@
+ESPECIFICACAO_TAGS_VISUAIS_PERSISTENTES_POR_SLOT_V1
+==================================================
+
+OBJETIVO
+========
+Adicionar ao app um sistema simples de tags persistentes por slot, com representação visual por emoji e destaque luminoso no card/slot.
+
+A ideia é permitir que:
+- qualquer slot tenha 0, 1 ou várias tags;
+- a tag fique "cravada" no slot no D1;
+- o MCP consiga ler, criar e remover tags;
+- a IA possa criar tags novas quando precisar;
+- o usuário veja rapidamente os slots que exigem atenção;
+- mesmo que um agente não procure diretamente por uma tag, ao abrir o slot ele consiga enxergar todas as tags ativas daquele slot.
+
+Não criar um sistema complexo de workflow.
+O app apenas ARMAZENA, EXIBE e EXPÕE as tags ao MCP.
+
+
+==================================================
+COMPORTAMENTO VISUAL
+==================================================
+
+Cada slot pode exibir um ou mais emojis flutuantes no canto superior.
+
+Exemplo:
+
+┌─────────────────────────────┐
+│ 🎯                          │
+│                             │
+│ Referências do Coletor      │
+│ READY                       │
+│                             │
+└─────────────────────────────┘
+
+Quando houver tag ativa:
+- mostrar emoji flutuante no slot;
+- aplicar brilho/borda sutil ao redor do slot;
+- o brilho pode usar uma cor associada à tag;
+- não alterar a estrutura principal do card;
+- o destaque deve ser visível, mas não exagerado.
+
+Exemplo visual:
+🎯 + brilho amarelo/dourado
+
+Se houver várias tags:
+
+[🎯][👁️][⚠️]
+
+Se houver muitas:
+[🎯][👁️][+2]
+
+Ao passar o mouse ou clicar no emoji, mostrar:
+
+emoji
+nome da tag
+nota opcional
+quem criou
+
+
+==================================================
+EXEMPLOS DE TAGS
+==================================================
+
+As tags não precisam ser pré-programadas no código.
+
+Exemplos iniciais:
+
+🎯 MAIS_CANDIDATAS
+👁️ REVISAR
+⚠️ SCRIPT_MISMATCH
+🔗 RELINK
+🛠️ AJUSTE_TECNICO
+🧩 FALTA_CONTEXTO
+📦 PRONTO_EXPORTAR
+
+A IA/MCP pode criar outras depois.
+
+O app não precisa entender semanticamente cada tag.
+Ele só precisa armazenar e mostrar.
+
+
+==================================================
+MODELO MÍNIMO DE DADOS
+==================================================
+
+Criar uma estrutura simples, por exemplo:
+
+slot_tags
+
+Campos:
+
+id
+project_id
+slot_id
+tag_key
+emoji
+label
+note
+created_by
+created_at
+active
+
+Exemplo:
+
+{
+  "project_id": "PROJ-123",
+  "slot_id": "reference",
+  "tag_key": "MAIS_CANDIDATAS",
+  "emoji": "🎯",
+  "label": "Mais candidatas",
+  "note": "As candidatas atuais não correspondem 100% à cena.",
+  "created_by": "VISUAL_ANALYST",
+  "active": true
+}
+
+
+==================================================
+REGRAS
+==================================================
+
+1. Um slot pode possuir várias tags simultaneamente.
+
+2. A mesma tag_key não deve ser duplicada no mesmo slot enquanto estiver ativa.
+
+3. Criar tag deve ser idempotente.
+
+4. Remover tag deve ser idempotente.
+
+5. A tag deve permanecer persistida até ser removida explicitamente.
+
+6. Não apagar tags automaticamente apenas porque outro agente entrou no slot.
+
+7. Quando o slot for lido pelo MCP, retornar também suas tags ativas.
+
+8. Quando o projeto for lido pelo MCP, idealmente retornar as tags ativas agrupadas por slot.
+
+9. A IA pode criar uma tag ainda não existente anteriormente.
+
+10. Não exigir deploy de frontend/backend para criar um novo significado de tag.
+
+
+==================================================
+FUNÇÕES MCP MÍNIMAS
+==================================================
+
+criar_tag_slot
+---------------
+Entrada:
+project_id
+slot_id
+tag_key
+emoji
+label
+note opcional
+created_by opcional
+
+Saída:
+tag criada ou já existente
+
+
+remover_tag_slot
+----------------
+Entrada:
+project_id
+slot_id
+tag_key
+
+Saída:
+removida / já inexistente
+
+
+listar_tags_slot
+----------------
+Entrada:
+project_id
+slot_id
+
+Saída:
+todas as tags ativas daquele slot
+
+
+buscar_slots_por_tag
+--------------------
+Entrada:
+tag_key
+
+Filtros opcionais:
+project_id
+status do projeto
+limite
+
+Saída:
+lista de slots que possuem a tag
+
+
+listar_tags_projeto
+-------------------
+Entrada:
+project_id
+
+Saída:
+tags agrupadas por slot
+
+
+==================================================
+LEITURA PASSIVA PELOS AGENTES
+==================================================
+
+Ponto importante:
+
+Mesmo que o agente NÃO esteja executando uma busca por tag,
+quando ele abrir ou consultar um slot, as tags daquele slot devem aparecer no payload.
+
+Exemplo:
+
+slot:
+  key: reference
+  state: READY
+  tags:
+    - 🎯 MAIS_CANDIDATAS
+    - 👁️ REVISAR
+
+Assim a tag serve de contexto operacional persistente.
+
+
+==================================================
+USO PELO COLETOR
+==================================================
+
+Exemplo:
+
+O Analista Visual rejeita todas as candidatas de um slot.
+
+Ele cria:
+
+🎯 MAIS_CANDIDATAS
+
+Nota:
+"Nenhuma candidata atual representa corretamente o contexto da cena."
+
+O Coletor agendado depois pode executar:
+
+buscar_slots_por_tag("MAIS_CANDIDATAS")
+
+e priorizar esses slots.
+
+Depois que novas candidatas forem adicionadas:
+
+remover_tag_slot("MAIS_CANDIDATAS")
+
+criar_tag_slot:
+👁️ REVISAR
+
+
+==================================================
+USO PELO ANALISTA VISUAL
+==================================================
+
+O Analista Visual pode procurar:
+
+👁️ REVISAR
+
+Depois do QA:
+
+Se aprovou:
+- remove 👁️ REVISAR
+
+Se ainda está ruim:
+- remove 👁️ REVISAR
+- cria 🎯 MAIS_CANDIDATAS
+
+Se percebeu referência semanticamente errada:
+- cria 🔗 RELINK
+
+Se percebeu problema no roteiro:
+- cria ⚠️ SCRIPT_MISMATCH
+
+
+==================================================
+USO PELO GPT AGENDADO
+==================================================
+
+O app NÃO precisa implementar a inteligência de prioridade.
+
+O agendamento do GPT pode definir algo como:
+
+"Procure primeiro slots com 🎯 MAIS_CANDIDATAS."
+
+Outro agendamento:
+
+"Procure slots com 👁️ REVISAR."
+
+Outro:
+
+"Procure slots com 🛠️ AJUSTE_TECNICO."
+
+Isso mantém a inteligência fora do app e evita codificar workflows rígidos.
+
+
+==================================================
+RESUMO VISUAL NO PROJETO
+==================================================
+
+Opcional, mas recomendado.
+
+No card do projeto, mostrar uma contagem compacta:
+
+🎯 3
+👁️ 5
+⚠️ 1
+
+Isso permite enxergar rapidamente quais projetos têm gaps ativos.
+
+
+==================================================
+FILTRO NA UI
+==================================================
+
+Opcional:
+
+Filtro:
+- Todos
+- Com tags
+- 🎯
+- 👁️
+- ⚠️
+
+Mas isso não é obrigatório para a primeira versão.
+
+
+==================================================
+PRIMEIRA VERSÃO IDEAL
+==================================================
+
+Implementar apenas:
+
+[ ] persistência de tags por slot
+[ ] emoji flutuante no slot
+[ ] brilho/borda quando houver tag
+[ ] múltiplas tags por slot
+[ ] tooltip simples
+[ ] MCP cria tag
+[ ] MCP remove tag
+[ ] MCP lista tags do slot
+[ ] MCP busca slots por tag
+[ ] toda leitura de slot retorna tags ativas
+
+Nada além disso é necessário na V1.
+
+
+==================================================
+EXPERIÊNCIA ESPERADA
+==================================================
+
+USUÁRIO
+-------
+Abre o projeto e vê:
+
+Referências do Coletor
+🎯
+
+O slot fica com brilho.
+
+Ao passar o mouse:
+
+🎯 MAIS_CANDIDATAS
+"As atuais não representam corretamente a cena."
+
+
+MCP
+---
+Ao consultar o mesmo slot:
+
+{
+  "slot": "reference",
+  "state": "READY",
+  "tags": [
+    {
+      "tag_key": "MAIS_CANDIDATAS",
+      "emoji": "🎯",
+      "label": "Mais candidatas",
+      "note": "As atuais não representam corretamente a cena."
+    }
+  ]
+}
+
+
+==================================================
+REGRA PRINCIPAL
+==================================================
+
+A tag é contexto persistente do slot.
+
+Ela deve:
+- ficar salva;
+- aparecer visualmente;
+- acompanhar o slot;
+- ser legível pelo MCP;
+- ser criada/removida pela IA;
+- existir mesmo sem workflow específico;
+- continuar visível para qualquer agente que entrar naquele slot.
+
+
+==================================================
+OBJETIVO FINAL
+==================================================
+
+Criar uma camada simples de comunicação entre:
+
+USUÁRIO
+↕
+UI
+↕
+SLOT
+↕
+TAG
+↕
+MCP
+↕
+AGENTES / GPT AGENDADO
+
+Sem transformar o app em um orquestrador complexo.
+
+O app apenas:
+ARMAZENA + MOSTRA + EXPÕE.
+
+A inteligência de como interpretar e priorizar cada tag pode continuar sendo definida pelo GPT/MCP.

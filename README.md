@@ -1,4 +1,24 @@
-# Corvo Library V2 0.20.37 — Forma Final Export: 3 arquivos
+# Corvo Library V2 0.20.39 — Images ZIP Stream / Failure State / FAST READ Fix
+
+## Correções 0.20.39
+- PROJECT_IMAGES_ZIP: `DigestStream` usado como `WritableStream` real; `FixedLengthStream` preservado.
+- FINAL_ARTIFACT_FAILED: status permanece `FAILED` e não é recolocado em `PROCESSING` por retry automático.
+- FAST READ: alias SQL reservado `references` substituído internamente por `reference_files`.
+- Parser/reconciliador não alterado; smoke 72/72 preservado.
+- Schema permanece 2.23.0.
+
+## Tags visuais persistentes 0.20.38
+
+- adiciona `v2_slot_tags` no D1 / schema `2.23.0`;
+- qualquer slot pode ter zero, uma ou várias tags persistentes;
+- `tag_key` é dinâmica: novos significados podem ser criados por IA/MCP sem deploy;
+- criação e remoção são idempotentes e a tag só desaparece após remoção explícita;
+- `obter_slot_projeto`, `obter_slots_abertos_projeto` e `obter_modelo_producao` devolvem tags ativas passivamente;
+- MCP adiciona `criar_tag_slot`, `remover_tag_slot`, `listar_tags_slot`, `buscar_slots_por_tag` e `listar_tags_projeto`;
+- UI mostra emoji flutuante e brilho sutil no slot; duas tags ficam visíveis e excesso aparece como `+N`;
+- tooltip mostra emoji, nome, nota e criador;
+- não cria workflow novo: o app apenas armazena, mostra e expõe contexto;
+- Worker autoatualizável embutido sincronizado com os cinco novos tools e schema 2.23.0.
 
 ## Final Export Worker + Scene Reconciliation 0.20.37
 

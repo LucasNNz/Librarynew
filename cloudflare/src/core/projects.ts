@@ -62,7 +62,7 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
     (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=?) AS project_files,
     (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT') AS scripts,
     (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role)='REQUIREMENTS') AS requirements,
-    (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS')) AS references,
+    (SELECT COUNT(*) FROM automatic_project_files WHERE project_id=? AND upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS')) AS reference_files,
     (SELECT COUNT(*) FROM v2_ingest_candidates WHERE project_id=? AND r2_key IS NOT NULL) AS collected_files,
     (SELECT COUNT(*) FROM v2_project_media WHERE project_id=? AND r2_key IS NOT NULL) AS project_media,
     (SELECT COUNT(*) FROM v2_download_packages WHERE project_id=? AND r2_key IS NOT NULL) AS packages`).bind(projectId,projectId,projectId,projectId,projectId,projectId,projectId).first<Record<string,unknown>>();
@@ -76,7 +76,7 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
     counts:{ total:Number(project.total_items||0),approved:Number(project.approved_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),frozen:Number(project.frozen_count||0) },
     production:production?{reference_pools_total:production.reference_pools_total,reference_pools_ready:production.reference_pools_ready,production_scenes_total:production.production_scenes_total,production_scenes_ready:production.production_scenes_ready,production_slots_total:production.production_slots_total,production_slots_resolved:production.production_slots_resolved,package_ready:production.package_ready,can_complete:production.can_complete}:null,
     completion_source:Number(production?.production_slots_total||0)>0?"PRODUCTION_SLOTS":"LEGACY_ITEMS",
-    attachments:{project_files:projectFiles,scripts:Number(attachmentSummary?.scripts||0),references:Number(attachmentSummary?.references||0),requirements:Number(attachmentSummary?.requirements||0),collected_files:collectedFiles,project_media:projectMedia,packages,total_visible:projectFiles+collectedFiles+projectMedia+packages,visibility:"MCP_IMMEDIATE_AFTER_D1_COMMIT"},
+    attachments:{project_files:projectFiles,scripts:Number(attachmentSummary?.scripts||0),references:Number(attachmentSummary?.reference_files||0),requirements:Number(attachmentSummary?.requirements||0),collected_files:collectedFiles,project_media:projectMedia,packages,total_visible:projectFiles+collectedFiles+projectMedia+packages,visibility:"MCP_IMMEDIATE_AFTER_D1_COMMIT"},
     lease:{status:project.supervisor_status,execution_id:project.supervisor_execution_id,expires_at:project.supervisor_lease_expires_at,last_seen_at:project.supervisor_last_seen_at},
     updated_at:project.updated_at,
   };

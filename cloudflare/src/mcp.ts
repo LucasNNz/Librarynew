@@ -35,6 +35,7 @@ import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from 
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
+import { createSlotTag, findSlotsByTag, listProjectTags, listSlotTags, removeSlotTag } from "./core/slot-tags";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -45,7 +46,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.37" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.39" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -705,6 +706,27 @@ function createServer(env: Env, request: Request) {
     description: "Snapshot operacional completo de um projeto-slot: lifecycle, tags simultâneas/heartbeats, roteiro, thumbs (max 3), títulos (max 3), referências, cenas/candidatas, aprovadas e ZIP final.",
     inputSchema: { projeto_id:z.string().min(1) },
   }, async ({projeto_id}) => output((await getProjectSlot(env,projeto_id))||{error:"NOT_FOUND"}));
+  server.registerTool("criar_tag_slot", {
+    description:"Cria de forma idempotente uma tag visual persistente em qualquer slot do projeto. A tag fica cravada no D1, aparece no payload do slot e pode usar qualquer tag_key/emoji/label sem deploy.",
+    inputSchema:{ project_id:z.string().min(1), slot_id:z.string().min(1), tag_key:z.string().min(1).max(120), emoji:z.string().min(1).max(24), label:z.string().min(1).max(160), note:z.string().max(4000).optional(), created_by:z.string().max(160).optional() },
+  }, async(v)=>output(await createSlotTag(env,{projectId:v.project_id,slotId:v.slot_id,tagKey:v.tag_key,emoji:v.emoji,label:v.label,note:v.note,createdBy:v.created_by||"MCP"})));
+  server.registerTool("remover_tag_slot", {
+    description:"Remove/desativa de forma idempotente uma tag persistente de um slot. A tag só deixa de aparecer depois desta remoção explícita.",
+    inputSchema:{ project_id:z.string().min(1), slot_id:z.string().min(1), tag_key:z.string().min(1).max(120) },
+  }, async(v)=>output(await removeSlotTag(env,{projectId:v.project_id,slotId:v.slot_id,tagKey:v.tag_key})));
+  server.registerTool("listar_tags_slot", {
+    description:"Lista todas as tags ativas de um slot, incluindo emoji, label, nota e criador.",
+    inputSchema:{ project_id:z.string().min(1), slot_id:z.string().min(1) },
+  }, async(v)=>output(await listSlotTags(env,{projectId:v.project_id,slotId:v.slot_id})));
+  server.registerTool("buscar_slots_por_tag", {
+    description:"Busca slots que possuem uma tag_key ativa. Pode filtrar por projeto/status e serve para agentes priorizarem gaps sem workflow rígido.",
+    inputSchema:{ tag_key:z.string().min(1), project_id:z.string().optional(), status_projeto:z.string().optional(), limite:z.number().int().min(1).max(500).optional() },
+  }, async(v)=>output(await findSlotsByTag(env,{tagKey:v.tag_key,projectId:v.project_id,projectStatus:v.status_projeto,limit:v.limite})));
+  server.registerTool("listar_tags_projeto", {
+    description:"Retorna todas as tags ativas do projeto agrupadas por slot para leitura passiva pelo MCP.",
+    inputSchema:{ project_id:z.string().min(1) },
+  }, async(v)=>output(await listProjectTags(env,v.project_id)));
+
   server.registerTool("configurar_slot_projeto", {
     description:"Abre ou fecha um slot do projeto para atuação explícita de IA/MCP. Slots fechados não podem ser preenchidos pelas ferramentas MCP de slot. Permite registrar instrução curta de customização.",
     inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["script","thumbs","titles","reference","candidates","approved","zip"]), aberto:z.boolean(), instrucao:z.string().max(2000).optional(), agente:z.string().optional() },
