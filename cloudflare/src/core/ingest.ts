@@ -19,6 +19,76 @@ async function refreshTouchedItems(env: Env, rows: Array<{projectId?:string;item
   }
 }
 
+export async function activateProjectItemCandidateReserve(env: Env, input: { projectId?: string | null; itemId?: string | null; operationId: string }) {
+  const projectId = String(input.projectId || "").trim();
+  const itemRef = String(input.itemId || "").trim();
+  const operationId = String(input.operationId || "").trim();
+  if (!projectId || !itemRef || !operationId) return { activated: 0, reserve: 0, reason: "PROJECT_ITEM_OPERATION_REQUIRED" } as const;
+
+  const item = await env.DB.prepare(`SELECT id,item_key,target_candidates FROM automatic_project_items
+    WHERE project_id=? AND (id=? OR item_key=?) ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1`)
+    .bind(projectId, itemRef, itemRef, itemRef).first<{id:string;item_key:string|null;target_candidates:number}>();
+  if (!item) return { activated: 0, reserve: 0, reason: "ITEM_NOT_FOUND" } as const;
+
+  const itemId = String(item.id), itemKey = String(item.item_key || item.id);
+  const target = Math.max(1, Number(item.target_candidates || 8));
+  const counts = await env.DB.prepare(`SELECT
+      SUM(CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN 1 ELSE 0 END) AS materialized,
+      SUM(CASE WHEN status IN ('QUEUED','DOWNLOADING','RETRYING') THEN 1 ELSE 0 END) AS active,
+      SUM(CASE WHEN status='DISCOVERED' THEN 1 ELSE 0 END) AS reserve
+    FROM v2_ingest_candidates WHERE project_id=? AND item_id IN (?,?)`)
+    .bind(projectId, itemId, itemKey).first<{materialized:number;active:number;reserve:number}>();
+  const materialized = Number(counts?.materialized || 0);
+  const active = Number(counts?.active || 0);
+  const reserve = Number(counts?.reserve || 0);
+  const slots = Math.max(0, target - materialized - active);
+  if (!slots || !reserve) {
+    await refreshProjectItemPipelineState(env, projectId, itemId).catch(() => undefined);
+    return { activated: 0, reserve, target, materialized, active } as const;
+  }
+
+  const candidates = await env.DB.prepare(`SELECT id,operation_id,source_url,project_id,item_id,universe,subject,tags_json
+    FROM v2_ingest_candidates WHERE project_id=? AND item_id IN (?,?) AND status='DISCOVERED'
+    ORDER BY CASE WHEN operation_id=? THEN 0 ELSE 1 END,created_at ASC,id ASC LIMIT ?`)
+    .bind(projectId, itemId, itemKey, operationId, slots).all<Record<string,unknown>>();
+  const claimed: Record<string,unknown>[] = [];
+  const queuedAt = nowMs();
+  for (const candidate of candidates.results || []) {
+    const result = await env.DB.prepare(`UPDATE v2_ingest_candidates SET status='QUEUED',queued_at=?,updated_at=?
+      WHERE id=? AND status='DISCOVERED'`).bind(queuedAt, queuedAt, candidate.id).run();
+    if (Number(result.meta?.changes || 0) > 0) claimed.push(candidate);
+  }
+  if (!claimed.length) return { activated: 0, reserve, target, materialized, active } as const;
+
+  const claimedByOperation = new Map<string,number>();
+  for (const candidate of claimed) claimedByOperation.set(String(candidate.operation_id), (claimedByOperation.get(String(candidate.operation_id)) || 0) + 1);
+  for (const [candidateOperationId,count] of claimedByOperation) {
+    await env.DB.prepare(`UPDATE v2_ingest_operations SET requested=requested+?,status=CASE WHEN status IN ('COMPLETED','COMPLETED_WITH_ERRORS','FAILED') THEN 'QUEUED' ELSE status END,updated_at=? WHERE id=?`)
+      .bind(count, queuedAt, candidateOperationId).run();
+  }
+  const jobs: MessageSendRequest<CorvoQueueJob>[] = claimed.map(candidate => ({ body: {
+    kind: "MATERIALIZE_URL",
+    operationId: String(candidate.operation_id),
+    candidateId: String(candidate.id),
+    url: String(candidate.source_url),
+    projectId: String(candidate.project_id || projectId),
+    itemId: String(candidate.item_id || itemId),
+    universe: String(candidate.universe || ""),
+    subject: String(candidate.subject || ""),
+    tags: (() => { try { return JSON.parse(String(candidate.tags_json || "[]")); } catch { return []; } })(),
+  } }));
+  try {
+    for (let offset = 0; offset < jobs.length; offset += 100) await env.MATERIALIZE_QUEUE.sendBatch(jobs.slice(offset, offset + 100));
+  } catch (error) {
+    for (const candidate of claimed) await env.DB.prepare("UPDATE v2_ingest_candidates SET status='DISCOVERED',queued_at=NULL,updated_at=? WHERE id=? AND status='QUEUED'").bind(nowMs(), candidate.id).run().catch(()=>undefined);
+    for (const [candidateOperationId,count] of claimedByOperation) await env.DB.prepare("UPDATE v2_ingest_operations SET requested=MAX(0,requested-?),updated_at=? WHERE id=?").bind(count,nowMs(),candidateOperationId).run().catch(()=>undefined);
+    throw error;
+  }
+  await recordIngestEvent(env, operationId, null, "RESERVE_ACTIVATED", "QUEUED", JSON.stringify({projectId,itemId,activated:claimed.length,target,materialized,active,byOperation:Object.fromEntries(claimedByOperation)}), null);
+  await refreshProjectItemPipelineState(env, projectId, itemId).catch(() => undefined);
+  return { activated: claimed.length, reserve: Math.max(0,reserve-claimed.length), target, materialized, active: active+claimed.length } as const;
+}
+
 export async function enqueueFastPushItems(env: Env, items: NonNullable<FastPushBody["urls"]>, input:{operationId?:string;type?:string}={}) {
   const rows = Array.isArray(items) ? items.filter(item => typeof item?.url === "string" && safeRemoteUrl(item.url) !== null).slice(0, 500) : [];
   if (!rows.length) return { error: "NO_VALID_URLS", status: 400 } as const;
@@ -200,10 +270,10 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
   const attempt = Number(state.attempts || 0) + 1;
   const queuedAt = Number(state.queued_at || state.created_at || started);
   const queueWaitMs = Math.max(0, started - queuedAt);
-  await env.DB.batch([
-    env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=? AND status='QUEUED'").bind(started, job.operationId),
-    env.DB.prepare("UPDATE v2_ingest_candidates SET status='DOWNLOADING',attempts=?,download_started_at=?,queue_wait_ms=COALESCE(queue_wait_ms,?),updated_at=? WHERE id=?").bind(attempt, started, queueWaitMs, started, job.candidateId),
-  ]);
+  const claim = await env.DB.prepare(`UPDATE v2_ingest_candidates SET status='DOWNLOADING',attempts=?,download_started_at=?,queue_wait_ms=COALESCE(queue_wait_ms,?),updated_at=?
+    WHERE id=? AND status IN ('QUEUED','RETRYING')`).bind(attempt, started, queueWaitMs, started, job.candidateId).run();
+  if (Number(claim.meta?.changes || 0) === 0) { message.ack(); return; }
+  await env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=? AND status IN ('QUEUED','COMPLETED','COMPLETED_WITH_ERRORS','FAILED')").bind(started, job.operationId).run();
   await refreshProjectItemPipelineState(env, job.projectId || state.project_id, job.itemId || state.item_id).catch(() => undefined);
   await recordIngestEvent(env, job.operationId, job.candidateId, "DOWNLOAD_STARTED", "DOWNLOADING", JSON.stringify({attempt,queueWaitMs}), null);
 
@@ -255,8 +325,10 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
     if (job.projectId && (job.tags || []).some(tag => String(tag).toLowerCase() === "thumb")) {
       await createProjectMediaFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,r2Key,mimeType:mime,sizeBytes:Number(stored?.size || remoteBytes.byteLength || contentLength || 0),sourceUrl:job.url,agentOrigin:"FAST_PUSH"}).catch(()=>undefined);
     }
-    await refreshProjectItemPipelineState(env, job.projectId || state.project_id, job.itemId || state.item_id).catch(() => undefined);
-    await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZED", "MATERIALIZED", JSON.stringify({r2Key,queueWaitMs,downloadMs,r2WriteMs,d1FinalizeMs,totalMaterializationMs}), totalMaterializationMs);
+    const projectId = job.projectId || state.project_id, itemId = job.itemId || state.item_id;
+    await refreshProjectItemPipelineState(env, projectId, itemId).catch(() => undefined);
+    const replenishment = await activateProjectItemCandidateReserve(env,{projectId,itemId,operationId:job.operationId}).catch(()=>({activated:0}));
+    await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZED", "MATERIALIZED", JSON.stringify({r2Key,queueWaitMs,downloadMs,r2WriteMs,d1FinalizeMs,totalMaterializationMs,replacementActivated:Number(replenishment.activated||0)}), totalMaterializationMs);
   } catch (error) {
     const done = nowMs();
     const reason = error instanceof Error ? error.message.slice(0, 240) : "MATERIALIZATION_FAILED";
@@ -276,8 +348,11 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
       env.DB.prepare("UPDATE v2_ingest_candidates SET status='FAILED',failure_reason=?,download_ms=?,total_materialization_ms=?,updated_at=? WHERE id=?").bind(reason,attemptDurationMs,totalMaterializationMs,done,job.candidateId),
       env.DB.prepare("UPDATE v2_ingest_operations SET failed=failed+1,updated_at=? WHERE id=?").bind(done, job.operationId),
     ]);
-    await refreshProjectItemPipelineState(env, job.projectId || state.project_id, job.itemId || state.item_id).catch(() => undefined);
-    await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZATION_FAILED", "FAILED", JSON.stringify({reason,queueWaitMs,totalMaterializationMs}), totalMaterializationMs);
+    const projectId = job.projectId || state.project_id, itemId = job.itemId || state.item_id;
+    await refreshProjectItemPipelineState(env, projectId, itemId).catch(() => undefined);
+    const replenishment = await activateProjectItemCandidateReserve(env,{projectId,itemId,operationId:job.operationId}).catch(()=>({activated:0}));
+    const invalidSource = /^HTTP_(400|403|404)$/.test(reason);
+    await recordIngestEvent(env, job.operationId, job.candidateId, invalidSource ? "INVALID_SOURCE_FAILED" : "MATERIALIZATION_FAILED", "FAILED", JSON.stringify({reason,queueWaitMs,totalMaterializationMs,replacementActivated:Number(replenishment.activated||0),retryable:false}), totalMaterializationMs);
   }
 
   const totals = await env.DB.prepare("SELECT requested,succeeded,failed FROM v2_ingest_operations WHERE id=?").bind(job.operationId).first<{ requested: number; succeeded: number; failed: number }>();

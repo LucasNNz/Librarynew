@@ -1,0 +1,22 @@
+# Validation 0.20.22
+
+- Checkpoint validator: PASS
+- Errors: 0
+- Schema: 2.18.0
+- Frontend structural TypeScript: PASS
+- Worker structural TypeScript: PASS
+- Embedded Worker version: 0.20.22
+- Embedded Worker `node --check`: PASS
+- Queue policy: `IMMEDIATE_CANDIDATE_V3`
+- Consumer `batch_size`: 1
+- Consumer `max_wait_time_ms`: 0
+- Consumer `max_concurrency`: 20
+- Producer delivery delay: 0
+- Reservoir test: target 8 / 12 URLs → 8 queued + 4 standby: PASS
+- Invalid-source replacement test: 1 failure → 1 reserve promoted → 8 MATERIALIZED: PASS
+- Cross-operation reserve replacement: PASS
+- Atomic duplicate claim: first claim 1 / second claim 0: PASS
+- HTTP 400/403/404 transient policy: disabled (final immediately)
+- No migration added
+- No D1/R2 cleanup added
+- Live throughput/latency after deployment: NOT MEASURED by local gate; benchmark should be repeated after publishing.

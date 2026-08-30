@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import { createSignedCandidateUrl, createSignedFileUrl } from "./auth";
-import { approveCandidate, enqueueFastPushItems, rejectCandidate } from "./ingest";
-import { nowMs } from "./ids";
+import { activateProjectItemCandidateReserve, approveCandidate, rejectCandidate } from "./ingest";
+import { id, nowMs, stableId } from "./ids";
 import { safeRemoteUrl } from "./net";
 import { configureProjectItemPipeline, markProjectItemQaInProgress, refreshProjectItemPipelineState, resolveProjectItem, type ProjectPipelineItemState } from "./project-pipeline-state";
 
@@ -24,20 +24,27 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
   const project = await env.DB.prepare("SELECT id,name FROM automatic_projects WHERE id=?").bind(projectId).first<{id:string;name:string}>();
   if (!project) return { error: "PROJECT_NOT_FOUND", status: 404 } as const;
 
-  const rows: Array<{url:string;projectId:string;itemId:string;universe?:string;subject?:string;tags?:string[]}> = [];
-  const itemResults: Array<Record<string, unknown>> = [];
+  const operationId = collectorClean(input.operationId) || id("OP");
+  const created = nowMs();
+  await env.DB.prepare(`INSERT OR IGNORE INTO v2_ingest_operations
+    (id,type,status,requested,succeeded,failed,payload_json,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).bind(operationId,"FAST_PUSH_PROJECT_CANDIDATES","QUEUED",0,0,0,JSON.stringify({projectId}),created,created).run();
+
+  type ReservoirRow = {candidateId:string;url:string;projectId:string;itemId:string;universe:string;subject:string;tags:string[]};
+  const rows: ReservoirRow[] = [];
+  const itemResults = new Map<string,Record<string,unknown>>();
   let duplicatesSkipped = 0;
 
   for (const raw of (input.items || []).slice(0, 50)) {
     const requestedRef = collectorClean(raw.itemId);
     const item = await configureProjectItemPipeline(env, projectId, requestedRef, { targetCandidates: raw.targetCandidates, requiredApproved: raw.requiredApproved });
     if (!item) {
-      itemResults.push({ item_id: requestedRef, accepted: 0, error: "ITEM_NOT_FOUND" });
+      itemResults.set(requestedRef,{ item_id: requestedRef, accepted: 0, error: "ITEM_NOT_FOUND" });
       continue;
     }
     const itemId = collectorClean(item.id), itemKey = collectorClean(item.item_key) || itemId;
+    itemResults.set(itemId,{ item_id: itemId, item_key: itemKey, accepted: 0, target_candidates: Number(item.target_candidates || 8), required_approved: Number(item.required_approved || 1) });
     const normalized = collectorUniq((raw.urls || []).map(collectorClean).filter(Boolean)).slice(0, 50);
-    let acceptedForItem = 0;
     for (const value of normalized) {
       const safe = safeRemoteUrl(value);
       if (!safe) continue;
@@ -45,39 +52,70 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
       const existing = await env.DB.prepare(`SELECT id,status FROM v2_ingest_candidates
         WHERE project_id=? AND item_id IN (?,?) AND source_url=? LIMIT 1`).bind(projectId, itemId, itemKey, url).first<Record<string,unknown>>();
       if (existing) { duplicatesSkipped++; continue; }
+      const candidateId = await stableId("CAND",`PROJECT_ITEM_URL\n${projectId}\n${itemId}\n${url}`,12);
       rows.push({
+        candidateId,
         url,
         projectId,
         itemId,
-        universe: collectorClean(raw.universe) || collectorClean(item.universe) || undefined,
-        subject: collectorClean(raw.subject) || collectorClean(item.term) || undefined,
+        universe: collectorClean(raw.universe) || collectorClean(item.universe),
+        subject: collectorClean(raw.subject) || collectorClean(item.term),
         tags: Array.isArray(raw.tags) ? raw.tags.map(collectorClean).filter(Boolean).slice(0, 40) : [],
       });
-      acceptedForItem++;
       if (rows.length >= 500) break;
     }
-    itemResults.push({ item_id: itemId, item_key: itemKey, accepted: acceptedForItem, target_candidates: Number(item.target_candidates || 8), required_approved: Number(item.required_approved || 1) });
     if (rows.length >= 500) break;
   }
 
-  if (!rows.length) {
-    const states = await Promise.all(itemResults.filter(item => item.item_id).map(item => refreshProjectItemPipelineState(env, projectId, collectorClean(item.item_id))));
-    return { accepted: true, projectId, operationId: input.operationId || null, status: "ACCEPTED", itemsAccepted: 0, candidatesAccepted: 0, duplicatesSkipped, items: states.filter(Boolean), note: "NO_NEW_URLS" } as const;
+  let inserted = 0;
+  for (let offset=0; offset<rows.length; offset+=100) {
+    const chunk=rows.slice(offset,offset+100);
+    const results=await env.DB.batch(chunk.map(row=>env.DB.prepare(`INSERT OR IGNORE INTO v2_ingest_candidates
+      (id,operation_id,source_url,project_id,item_id,universe,subject,tags_json,status,created_at,updated_at,discovered_at,queued_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).bind(
+        row.candidateId,operationId,row.url,row.projectId,row.itemId,row.universe,row.subject,JSON.stringify(row.tags),"DISCOVERED",created,created,created,
+      )));
+    for(let i=0;i<results.length;i++){
+      const changed=Number(results[i]?.meta?.changes||0);
+      if(changed>0){
+        inserted+=changed;
+        const current=itemResults.get(chunk[i].itemId);
+        if(current) current.accepted=Number(current.accepted||0)+changed;
+      } else duplicatesSkipped++;
+    }
   }
 
-  const pushed = await enqueueFastPushItems(env, rows, { operationId: collectorClean(input.operationId) || undefined, type: "FAST_PUSH_PROJECT_CANDIDATES" });
-  if ("error" in pushed) return pushed;
-  const states = await Promise.all(itemResults.filter(item => item.item_id).map(item => refreshProjectItemPipelineState(env, projectId, collectorClean(item.item_id))));
+  const activations: Array<Record<string,unknown>> = [];
+  for (const item of itemResults.values()) {
+    if (!item.item_id || item.error) continue;
+    const activation = await activateProjectItemCandidateReserve(env,{projectId,itemId:collectorClean(item.item_id),operationId});
+    activations.push({item_id:item.item_id,...activation});
+  }
+  const activated = activations.reduce((sum,row)=>sum+Number(row.activated||0),0);
+  const operation = await env.DB.prepare("SELECT requested,succeeded,failed,status FROM v2_ingest_operations WHERE id=?").bind(operationId).first<{requested:number;succeeded:number;failed:number;status:string}>();
+  if (operation && Number(operation.requested||0)===0) {
+    await env.DB.prepare("UPDATE v2_ingest_operations SET status='COMPLETED',updated_at=? WHERE id=?").bind(nowMs(),operationId).run();
+  }
+  const operationCandidates = await env.DB.prepare(`SELECT COUNT(*) AS total,
+      SUM(CASE WHEN status='DISCOVERED' THEN 1 ELSE 0 END) AS standby,
+      SUM(CASE WHEN status IN ('QUEUED','DOWNLOADING','RETRYING') THEN 1 ELSE 0 END) AS active
+    FROM v2_ingest_candidates WHERE operation_id=?`).bind(operationId).first<Record<string,unknown>>();
+
+  const states = await Promise.all([...itemResults.values()].filter(item => item.item_id && !item.error).map(item => refreshProjectItemPipelineState(env, projectId, collectorClean(item.item_id))));
   return {
     accepted: true,
     projectId,
-    operationId: pushed.operationId,
-    status: "ACCEPTED",
-    itemsAccepted: itemResults.filter(item => Number(item.accepted || 0) > 0).length,
-    candidatesAccepted: Number(pushed.accepted || 0),
+    operationId,
+    status: activated > 0 ? "ACCEPTED" : "COMPLETED",
+    itemsAccepted: [...itemResults.values()].filter(item => Number(item.accepted || 0) > 0).length,
+    candidatesAccepted: inserted,
+    candidatesQueued: Number(operationCandidates?.active || 0),
+    candidatesStandby: Number(operationCandidates?.standby || 0),
+    activatedNow: activated,
     duplicatesSkipped,
-    idempotent: "idempotent" in pushed ? pushed.idempotent : false,
+    idempotent: inserted === 0,
     items: states.filter(Boolean),
+    activations,
     httpStatus: 202,
   } as const;
 }
@@ -124,7 +162,9 @@ export async function operationMaterializationTelemetry(env: Env, operationId: s
     operationId,
     type: operation.type,
     status: operation.status,
-    accepted: Number(operation.requested || rows.length),
+    accepted: rows.length,
+    queuedAttempts: Number(operation.requested || 0),
+    standby: rows.filter(row => collectorClean(row.status).toUpperCase() === "DISCOVERED").length,
     materialized,
     failed,
     avgQueueWaitMs: avg(queueWait),
@@ -164,6 +204,7 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
       discovered: state.discovered,
       queued: state.queued,
       downloading: state.downloading,
+      reserve: state.reserve,
       materialized: state.materialized,
       failed: state.failed,
       approved: state.approved,
@@ -176,7 +217,7 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
       status: state.collectionStatus === "COMPLETE" ? "READY_FOR_QA" : state.collectionStatus,
       requirement_status: state.requirementStatus,
     })),
-    needsMore: states.filter(state => state.collectionStatus === "NEEDS_MORE" || state.collectionStatus === "EMPTY").map(state => ({ item_id: state.itemId, item_key: state.itemKey, missing: state.missing || state.targetCandidates })),
+    needsMore: states.filter(state => (state.collectionStatus === "NEEDS_MORE" || state.collectionStatus === "EMPTY") && state.reserve === 0).map(state => ({ item_id: state.itemId, item_key: state.itemKey, missing: state.missing || state.targetCandidates })),
   };
 }
 

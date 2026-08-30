@@ -41,7 +41,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.21" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.22" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -259,7 +259,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("fast_push_project_candidates", {
-    description: "FAST PUSH consolidado por projeto/cena. Aceita URLs de múltiplas cenas em uma chamada, persiste target_candidates/required_approved e retorna ACK rápido; Queue/R2 continuam no Data Plane.",
+    description: "FAST PUSH consolidado por projeto/cena com reposição automática. URLs excedentes ficam DISCOVERED como reserva; somente o necessário é enfileirado imediatamente e falhas finais (incluindo HTTP 400/403/404 sem retry) promovem a próxima reserva até target_candidates MATERIALIZED. Cada candidata é independente e idempotente.",
     inputSchema: {
       project_id: z.string().min(1),
       operation_id: z.string().optional(),

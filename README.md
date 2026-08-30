@@ -1,18 +1,52 @@
-# Corvo Library V2 0.20.21 — R2 Audit + Queue Low Latency
+# Corvo Library V2 0.20.23 — MCP Internal Key Rotation
 
-Checkpoint sobre a 0.20.20 que corrige dois problemas operacionais observados em produção:
-
-1. `auditar_armazenamento_r2` e `explorar_r2_fisico` falhavam com `D1_ERROR: too many terms in compound SELECT`;
-2. o FAST PUSH materializava em paralelo, mas a Queue mantinha ~7 s de espera antes de `DOWNLOAD_STARTED` porque a configuração do consumer não era reconciliada quando apenas o Worker era atualizado.
+Checkpoint de interface sobre a 0.20.22. Mantém o Core esperado em 0.20.22 e adiciona no modal MCP um controle explícito para revogar a chave interna administrativa e gerar outra automaticamente, sem alterar o MCP público do ChatGPT.
 
 Garantias desta versão:
 
-- as auditorias físicas do R2 não usam mais `UNION ALL` nem `DB.batch()` para juntar referências; cada fonte do D1 é consultada independentemente e os resultados são agregados no Worker;
-- cada fonte é isolada por `Promise.allSettled`; uma tabela histórica opcional ausente não derruba a auditoria;
-- o Core aplica a política `LOW_LATENCY_V2` ao consumer: `batch_size=10`, `max_wait_time_ms=0`, `max_concurrency=null`, `max_retries=4`, `retry_delay=5`;
-- a Queue também é reconciliada para `delivery_delay=0` e `delivery_paused=false`;
-- a política é aplicada automaticamente após update/migrations e pode ser forçada pelo botão de atualização;
-- HTTP 400/403/404 continuam falhando imediatamente e não entram em retry; somente falhas transitórias recebem backoff;
+- o endpoint público `/mcp` continua sem autenticação para o ChatGPT;
+- a chave rotacionada é somente `CORVO_APP_KEY`, usada nas rotas administrativas internas da Library;
+- botão `Revogar e gerar nova chave` fica no modal MCP;
+- a ação exige confirmação explícita;
+- o Worker gera uma chave criptograficamente aleatória nova e substitui o secret `CORVO_APP_KEY` na Cloudflare;
+- a resposta devolve a nova chave somente para a sessão que solicitou a rotação;
+- a interface sobrescreve imediatamente a conexão local com a nova chave e não a exibe em texto;
+- a chave anterior deixa de ser usada pelo navegador e se torna inválida após a propagação do secret no Worker;
+- a interface verifica automaticamente a nova chave via health e informa quando ela está ativa;
+- se a chamada falhar antes de retornar uma nova chave válida, a conexão local existente não é sobrescrita;
+- nenhuma migration nova, nenhuma alteração no D1/R2 e nenhuma republicação obrigatória do Core.
+
+## Base preservada — 0.20.22
+
+
+Checkpoint sobre a 0.20.21 que transforma a materialização de candidatas do Coletor em execução imediata e independente por URL, mantendo a arquitetura Control Plane → Queue → Consumer → R2 → D1.
+
+Garantias desta versão:
+
+- o consumer da Queue é reconciliado com `batch_size=1`, `max_wait_time_ms=0` e `max_concurrency=20`;
+- cada mensagem da Queue representa uma única candidata e pode concluir em tempo diferente das demais;
+- quando uma execução termina, a Cloudflare Queue pode ocupar imediatamente o consumer liberado com a próxima mensagem pendente;
+- FAST PUSH por projeto/cena usa `target_candidates` como meta de estoque MATERIALIZED;
+- URLs excedentes ficam vinculadas ao projeto/item em `DISCOVERED` como reserva e não são baixadas sem necessidade;
+- quando uma candidata falha definitivamente, a próxima reserva da mesma cena é promovida automaticamente para `QUEUED` até completar a meta;
+- HTTP 400/403/404 são falhas finais na primeira tentativa, não contam como MATERIALIZED e acionam reposição imediata quando há reserva;
+- 408/425/429/5xx, timeouts e falhas transitórias continuam usando retry/backoff; reposição ocorre somente se a falha se tornar final;
+- a reposição considera a cena inteira, inclusive reservas criadas por outra operação simultânea do mesmo projeto/item;
+- candidatas de projeto/item usam ID determinístico por URL, e o claim `QUEUED/RETRYING → DOWNLOADING` é atômico para impedir download duplicado em redelivery concorrente;
+- o snapshot consolidado expõe `reserve` e só retorna `NEEDS_MORE` quando a cena está abaixo da meta e não possui mais reserva local;
+- o producer pode usar `sendBatch` apenas para reduzir round-trips de ACK; a execução não forma batch porque o consumer recebe `batch_size=1`;
 - nenhuma migration nova;
-- nenhum reset/cleanup;
-- R2/D1/assets existentes não são alterados pela auditoria.
+- nenhuma limpeza de D1/R2;
+- correções da 0.20.21 para auditorias R2 sem compound SELECT são preservadas.
+
+Fluxo esperado por cena:
+
+`URLs → DISCOVERED/reserva → ativa apenas o necessário → QUEUED → DOWNLOADING → MATERIALIZED`
+
+Falha final:
+
+`FAILED → libera necessidade lógica → promove próxima DISCOVERED → QUEUED`
+
+Conclusão:
+
+`materialized_count >= target_candidates → collection_status=COMPLETE → qa_status=READY_FOR_QA`

@@ -216,3 +216,6 @@
 /* 0.20.5 — authoritative boot: never render provisional data. */
 .authoritativeBoot{min-height:420px;border:1px solid #24354c;background:#0b1522;border-radius:14px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding:42px;gap:10px}
 .authoritativeBoot h2{margin:0;font-size:22px;color:#eef5ff}.authoritativeBoot p{margin:0;max-width:720px;color:#7f93ad;font-size:11px;line-height:1.65}.authoritativeBoot .eyebrow{font-size:8px;letter-spacing:.15em;color:#69a9ef}.authoritativeBoot.error{border-color:#6e3740}.authoritativeBoot.running{border-color:#2d4f78}.authoritativeBoot .inlineActions{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
+
+/* 0.20.23 — internal MCP/Core key rotation */
+.mcpInternalKeyCard{border-color:rgba(230,156,62,.18);background:linear-gradient(145deg,rgba(35,26,14,.34),rgba(8,14,24,.94))}.mcpInternalKeyCard .mcpKeyStatus{color:#d8c89e}.mcpInternalKeyCard button:disabled{opacity:.55;cursor:not-allowed}

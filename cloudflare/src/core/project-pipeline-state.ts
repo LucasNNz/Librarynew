@@ -13,6 +13,7 @@ export type ProjectPipelineItemState = {
   discovered: number;
   queued: number;
   downloading: number;
+  reserve: number;
   materialized: number;
   failed: number;
   approved: number;
@@ -52,6 +53,7 @@ export async function refreshProjectItemPipelineState(env: Env, projectId?: stri
       COUNT(*) AS discovered,
       SUM(CASE WHEN status IN ('QUEUED','RETRYING') THEN 1 ELSE 0 END) AS queued,
       SUM(CASE WHEN status='DOWNLOADING' THEN 1 ELSE 0 END) AS downloading,
+      SUM(CASE WHEN status='DISCOVERED' THEN 1 ELSE 0 END) AS reserve,
       SUM(CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN 1 ELSE 0 END) AS materialized,
       SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) AS failed,
       SUM(CASE WHEN status='APPROVED' THEN 1 ELSE 0 END) AS approved,
@@ -63,7 +65,7 @@ export async function refreshProjectItemPipelineState(env: Env, projectId?: stri
 
   const targetCandidates = Math.max(1, pipelineNumber(item.target_candidates) || 8);
   const requiredApproved = Math.max(1, pipelineNumber(item.required_approved) || 1);
-  const discovered = pipelineNumber(counts?.discovered), queued = pipelineNumber(counts?.queued), downloading = pipelineNumber(counts?.downloading);
+  const discovered = pipelineNumber(counts?.discovered), queued = pipelineNumber(counts?.queued), downloading = pipelineNumber(counts?.downloading), reserve = pipelineNumber(counts?.reserve);
   const materialized = pipelineNumber(counts?.materialized), failed = pipelineNumber(counts?.failed), approved = pipelineNumber(counts?.approved), rejected = pipelineNumber(counts?.rejected);
   const availableForQa = pipelineNumber(counts?.available_for_qa);
   const missing = Math.max(0, targetCandidates - materialized);
@@ -71,7 +73,7 @@ export async function refreshProjectItemPipelineState(env: Env, projectId?: stri
 
   let collectionStatus: ProjectPipelineItemState["collectionStatus"];
   if (materialized >= targetCandidates) collectionStatus = "COMPLETE";
-  else if (queued + downloading > 0) collectionStatus = "COLLECTING";
+  else if (queued + downloading + reserve > 0) collectionStatus = "COLLECTING";
   else if (discovered === 0) collectionStatus = "EMPTY";
   else collectionStatus = "NEEDS_MORE";
 
@@ -96,7 +98,7 @@ export async function refreshProjectItemPipelineState(env: Env, projectId?: stri
       collection_status=?,qa_status=?,qa_ready_at=?,qa_completed_at=?,updated_at=? WHERE id=?`)
     .bind(discovered, queued, downloading, materialized, failed, approved, rejected, collectionStatus, qaStatus, qaReadyAt, qaCompletedAt, ts, itemId).run();
 
-  return { projectId: project, itemId, itemKey, targetCandidates, requiredApproved, discovered, queued, downloading, materialized, failed, approved, rejected, missing, remainingApproved, collectionStatus, qaStatus, requirementStatus };
+  return { projectId: project, itemId, itemKey, targetCandidates, requiredApproved, discovered, queued, downloading, reserve, materialized, failed, approved, rejected, missing, remainingApproved, collectionStatus, qaStatus, requirementStatus };
 }
 
 export async function markProjectItemQaInProgress(env: Env, projectId: string, itemRef: string) {

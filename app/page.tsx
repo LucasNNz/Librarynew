@@ -71,7 +71,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.21";
+const EXPECTED_CORE_VERSION = "0.20.22";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -298,6 +298,9 @@ export default function Home() {
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpCopied, setMcpCopied] = useState<""|"url"|"gpt">("");
+  const [mcpKeyBusy, setMcpKeyBusy] = useState(false);
+  const [mcpKeyMessage, setMcpKeyMessage] = useState("");
+  const [mcpKeyRotatedAt, setMcpKeyRotatedAt] = useState<number | null>(null);
   const [releaseGateState, setReleaseGateState] = useState<"idle"|"running"|"done"|"error">("idle");
   const [releaseGateMessage, setReleaseGateMessage] = useState("");
 
@@ -1060,6 +1063,7 @@ export default function Home() {
 
   function openMcpConnection() {
     setMcpCopied("");
+    setMcpKeyMessage("");
     setMcpOpen(true);
   }
 
@@ -1073,6 +1077,45 @@ export default function Home() {
     await navigator.clipboard.writeText(endpoint);
     setMcpCopied(kind);
     window.setTimeout(()=>setMcpCopied(""),1800);
+  }
+
+  async function rotateInternalAppKey() {
+    if (!localConnection || mcpKeyBusy) return;
+    const confirmed=window.confirm("Revogar a chave interna atual da Library e gerar outra automaticamente? A chave anterior deixará de funcionar assim que a nova versão do secret propagar no Worker.");
+    if(!confirmed)return;
+    setMcpKeyBusy(true);
+    setMcpKeyMessage("Gerando nova chave interna…");
+    try{
+      const response=await fetch("/api/control/rotate-app-key",{method:"POST",headers:{"content-type":"application/json"}});
+      const text=await response.text();
+      let value:Record<string,unknown>={};
+      try{value=text?JSON.parse(text) as Record<string,unknown>:{};}catch{value={detail:text};}
+      if(!response.ok)throw new Error(String(value.error||value.detail||`KEY_ROTATION_HTTP_${response.status}`));
+      const nextKey=String(value.appKey||"").trim();
+      if(!nextKey)throw new Error("KEY_ROTATION_RESPONSE_MISSING_KEY");
+      const rotatedAt=Number(value.rotatedAt||Date.now());
+      const nextConnection:BrowserConnection={...localConnection,appKey:nextKey,savedAt:Date.now()};
+      saveBrowserConnection(nextConnection);
+      setLocalConnection(nextConnection);
+      setMcpKeyRotatedAt(rotatedAt);
+      setMcpKeyMessage("Chave anterior revogada. Nova chave gerada e salva automaticamente neste navegador.");
+
+      // A troca do secret pode levar alguns instantes para propagar no Worker.
+      // Verifique com a nova chave sem voltar a usar a anterior.
+      for(let attempt=0;attempt<8;attempt+=1){
+        if(attempt>0)await sleep(Math.min(1200,300+attempt*120));
+        try{
+          const probe=await fetch("/api/health",{cache:"no-store"});
+          if(probe.ok){
+            setMcpKeyMessage("Chave anterior revogada. Nova chave ativa e salva automaticamente neste navegador.");
+            void refreshHealth();
+            break;
+          }
+        }catch{}
+      }
+    }catch(error){
+      setMcpKeyMessage(error instanceof Error?error.message:"KEY_ROTATION_FAILED");
+    }finally{setMcpKeyBusy(false);}
   }
 
   async function updateCoreFromApp() {
@@ -1110,7 +1153,7 @@ export default function Home() {
             try {
               const queueResponse=await fetchWithNetworkRetry("/api/control/reconcile-queue-consumer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({force:true})},{attempts:3,baseDelayMs:500});
               const queueValue=await queueResponse.json().catch(()=>({})) as any;
-              if(queueResponse.ok) queuePolicy=`${queueValue.policyVersion||"LOW_LATENCY"} · wait ${Number(queueValue.consumer?.settings?.max_wait_time_ms??queueValue.desiredSettings?.max_wait_time_ms??0)} ms`;
+              if(queueResponse.ok) queuePolicy=`${queueValue.policyVersion||"IMMEDIATE_CANDIDATE"} · wait ${Number(queueValue.consumer?.settings?.max_wait_time_ms??queueValue.desiredSettings?.max_wait_time_ms??0)} ms · batch ${Number(queueValue.consumer?.settings?.batch_size??queueValue.desiredSettings?.batch_size??1)} · max ${Number(queueValue.consumer?.settings?.max_concurrency??queueValue.desiredSettings?.max_concurrency??20)}`;
               else queuePolicy=`falhou: ${queueValue.detail||queueValue.error||queueResponse.status}`;
             } catch(error) { queuePolicy=`falhou: ${error instanceof Error?error.message:"QUEUE_POLICY_FAILED"}`; }
             setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; schema ${migration.schemaContract.contractVersion} READY; Queue ${queuePolicy}; migrations aplicadas: ${(migration.executed||[]).length}.`);
@@ -1392,6 +1435,7 @@ Tudo é configurado pela própria tela Configurações.
               <div className="mcpConnectionHero"><span className="eyebrow">ENDPOINT MCP REMOTO</span><code>{mcpEndpoint(localConnection)}</code><div className="inlineActions"><button className="primary" onClick={()=>void copyMcpValue("url")}>{mcpCopied==="url"?"✓ Link copiado":"Copiar link MCP"}</button><button className="secondary" onClick={()=>void copyMcpValue("gpt")}>{mcpCopied==="gpt"?"✓ Link copiado":"Copiar para ChatGPT"}</button></div></div>
               <div className="mcpKeyCard"><div><span className="eyebrow">AUTENTICAÇÃO</span><strong>Nenhuma</strong><small>No ChatGPT, informe somente o endpoint acima e selecione a opção sem autenticação. Não use Bearer, API key ou OAuth para este MCP.</small></div></div>
               <div className="mcpSecurityBox"><div><strong>Rota pública dedicada</strong><span>Somente <code>/mcp</code> é pública para o ChatGPT. As demais rotas operacionais do Core continuam protegidas pela chave interna da Library.</span></div></div>
+              <div className="mcpKeyCard mcpInternalKeyCard"><div><span className="eyebrow">CHAVE INTERNA DA LIBRARY</span><strong>Protegendo as rotas administrativas</strong><small>Esta chave não é usada pelo ChatGPT. Revogar gera uma nova automaticamente, invalida a anterior no Worker e atualiza a conexão salva neste navegador.</small>{mcpKeyRotatedAt&&<small>Última rotação: {new Date(mcpKeyRotatedAt).toLocaleString("pt-BR")}</small>}{mcpKeyMessage&&<small className="mcpKeyStatus">{mcpKeyMessage}</small>}</div><div className="mcpKeyActions"><button className="dangerGhost" disabled={mcpKeyBusy} onClick={()=>void rotateInternalAppKey()}>{mcpKeyBusy?"Revogando…":"Revogar e gerar nova chave"}</button></div></div>
             </> : <div className="mcpDisconnected"><strong>Worker ainda não identificado</strong><p>Reconecte a infraestrutura para a Library recuperar o endereço público do Worker. Nenhuma credencial MCP será criada ou solicitada.</p><button className="primary" onClick={()=>{setMcpOpen(false);openInfrastructureSetup(Boolean(infraProfile));}}>Reconectar infraestrutura</button></div>}
           </div>
         </div>}

@@ -100,10 +100,10 @@ export async function selfUpdateCore(env: Env) {
 }
 
 
-const QUEUE_POLICY_VERSION = "LOW_LATENCY_V2";
+const QUEUE_POLICY_VERSION = "IMMEDIATE_CANDIDATE_V3";
 const DESIRED_QUEUE_CONSUMER_SETTINGS = {
-  batch_size: 10,
-  max_concurrency: null as number | null,
+  batch_size: 1,
+  max_concurrency: 20 as number | null,
   max_retries: 4,
   max_wait_time_ms: 0,
   retry_delay: 5,
