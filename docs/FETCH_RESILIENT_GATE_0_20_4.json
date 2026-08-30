@@ -1,0 +1,24 @@
+{
+  "checkpoint": "0.20.4",
+  "name": "FETCH_RESILIENT",
+  "generated_at": 1788054692738,
+  "checks": {
+    "frontend_structural_typecheck": true,
+    "worker_structural_typecheck": true,
+    "expected_core_0_20_4": true,
+    "worker_reports_0_20_4": true,
+    "network_retry_present": true,
+    "health_retry_present": true,
+    "self_update_response_loss_tolerated": true,
+    "manual_update_response_loss_tolerated": true,
+    "factory_zero_reconciles_status_before_retry": true,
+    "final_zero_verification": true,
+    "post_refresh_all_settled": true,
+    "cors_patch_head": true,
+    "cors_preflight_cache": true,
+    "one_shot_marker_preserved": true,
+    "preserves_infrastructure": true
+  },
+  "pass": true,
+  "errors": []
+}

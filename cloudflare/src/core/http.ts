@@ -14,7 +14,9 @@ export function corsHeaders(request: Request) {
   return {
     "access-control-allow-origin": origin || "*",
     "access-control-allow-headers": "content-type,x-corvo-internal-key,x-corvo-app-key,authorization",
-    "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS",
+    "access-control-max-age": "86400",
+    "vary": "Origin",
   };
 }
 

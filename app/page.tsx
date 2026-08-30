@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.3";
+const EXPECTED_CORE_VERSION = "0.20.4";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -138,6 +138,27 @@ function statusClass(status: string) {
   if (status === "APPROVED" || status === "COMPLETED" || status === "MATERIALIZED") return "okState";
   if (status === "REJECTED" || status === "FAILED") return "badState";
   return "waitState";
+}
+
+function sleep(ms:number) { return new Promise(resolve=>setTimeout(resolve,ms)); }
+
+function isTransientFetchError(error:unknown) {
+  return error instanceof TypeError || (error instanceof Error && /failed to fetch|networkerror|load failed|fetch failed/i.test(error.message));
+}
+
+async function fetchWithNetworkRetry(input:RequestInfo|URL, init:RequestInit={}, options:{attempts?:number;baseDelayMs?:number;onRetry?:(attempt:number,error:unknown)=>void}={}) {
+  const attempts=Math.max(1,options.attempts||5);
+  let lastError:unknown=null;
+  for(let attempt=1;attempt<=attempts;attempt+=1){
+    try { return await fetch(input,init); }
+    catch(error){
+      lastError=error;
+      if(!isTransientFetchError(error) || attempt>=attempts) throw error;
+      options.onRetry?.(attempt,error);
+      await sleep((options.baseDelayMs||650)*attempt);
+    }
+  }
+  throw lastError instanceof Error?lastError:new Error("CORE_NETWORK_UNAVAILABLE");
 }
 
 export default function Home() {
@@ -244,14 +265,19 @@ export default function Home() {
     : active;
 
   const refreshHealth = useCallback(async () => {
-    const response = await fetch("/api/health", { cache:"no-store" });
-    const value = await response.json();
-    if (value && value.app === "ok" && value.core) {
-      setHealth(value as Health);
-      return;
+    try {
+      const response = await fetchWithNetworkRetry("/api/health", { cache:"no-store" }, {attempts:3,baseDelayMs:500});
+      const value = await response.json();
+      if (value && value.app === "ok" && value.core) {
+        setHealth(value as Health);
+        return;
+      }
+      const connected = Boolean(readBrowserConnection());
+      setHealth({ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:connected, core:{ ...value, ok:Boolean(value?.ok) } });
+    } catch(error) {
+      const connected=Boolean(readBrowserConnection());
+      setHealth({app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:connected,core:{ok:false,error:isTransientFetchError(error)?"CORE_TEMPORARILY_UNREACHABLE":(error instanceof Error?error.message:"CORE_HEALTH_FAILED")}});
     }
-    const connected = Boolean(readBrowserConnection());
-    setHealth({ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:connected, core:{ ...value, ok:Boolean(value?.ok) } });
   }, []);
 
   const refreshStats = useCallback(async () => {
@@ -539,56 +565,103 @@ export default function Home() {
   const enforceFactoryZeroRelease = useCallback(async () => {
     if (!readBrowserConnection() || releaseGateState === "running") return;
     setReleaseGateState("running");
-    setReleaseGateMessage("Preparando Factory Zero 0.20.3…");
+    setReleaseGateMessage("Preparando Factory Zero 0.20.4…");
     setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]);
     setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
     try {
-      let probe = await fetch("/api/health", { cache:"no-store" });
+      const fetchCore = (input:RequestInfo|URL, init:RequestInit={}, attempts=5) => fetchWithNetworkRetry(input,init,{attempts,baseDelayMs:700,onRetry:()=>setReleaseGateMessage("Core reiniciando após atualização… reconectando automaticamente.")});
+
+      let probe = await fetchCore("/api/health", { cache:"no-store" }, 4);
       if (!probe.ok) throw new Error(`HEALTH_HTTP_${probe.status}`);
       let raw = await probe.json();
       let version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
       if (version !== EXPECTED_CORE_VERSION) {
         setReleaseGateMessage(`Atualizando Core ${version || "antigo"} → ${EXPECTED_CORE_VERSION}…`);
-        const update = await fetch("/api/control/update-core", { method:"POST" });
-        const updateValue = await update.json().catch(()=>({}));
-        if (!update.ok) throw new Error(updateValue?.error || `CORE_UPDATE_HTTP_${update.status}`);
-        let ready = false;
-        for (let attempt=0; attempt<30; attempt+=1) {
-          await new Promise(resolve=>setTimeout(resolve, attempt===0 ? 900 : 1300));
-          probe = await fetch("/api/health", { cache:"no-store" });
-          if (!probe.ok) continue;
-          raw = await probe.json();
-          version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
-          if (version === EXPECTED_CORE_VERSION) { ready = true; break; }
+        let updateAcknowledged=false;
+        try {
+          const update = await fetch("/api/control/update-core", { method:"POST" });
+          const updateValue = await update.json().catch(()=>({}));
+          if (!update.ok) throw new Error(updateValue?.error || `CORE_UPDATE_HTTP_${update.status}`);
+          updateAcknowledged=true;
+        } catch(error) {
+          // A atualização substitui o próprio Worker. O deploy pode encerrar a conexão
+          // depois de ter sido aceito; nesse caso o health abaixo confirma o resultado.
+          if(!isTransientFetchError(error)) throw error;
+          setReleaseGateMessage("Atualização enviada; o Worker reiniciou durante a resposta. Reconectando…");
         }
-        if (!ready) throw new Error(`CORE_UPDATE_TIMEOUT:${version || "unknown"}`);
+        let ready = false;
+        for (let attempt=0; attempt<36; attempt+=1) {
+          await sleep(attempt===0 ? 1100 : Math.min(2500,1100+attempt*90));
+          try {
+            probe = await fetch("/api/health", { cache:"no-store" });
+            if (!probe.ok) continue;
+            raw = await probe.json();
+            version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+            if (version === EXPECTED_CORE_VERSION) { ready = true; break; }
+          } catch(error) {
+            if(!isTransientFetchError(error)) throw error;
+            setReleaseGateMessage("Worker sendo republicado… aguardando o endpoint voltar.");
+          }
+        }
+        if (!ready) throw new Error(`CORE_UPDATE_TIMEOUT:${version || "unknown"}${updateAcknowledged?"":";response_lost"}`);
       }
 
-      setReleaseGateMessage("Aplicando schema e reset de release…");
-      const migrationResponse = await fetch("/api/control/apply-migrations", { method:"POST" });
+      setReleaseGateMessage("Core online. Aplicando schema de forma idempotente…");
+      const migrationResponse = await fetchCore("/api/control/apply-migrations", { method:"POST" }, 6);
       const migration = await migrationResponse.json().catch(()=>({}));
       if (!migrationResponse.ok) throw new Error(migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
 
-      const statusResponse = await fetch("/api/control/factory-zero/status", { cache:"no-store" });
-      const statusValue = await statusResponse.json().catch(()=>({}));
+      setReleaseGateMessage("Verificando se o Factory Zero ainda é necessário…");
+      let statusResponse = await fetchCore("/api/control/factory-zero/status", { cache:"no-store" }, 6);
+      let statusValue = await statusResponse.json().catch(()=>({}));
       if (!statusResponse.ok) throw new Error(statusValue?.error || `FACTORY_ZERO_STATUS_HTTP_${statusResponse.status}`);
       if (statusValue?.required) {
         setReleaseGateMessage("Limpando dados antigos do D1 e resíduos Corvo do R2…");
-        const resetResponse = await fetch("/api/control/factory-zero", {
-          method:"POST", headers:{"content-type":"application/json"},
-          body:JSON.stringify({confirm:"FACTORY_ZERO_0_20_3"}),
-        });
-        const reset = await resetResponse.json().catch(()=>({}));
-        if (!resetResponse.ok) throw new Error(reset?.error || `FACTORY_ZERO_HTTP_${resetResponse.status}`);
-        if (Number(reset?.after?.counts?.assets || 0) !== 0 || Number(reset?.after?.counts?.projects || 0) !== 0) throw new Error("FACTORY_ZERO_VERIFICATION_FAILED");
+        let resetResponse:Response|null=null;
+        let resetBody:any=null;
+        try {
+          resetResponse = await fetchCore("/api/control/factory-zero", {
+            method:"POST", headers:{"content-type":"application/json"},
+            body:JSON.stringify({confirm:"FACTORY_ZERO_0_20_3"}),
+          }, 3);
+          resetBody = await resetResponse.json().catch(()=>({}));
+          if (!resetResponse.ok) throw new Error(resetBody?.error || `FACTORY_ZERO_HTTP_${resetResponse.status}`);
+        } catch(error) {
+          if(!isTransientFetchError(error)) throw error;
+          // O POST é idempotente e pode ter concluído antes da conexão cair.
+          // Confirme o marcador no servidor antes de repetir qualquer limpeza.
+          setReleaseGateMessage("A resposta do reset foi interrompida; confirmando o resultado no D1…");
+        }
+
+        statusResponse = await fetchCore("/api/control/factory-zero/status", { cache:"no-store" }, 8);
+        statusValue = await statusResponse.json().catch(()=>({}));
+        if (!statusResponse.ok) throw new Error(statusValue?.error || `FACTORY_ZERO_VERIFY_HTTP_${statusResponse.status}`);
+        if (statusValue?.required) {
+          const retryReset = await fetchCore("/api/control/factory-zero", {
+            method:"POST", headers:{"content-type":"application/json"},
+            body:JSON.stringify({confirm:"FACTORY_ZERO_0_20_3"}),
+          }, 5);
+          const retryBody = await retryReset.json().catch(()=>({}));
+          if(!retryReset.ok) throw new Error(retryBody?.error || `FACTORY_ZERO_RETRY_HTTP_${retryReset.status}`);
+        } else if (resetBody?.after && (Number(resetBody.after?.counts?.assets||0)!==0 || Number(resetBody.after?.counts?.projects||0)!==0)) {
+          throw new Error("FACTORY_ZERO_VERIFICATION_FAILED");
+        }
       }
+
+      const finalStatusResponse = await fetchCore("/api/control/factory-zero/status", { cache:"no-store" }, 6);
+      const finalStatus = await finalStatusResponse.json().catch(()=>({}));
+      if(!finalStatusResponse.ok) throw new Error(finalStatus?.error || `FACTORY_ZERO_FINAL_HTTP_${finalStatusResponse.status}`);
+      if(finalStatus?.required || Number(finalStatus?.counts?.assets||0)!==0 || Number(finalStatus?.counts?.projects||0)!==0) throw new Error("FACTORY_ZERO_FINAL_VERIFICATION_FAILED");
 
       setReleaseGateMessage("Factory Zero confirmado: 0 assets · 0 projetos.");
       setReleaseGateState("done");
-      await Promise.all([refreshHealth(), refreshStats(), fetchCatalog(null,false), refreshRecords("Projetos")]);
+      // A limpeza já foi confirmada no Core. Uma atualização visual transitória não
+      // pode transformar um sucesso do D1 em falso erro de Factory Zero.
+      await Promise.allSettled([refreshHealth(), refreshStats(), fetchCatalog(null,false), refreshRecords("Projetos")]);
     } catch (error) {
       setReleaseGateState("error");
-      setReleaseGateMessage(error instanceof Error ? error.message : "FACTORY_ZERO_RELEASE_GATE_FAILED");
+      if(isTransientFetchError(error)) setReleaseGateMessage("Não consegui alcançar o Core após várias tentativas. A conexão salva será preservada; use Tentar novamente quando o Worker estiver online.");
+      else setReleaseGateMessage(error instanceof Error ? error.message : "FACTORY_ZERO_RELEASE_GATE_FAILED");
     }
   }, [releaseGateState, refreshHealth, refreshStats, fetchCatalog, refreshRecords]);
 
@@ -878,28 +951,42 @@ export default function Home() {
   async function updateCoreFromApp() {
     setCoreUpdateBusy(true); setInfraMessage("");
     try {
-      const response = await fetch("/api/control/update-core", { method:"POST" });
-      const value = await response.json();
-      if (!response.ok) throw new Error(value.error || `CORE_UPDATE_HTTP_${response.status}`);
-      setInfraMessage(`Atualização do Core enviada para ${value.targetVersion || EXPECTED_CORE_VERSION}. Verificando…`);
-      for (let attempt=0; attempt<24; attempt+=1) {
-        await new Promise(resolve=>setTimeout(resolve, attempt===0 ? 800 : 1400));
-        await refreshHealth();
-        const probe = await fetch("/api/health", { cache:"no-store" });
-        if (probe.ok) {
+      let responseLost=false;
+      try {
+        const response = await fetch("/api/control/update-core", { method:"POST" });
+        const value = await response.json().catch(()=>({}));
+        if (!response.ok) throw new Error(value.error || `CORE_UPDATE_HTTP_${response.status}`);
+        setInfraMessage(`Atualização do Core enviada para ${value.targetVersion || EXPECTED_CORE_VERSION}. Verificando…`);
+      } catch(error) {
+        if(!isTransientFetchError(error)) throw error;
+        responseLost=true;
+        setInfraMessage("O Worker reiniciou durante a resposta da atualização. Confirmando a nova versão automaticamente…");
+      }
+      let ready=false;
+      for (let attempt=0; attempt<30; attempt+=1) {
+        await sleep(attempt===0 ? 1000 : Math.min(2400,1100+attempt*80));
+        try {
+          const probe = await fetch("/api/health", { cache:"no-store" });
+          if (!probe.ok) continue;
           const raw = await probe.json();
           const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
           if (version === EXPECTED_CORE_VERSION) {
-            const migrationResponse=await fetch("/api/control/apply-migrations",{method:"POST"});
-            const migration=await migrationResponse.json();
+            const migrationResponse=await fetchWithNetworkRetry("/api/control/apply-migrations",{method:"POST"},{attempts:6,baseDelayMs:700});
+            const migration=await migrationResponse.json().catch(()=>({}));
             if(!migrationResponse.ok)throw new Error(migration.error||`MIGRATION_HTTP_${migrationResponse.status}`);
             setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; migrations aplicadas: ${(migration.executed||[]).length}. A infraestrutura permaneceu travada.`);
+            ready=true;
             break;
           }
+        } catch(error) {
+          if(!isTransientFetchError(error)) throw error;
+          setInfraMessage("Worker sendo republicado… aguardando a conexão voltar.");
         }
       }
+      if(!ready) throw new Error(`CORE_UPDATE_TIMEOUT${responseLost?":response_lost":""}`);
+      await refreshHealth();
     } catch(error) {
-      setInfraMessage(error instanceof Error ? error.message : "CORE_UPDATE_FAILED");
+      setInfraMessage(isTransientFetchError(error)?"Core temporariamente inacessível após várias tentativas. A configuração foi preservada; tente novamente em instantes.":(error instanceof Error ? error.message : "CORE_UPDATE_FAILED"));
     } finally { setCoreUpdateBusy(false); }
   }
 
