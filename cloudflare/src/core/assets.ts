@@ -1,5 +1,5 @@
 import type { Env, LegacyAssetRow } from "../types";
-import { createSignedFileUrl } from "./auth";
+import { createSignedFileUrl, createSignedThumbnailUrl } from "./auth";
 
 const statusMap: Record<string, string> = {
   APPROVED: "Aprovado",
@@ -103,7 +103,7 @@ export async function listAssets(request: Request, env: Env) {
     uses: Number(row.use_count || 0),
     lastUsedAt: row.last_used_at,
     qaStatus: row.qa_status,
-    previewUrl: await createSignedFileUrl(request, row.id, env),
+    previewUrl: await createSignedThumbnailUrl(request, row.id, env),
     createdAt: new Date(Number(row.created_at)).toISOString(),
     updatedAt: new Date(Number(row.updated_at)).toISOString(),
   })));

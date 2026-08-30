@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.19.0";
+const CONTRACT_VERSION = "2.20.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -83,7 +83,7 @@ export async function inspectCriticalSchema(env:Env) {
     const columns = await tableColumns(env, spec.table);
     for (const column of spec.columns) if (!columns.has(column.name)) missingColumns.push({table:spec.table,column:column.name});
   }
-  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags"]) if (!(await tableExists(env,table))) missingTables.push(table);
+  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access"]) if (!(await tableExists(env,table))) missingTables.push(table);
   return {
     ready: missingTables.length===0 && missingColumns.length===0,
     contractVersion: CONTRACT_VERSION,
@@ -103,7 +103,13 @@ export async function reconcileCriticalSchema(env:Env) {
     repaired.push("table:v2_project_workflow_tags");
     before=await inspectCriticalSchema(env);
   }
-  const hardMissing=before.missingTables.filter(table=>table!=="v2_project_workflow_tags");
+  if(before.missingTables.includes("v2_project_slot_access")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_project_slot_access (project_id TEXT NOT NULL,slot_key TEXT NOT NULL,mcp_open INTEGER NOT NULL DEFAULT 0,instruction TEXT,opened_by TEXT,opened_at INTEGER,updated_at INTEGER NOT NULL,PRIMARY KEY(project_id,slot_key),FOREIGN KEY(project_id) REFERENCES automatic_projects(id) ON DELETE CASCADE)`);
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_slot_access_open ON v2_project_slot_access(mcp_open,updated_at DESC)");
+    repaired.push("table:v2_project_slot_access");
+    before=await inspectCriticalSchema(env);
+  }
+  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access'].includes(table));
   if (hardMissing.length) return { ...before, repaired, error:"CRITICAL_TABLE_MISSING" };
 
   for (const spec of REQUIRED) {

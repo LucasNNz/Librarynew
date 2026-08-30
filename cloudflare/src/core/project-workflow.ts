@@ -113,7 +113,7 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
   await expireProjectWorkflowTags(env,projectId);
   await syncDerivedProjectWorkflow(env,projectId).catch(()=>undefined);
   const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>(); if(!project)return null;
-  const [tags,script,thumbs,titles,items,candidates,packages]=await Promise.all([
+  const [tags,script,thumbs,titles,items,candidates,packages,slotAccess]=await Promise.all([
     env.DB.prepare("SELECT tag,status,owner_id,execution_id,last_seen_at,lease_expires_at,updated_at FROM v2_project_workflow_tags WHERE project_id=? AND status='ACTIVE' ORDER BY updated_at DESC").bind(projectId).all<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END) selected FROM v2_project_media WHERE project_id=? AND kind='THUMB' AND status NOT IN ('THUMB_REJECTED','REJECTED')").bind(projectId).first<Record<string,unknown>>(),
@@ -125,10 +125,12 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
       SUM(CASE WHEN linked_asset_id IS NOT NULL THEN 1 ELSE 0 END) library_linked FROM automatic_project_items WHERE project_id=?`).bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN status='DISCOVERED' THEN 1 ELSE 0 END) reserve,SUM(CASE WHEN status IN ('QUEUED','DOWNLOADING','RETRYING') THEN 1 ELSE 0 END) active,SUM(CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN 1 ELSE 0 END) materialized,SUM(CASE WHEN status='APPROVED' THEN 1 ELSE 0 END) approved,SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) failed FROM v2_ingest_candidates WHERE project_id=?`).bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,status,file_name,size_bytes,ready_at,downloaded_at,created_at FROM v2_download_packages WHERE project_id=? ORDER BY created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
+    env.DB.prepare("SELECT slot_key,mcp_open,instruction,opened_by,opened_at,updated_at FROM v2_project_slot_access WHERE project_id=?").bind(projectId).all<Record<string,unknown>>(),
   ]);
   const activeTags=(tags.results||[]).map(row=>({...row,tag:upper(row.tag)}));
   const target=Number(items?.target||0),materialized=Number(items?.materialized||0),required=Number(items?.required_approved||0),approved=Math.max(Number(items?.approved||0),Number(candidates?.approved||0));
-  const slot=(key:string,label:string,state:string,summary:string,progress:number)=>({key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress)))});
+  const accessMap=new Map((slotAccess.results||[]).map(row=>[String(row.slot_key),row]));
+  const slot=(key:string,label:string,state:string,summary:string,progress:number)=>{const access=accessMap.get(key);return {key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress))),mcpOpen:Boolean(Number(access?.mcp_open||0)),instruction:access?.instruction||null,openedBy:access?.opened_by||null,openedAt:access?.opened_at||null};};
   const scriptReady=Boolean(script),thumbCount=Number(thumbs?.total||0),titleCount=Number(titles?.total||0),zipStatus=upper(packages?.status || (project.zip_r2_key ? "READY" : "MISSING"));
   const slots=[
     slot("script","Roteiro",scriptReady?"READY":"MISSING",scriptReady?`SCRIPT v${Number(script?.version||1)}`:"Aguardando roteiro",scriptReady?100:0),
@@ -140,7 +142,7 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
     slot("zip","ZIP final",["READY","READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(zipStatus)?"READY":"WAITING",packages?.file_name?String(packages.file_name):"Ainda não gerado",packages?100:0),
   ];
   const progress=Math.round(slots.reduce((sum,s)=>sum+s.progress,0)/slots.length);
-  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},candidates:{...candidates},package:packages||null};
+  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},candidates:{...candidates},package:packages||null,slotAccess:slotAccess.results||[]};
 }
 
 export async function setProjectLifecycle(env:Env,input:{projectIds:string[];action:"COMPLETE"|"REJECT"|"REOPEN";reason?:string}){
@@ -171,7 +173,7 @@ export async function deleteProjectsPermanently(env:Env,projectIds:string[],conf
     const objects:string[]=[];
     for(const sql of ["SELECT r2_key FROM automatic_project_files WHERE project_id=?","SELECT r2_key FROM v2_project_media WHERE project_id=?","SELECT r2_key FROM v2_download_packages WHERE project_id=?","SELECT r2_key FROM v2_ingest_candidates WHERE project_id=? AND r2_key LIKE 'incoming/%'"]){const rows=await env.DB.prepare(sql).bind(projectId).all<{r2_key?:string}>();for(const row of rows.results||[])if(row.r2_key)objects.push(row.r2_key);}
     for(let offset=0;offset<objects.length;offset+=1000)await env.MEDIA.delete(objects.slice(offset,offset+1000)).catch(()=>undefined);
-    const tables=["v2_project_workflow_tags","v2_runtime_heartbeats","worker_events","worker_work_items","worker_sessions","supervisor_project_candidates","supervisor_decision_queue","plan_branches","source_routing_plans","v2_control_jobs","v2_download_packages","v2_project_media","v2_project_titles","v2_ingest_events","v2_ingest_candidates","automatic_project_events","automatic_project_files","automatic_project_items"];
+    const tables=["v2_project_slot_access","v2_project_workflow_tags","v2_runtime_heartbeats","worker_events","worker_work_items","worker_sessions","supervisor_project_candidates","supervisor_decision_queue","plan_branches","source_routing_plans","v2_control_jobs","v2_download_packages","v2_project_media","v2_project_titles","v2_ingest_events","v2_ingest_candidates","automatic_project_events","automatic_project_files","automatic_project_items"];
     for(const table of tables){
       try { if(table==="v2_runtime_heartbeats") await env.DB.prepare("DELETE FROM v2_runtime_heartbeats WHERE scope_id LIKE ?").bind(`%${projectId}%`).run(); else await env.DB.prepare(`DELETE FROM ${table} WHERE project_id=?`).bind(projectId).run(); } catch{}
     }

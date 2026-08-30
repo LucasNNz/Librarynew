@@ -14,6 +14,7 @@ import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipel
 import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
 import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
+import { configureProjectSlotAccess, fillProjectImageSlot, fillProjectTextSlot, linkApprovedAssetToProjectSlot, listProjectSlotAccess } from "./core/project-slot-customization";
 import { appliedPolicies, createOperationalPolicy, detectOperationalGap, editOperationalPolicy, getOperationalGap, linkGapPolicy, listOperationalGaps, listOperationalPolicies, policyTelemetry, policyWorkspace, resolveGapAndLearn, rollbackPolicy, setPolicyStatus, testPolicy } from "./core/policies";
 import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, decideSupervisorCandidate, heartbeatSupervisor, listSourceProfiles, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, relinkItem, relinkItems, resolveSupervisorDecision, saveSourceProfile, setDefaultSourceProfile, setHostBlocked, setItemProcessingState, setProjectProcessingState, setSourceProfileStatus, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog, updateCollectionSettings, updateCollectionSource, updateItemSearch, updateSourceProfile } from "./core/supervisor";
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
@@ -42,7 +43,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.25" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.28" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -392,6 +393,11 @@ function createServer(env: Env, request: Request) {
     inputSchema: { projeto_id:z.string().min(1), since_version:z.number().int().optional(), limite_pacote:z.number().int().optional(), execution_id:z.string().optional() },
   }, async ({ projeto_id, since_version }) => output((await getOperationalSnapshot(env,projeto_id,since_version)) || {error:"NOT_FOUND"}));
 
+  server.registerTool("obter_resumo_curto", {
+    description: "Hot path FAST READ: retorna somente o snapshot incremental de um projeto, sem detalhes, logs ou varredura R2.",
+    inputSchema: { projeto_id:z.string().min(1), since_version:z.number().int().optional() },
+  }, async ({ projeto_id, since_version }) => output((await getOperationalSnapshot(env,projeto_id,since_version)) || {error:"NOT_FOUND"}));
+
   server.registerTool("validar_consistencia", {
     description: "Executa uma checagem de integridade D1↔R2 e identifica r2_key compartilhadas sem alterar dados.",
     inputSchema: { limite: z.number().int().min(1).max(500).optional(), projeto_id: z.string().optional(), execution_id: z.string().optional() },
@@ -683,6 +689,26 @@ function createServer(env: Env, request: Request) {
     description: "Snapshot operacional completo de um projeto-slot: lifecycle, tags simultâneas/heartbeats, roteiro, thumbs (max 3), títulos (max 3), referências, cenas/candidatas, aprovadas e ZIP final.",
     inputSchema: { projeto_id:z.string().min(1) },
   }, async ({projeto_id}) => output((await getProjectSlot(env,projeto_id))||{error:"NOT_FOUND"}));
+  server.registerTool("configurar_slot_projeto", {
+    description:"Abre ou fecha um slot do projeto para atuação explícita de IA/MCP. Slots fechados não podem ser preenchidos pelas ferramentas MCP de slot. Permite registrar instrução curta de customização.",
+    inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["script","thumbs","titles","reference","candidates","approved","zip"]), aberto:z.boolean(), instrucao:z.string().max(2000).optional(), agente:z.string().optional() },
+  }, async(v)=>output(await configureProjectSlotAccess(env,{projectId:v.projeto_id,slotKey:v.slot,open:v.aberto,instruction:v.instrucao,openedBy:v.agente||"MCP"})));
+  server.registerTool("obter_slots_abertos_projeto", {
+    description:"Lista slots explicitamente abertos para IA/MCP, com instrução e projeto. Use antes de customizar projetos manualmente por agente.",
+    inputSchema:{ projeto_id:z.string().optional() },
+  }, async(v)=>output(await listProjectSlotAccess(env,v.projeto_id,true)));
+  server.registerTool("preencher_slot_imagem_projeto", {
+    description:"Preenche um slot de imagem já aberto para MCP. Aceita URL remota ou candidate_id MATERIALIZED existente. THUMBS ocupa um dos 3 slots; CANDIDATES pode ser ligado a uma cena/item.",
+    inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["thumbs","reference","candidates"]), url:z.string().url().optional(), candidate_id:z.string().optional(), item_id:z.string().optional(), target_candidates:z.number().int().min(1).max(100).optional(), required_approved:z.number().int().min(1).max(100).optional(), agente:z.string().optional() },
+  }, async(v)=>output(await fillProjectImageSlot(env,{projectId:v.projeto_id,slotKey:v.slot,url:v.url,candidateId:v.candidate_id,itemId:v.item_id,targetCandidates:v.target_candidates,requiredApproved:v.required_approved,origin:v.agente||"MCP_SLOT",requireOpen:true})));
+  server.registerTool("preencher_slot_texto_projeto", {
+    description:"Preenche slot textual já aberto para MCP. SCRIPT grava roteiro inline; TITLES aceita até 3 linhas/opções.",
+    inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["script","titles"]), texto:z.string().min(1).max(2000000), agente:z.string().optional() },
+  }, async(v)=>output(await fillProjectTextSlot(request,env,{projectId:v.projeto_id,slotKey:v.slot,text:v.texto,origin:v.agente||"MCP_SLOT",requireOpen:true})));
+  server.registerTool("vincular_asset_slot_projeto", {
+    description:"Vincula um AST-* já aprovado ao slot Aprovadas de um projeto aberto para MCP, sem duplicar o objeto no R2.",
+    inputSchema:{ projeto_id:z.string().min(1), asset_id:z.string().min(1), item_id:z.string().optional(), papel:z.string().optional() },
+  }, async(v)=>output(await linkApprovedAssetToProjectSlot(env,{projectId:v.projeto_id,assetId:v.asset_id,itemId:v.item_id,role:v.papel,requireOpen:true})));
 
   server.registerTool("atualizar_estados_projeto", {
     description: "Coordena tags simultâneas do projeto. Permite ativar/remover READ, REFERENCE_ANALYSIS_WORKING, REFERENCE_CHECKED, COLLECTOR_WORKING, COLLECTOR_FINISHED, VISUAL_ANALYST_WORKING, VISUAL_ANALYST_FINISHED, DOWNLOADER_WORKING, DOWNLOADER_COMPLETED, THUMBS_WORKING e TITLES_WORKING. Tags WORKING usam heartbeat/TTL e expiram para o passo estável anterior.",

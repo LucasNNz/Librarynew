@@ -13,3 +13,6 @@ interface ExecutionContext{waitUntil(p:Promise<unknown>):void;passThroughOnExcep
 declare module "@modelcontextprotocol/server" { export class McpServer { constructor(v:unknown); registerTool(name:string,def:unknown,cb:(input:any)=>any):void } }
 declare module "agents/mcp/server" { export function createMcpHandler(factory:()=>unknown,opts:unknown):(req:Request,env:unknown,ctx:ExecutionContext)=>Promise<Response>|Response }
 declare module "zod" { export const z:any }
+interface Cache{match(request:Request):Promise<Response|undefined>;put(request:Request,response:Response):Promise<void>}
+interface CacheStorage{readonly default:Cache}
+declare const caches: CacheStorage;

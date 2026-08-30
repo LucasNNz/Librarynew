@@ -11,6 +11,7 @@ import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from 
 import { addAssetsToBatch, createBatch, createRequest, generateBatchManifest, getBatch, listBatches, listImports, listRequests, removeAssetsFromBatch, updateBatchStatus, updateRequest } from "./core/work-items";
 import { configureAutomaticProject, createAutomaticProject, getAutomaticProjectDetails, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
+import { configureProjectSlotAccess, fillProjectImageSlot, fillProjectTextSlot, linkApprovedAssetToProjectSlot, listProjectSlotAccess } from "./core/project-slot-customization";
 import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
@@ -39,6 +40,8 @@ import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } 
 import { operationalCleanOnce } from "./core/operational-clean";
 import { fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
 import { inspectCriticalSchema, requireCriticalSchema } from "./core/schema-contract";
+import { serveAssetThumbnail } from "./core/thumbnails";
+import { uiAnalysisSnapshot, uiAssetsSnapshot, uiExecutionsSnapshot, uiOverviewSnapshot, uiProjectsSnapshot, uiSettingsSnapshot } from "./core/ui-fast-read";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
@@ -70,7 +73,38 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.25", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.28", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+}
+
+async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
+  const started=Date.now();
+  const keyUrl=new URL(request.url);
+  keyUrl.searchParams.delete("_");
+  const cacheKey=new Request(keyUrl.toString(),{method:"GET"});
+  try {
+    const hit=await caches.default.match(cacheKey);
+    if(hit){
+      const cached=new Response(hit.body,hit);
+      cached.headers.set("x-corvo-cache","HIT");
+      cached.headers.set("x-corvo-fast-read","1");
+      cached.headers.set("x-corvo-route",keyUrl.pathname);
+      cached.headers.set("x-corvo-duration-ms",String(Date.now()-started));
+      return cached;
+    }
+  } catch { /* Cache API is an optimization, never a dependency. */ }
+  const value=await producer();
+  const body=JSON.stringify(value);
+  const response=new Response(body,{headers:{
+    "content-type":"application/json; charset=utf-8",
+    "cache-control":`public, max-age=0, s-maxage=${ttlSeconds}, stale-while-revalidate=${Math.max(30,ttlSeconds*4)}`,
+    "x-corvo-cache":"MISS",
+    "x-corvo-fast-read":"1",
+    "x-corvo-route":keyUrl.pathname,
+    "x-corvo-duration-ms":String(Date.now()-started),
+    "x-corvo-response-bytes":String(new TextEncoder().encode(body).byteLength),
+  }});
+  try { ctx.waitUntil(caches.default.put(cacheKey,response.clone()).catch(()=>undefined)); } catch { /* no-op */ }
+  return response;
 }
 
 export default {
@@ -89,6 +123,9 @@ export default {
 
     if (url.pathname.startsWith("/files/") && request.method === "GET") {
       return withCors(await serveFile(request, decodeURIComponent(url.pathname.slice(7)), env), request);
+    }
+    if (url.pathname.startsWith("/thumbs/") && request.method === "GET") {
+      return withCors(await serveAssetThumbnail(request, decodeURIComponent(url.pathname.slice(8)), env), request);
     }
     if (url.pathname.startsWith("/candidate-files/") && request.method === "GET") {
       return withCors(await serveCandidateFile(request, decodeURIComponent(url.pathname.slice(17)), env), request);
@@ -113,7 +150,19 @@ export default {
     }
 
     let response: Response;
-    if (url.pathname === "/bootstrap" && request.method === "POST") {
+    if (url.pathname === "/ui/boot" && request.method === "GET") {
+      response=await fastReadJson(request,ctx,12,async()=>{
+        const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
+        return {ok:true,version:"0.20.28",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+      });
+      ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
+    }
+    else if (url.pathname === "/ui/assets" && request.method === "GET") response=await fastReadJson(request,ctx,15,()=>uiAssetsSnapshot(request,env));
+    else if (url.pathname === "/ui/projects" && request.method === "GET") response=await fastReadJson(request,ctx,10,()=>uiProjectsSnapshot(request,env));
+    else if (url.pathname === "/ui/executions" && request.method === "GET") response=await fastReadJson(request,ctx,5,()=>uiExecutionsSnapshot(env));
+    else if (url.pathname === "/ui/analysis" && request.method === "GET") response=await fastReadJson(request,ctx,20,()=>uiAnalysisSnapshot(env,["1","true","yes"].includes(String(url.searchParams.get("policies")||"").toLowerCase())));
+    else if (url.pathname === "/ui/settings" && request.method === "GET") response=await fastReadJson(request,ctx,20,()=>uiSettingsSnapshot(env));
+    else if (url.pathname === "/bootstrap" && request.method === "POST") {
       const catalogUrl = new URL(request.url);
       catalogUrl.pathname = "/assets";
       catalogUrl.search = "?limit=48&status=APPROVED";
@@ -130,7 +179,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.25",
+        version:"0.20.28",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -198,6 +247,21 @@ export default {
     }
     else if (/^\/projects\/[^/]+\/slot$/.test(url.pathname) && request.method === "GET") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getProjectSlot(env,projectId); response=value?json(value):json({error:"NOT_FOUND"},{status:404});
+    }
+    else if (/^\/projects\/[^/]+\/slot-access$/.test(url.pathname) && request.method === "GET") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); response=json(await listProjectSlotAccess(env,projectId,false));
+    }
+    else if (/^\/projects\/[^/]+\/slot-access$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {slotKey?:string;open?:boolean;instruction?:string;openedBy?:string}; const value=await configureProjectSlotAccess(env,{projectId,slotKey:String(body.slotKey||""),open:Boolean(body.open),instruction:body.instruction,openedBy:body.openedBy||"UI"}); response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value);
+    }
+    else if (/^\/projects\/[^/]+\/slot\/text$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {slotKey?:string;text?:string;origin?:string}; const value=await fillProjectTextSlot(request,env,{projectId,slotKey:String(body.slotKey||""),text:String(body.text||""),origin:body.origin||"UI_MANUAL"}); response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value);
+    }
+    else if (/^\/projects\/[^/]+\/slot\/image$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {slotKey?:string;url?:string;candidateId?:string;itemId?:string;targetCandidates?:number;requiredApproved?:number;origin?:string}; const value=await fillProjectImageSlot(env,{projectId,slotKey:String(body.slotKey||""),url:body.url,candidateId:body.candidateId,itemId:body.itemId,targetCandidates:body.targetCandidates,requiredApproved:body.requiredApproved,origin:body.origin||"UI_MANUAL"}); response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value,{status:body.url?202:200});
+    }
+    else if (/^\/projects\/[^/]+\/slot\/asset$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {assetId?:string;itemId?:string;role?:string}; const value=await linkApprovedAssetToProjectSlot(env,{projectId,assetId:String(body.assetId||""),itemId:body.itemId,role:body.role}); response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value);
     }
     else if (/^\/projects\/[^/]+\/workflow$/.test(url.pathname) && request.method === "POST") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {activate?:string[];clear?:string[];ownerId?:string;executionId?:string;ttlSeconds?:number;metadata?:unknown}; const value=await updateProjectWorkflow(env,{projectId,...body}); response=!value?json({error:"NOT_FOUND"},{status:404}):("error" in value?json(value,{status:Number((value as any).status||409)}):json(value));

@@ -17,7 +17,7 @@ function allowedCoreUrl(value: string) {
 
 function responseHeaders(upstream: Response) {
   const headers = new Headers({ "cache-control": "no-store" });
-  for (const name of ["content-type", "content-disposition", "etag", "last-modified", "location", "accept-ranges", "content-range"]) {
+  for (const name of ["content-type", "content-disposition", "etag", "last-modified", "location", "accept-ranges", "content-range", "x-corvo-cache", "x-corvo-fast-read", "x-corvo-duration-ms", "x-corvo-response-bytes", "x-corvo-route", "x-corvo-thumbnail"]) {
     const value = upstream.headers.get(name);
     if (value) headers.set(name, value);
   }

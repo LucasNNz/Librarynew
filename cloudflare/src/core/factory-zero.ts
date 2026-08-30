@@ -2,7 +2,7 @@ import type { Env } from "../types";
 import { nowMs } from "./ids";
 
 const RELEASE_KEY = "factory_zero_release_0_20_5";
-const SCHEMA_VERSION = "2.19.0";
+const SCHEMA_VERSION = "2.20.0";
 
 const CONTENT_TABLES = [
   "asset_consultations","asset_usage","batch_assets","assets",
@@ -16,7 +16,7 @@ const CONTENT_TABLES = [
   "worker_events","worker_sessions","worker_work_items","settings","collection_sources","source_profiles",
   "worker_capacity_limits","operational_policies","semantic_stock_policies","v2_ingest_candidates","v2_ingest_events",
   "v2_ingest_operations","v2_storage_audits","v2_direct_uploads","v2_control_jobs","v2_download_packages",
-  "v2_project_media","v2_project_titles","v2_collection_events","v2_asset_exports","v2_recovery_events","v2_runtime_heartbeats"
+  "v2_project_media","v2_project_titles","v2_project_slot_access","v2_collection_events","v2_asset_exports","v2_recovery_events","v2_runtime_heartbeats"
 ] as const;
 
 const R2_PREFIXES = ["assets/","imports/","projects/","incoming/","batches/","exports/","corvo-core/recovery/"];

@@ -151,7 +151,7 @@ export type AutomaticProject = {
 export type ProjectSlotSnapshot = {
   project: AutomaticProject;
   activeTags: Array<{tag:string;status:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
-  slots: Array<{key:string;label:string;state:string;summary:string;progress:number}>;
+  slots: Array<{key:string;label:string;state:string;summary:string;progress:number;mcpOpen?:boolean;instruction?:string|null;openedBy?:string|null;openedAt?:number|null}>;
   progress: number;
   script?: Record<string,unknown>|null;
   thumbs: {count:number;selected:number;max:number};
@@ -159,6 +159,7 @@ export type ProjectSlotSnapshot = {
   items: Record<string,unknown>;
   candidates: Record<string,unknown>;
   package?: Record<string,unknown>|null;
+  slotAccess?: Array<Record<string,unknown>>;
 };
 
 export type StorageAudit = {

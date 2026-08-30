@@ -51,6 +51,14 @@ export function validSignedFileRequest(request: Request, assetId: string, env: E
   return validSignedRequest(request, `asset:${assetId}`, env);
 }
 
+export function createSignedThumbnailUrl(request: Request, assetId: string, env: Env, ttlSeconds = 900) {
+  return createSignedUrl(request, `thumb:${assetId}`, `/thumbs/${encodeURIComponent(assetId)}`, env, ttlSeconds);
+}
+
+export function validSignedThumbnailRequest(request: Request, assetId: string, env: Env) {
+  return validSignedRequest(request, `thumb:${assetId}`, env);
+}
+
 export function createSignedCandidateUrl(request: Request, candidateId: string, env: Env, ttlSeconds = 900) {
   return createSignedUrl(request, `candidate:${candidateId}`, `/candidate-files/${encodeURIComponent(candidateId)}`, env, ttlSeconds);
 }

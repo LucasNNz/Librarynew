@@ -71,7 +71,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.25";
+const EXPECTED_CORE_VERSION = "0.20.28";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -239,6 +239,16 @@ function statusClass(status: string) {
 }
 
 function sleep(ms:number) { return new Promise(resolve=>setTimeout(resolve,ms)); }
+
+const VIEW_CACHE_PREFIX = "corvo-library-v2:fast-read:";
+function readViewCache<T>(key:string,maxAgeMs=10*60_000):T|null {
+  if(typeof window==="undefined")return null;
+  try{const raw=window.sessionStorage.getItem(`${VIEW_CACHE_PREFIX}${key}`);if(!raw)return null;const parsed=JSON.parse(raw) as {savedAt:number;value:T};if(!parsed?.savedAt||Date.now()-parsed.savedAt>maxAgeMs)return null;return parsed.value;}catch{return null;}
+}
+function writeViewCache<T>(key:string,value:T){
+  if(typeof window==="undefined")return;
+  try{window.sessionStorage.setItem(`${VIEW_CACHE_PREFIX}${key}`,JSON.stringify({savedAt:Date.now(),value}));}catch{/* cache is opportunistic */}
+}
 
 function isTransientFetchError(error:unknown) {
   return error instanceof TypeError || (error instanceof Error && /failed to fetch|networkerror|load failed|fetch failed/i.test(error.message));
@@ -422,22 +432,32 @@ export default function Home() {
 
   const fetchCatalog = useCallback(async (cursor?: string | null, append = false) => {
     append ? setLoadingMore(true) : setLoading(true);
-    const params = new URLSearchParams({ limit:"48" });
+    const params = new URLSearchParams({ limit:"36" });
     if (query.trim()) params.set("q", query.trim());
     if (universe) params.set("universe", universe);
     if (status) params.set("status", status);
     if (cursor) params.set("cursor", cursor);
+    if (!cursor && universes.length===0) params.set("facets","1");
+    const cacheKey=`assets:${query.trim()}:${universe}:${status}`;
+    if(!append){
+      const cached=readViewCache<{catalog:CatalogResponse;stats?:CatalogStats|null;universes?:UniverseFacet[]|null}>(cacheKey,5*60_000);
+      if(cached?.catalog){setAssets(cached.catalog.items||[]);setTotal(Number(cached.catalog.total||0));setNextCursor(cached.catalog.nextCursor||null);if(cached.stats)setStats(cached.stats);if(Array.isArray(cached.universes)&&cached.universes.length)setUniverses(cached.universes);setLoading(false);}
+    }
     try {
-      const response = await fetch(`/api/assets?${params}`, { cache:"no-store" });
+      const response = await fetch(`/api/ui/assets?${params}`, { cache:"no-store" });
       if (!response.ok) return;
-      const value = await response.json() as CatalogResponse;
-      setAssets(current => append ? [...current, ...(value.items || [])] : (value.items || []));
-      setTotal(Number(value.total || 0));
-      setNextCursor(value.nextCursor || null);
+      const value = await response.json() as {catalog:CatalogResponse;stats?:CatalogStats|null;universes?:UniverseFacet[]|null};
+      const catalog=value.catalog||{items:[],total:0,nextCursor:null};
+      setAssets(current => append ? [...current, ...(catalog.items || [])] : (catalog.items || []));
+      setTotal(Number(catalog.total || 0));
+      setNextCursor(catalog.nextCursor || null);
+      if(value.stats)setStats(value.stats);
+      if(Array.isArray(value.universes))setUniverses(value.universes);
+      if(!append)writeViewCache(cacheKey,value);
     } finally {
       append ? setLoadingMore(false) : setLoading(false);
     }
-  }, [query, universe, status]);
+  }, [query, universe, status, universes.length]);
 
   const selectedAssetIds = useMemo(() => [...selectedAssets], [selectedAssets]);
   const selectedPendingCount = useMemo(() => assets.filter(asset => selectedAssets.has(asset.id) && asset.status === "PENDING").length, [assets, selectedAssets]);
@@ -513,7 +533,7 @@ export default function Home() {
     setRecordLoading(true);
     try {
       if (module === "Projetos") {
-        const response = await fetch("/api/projects?limit=100", { cache:"no-store" });
+        const response = await fetch("/api/ui/projects?limit=100", { cache:"no-store" });
         if (response.ok) { const value = await response.json(); setProjects(Array.isArray(value.items) ? value.items : []); }
       } else if (module === "Solicitações") {
         const response = await fetch("/api/requests?limit=100", { cache:"no-store" });
@@ -642,28 +662,21 @@ export default function Home() {
   }
 
   const refreshPolicies = useCallback(async () => {
-    const [workspaceResponse,telemetryResponse]=await Promise.all([fetch("/api/policies/workspace",{cache:"no-store"}),fetch("/api/policies/telemetry",{cache:"no-store"})]);
-    if(workspaceResponse.ok)setPolicyWorkspace(await workspaceResponse.json());
-    if(telemetryResponse.ok)setPolicyTelemetry(await telemetryResponse.json());
+    const response=await fetch("/api/ui/analysis?policies=1",{cache:"no-store"});
+    if(!response.ok)return;const value=await response.json();
+    if(value.stock)setStockDetail(value.stock);if(value.policyWorkspace)setPolicyWorkspace(value.policyWorkspace);if(value.policyTelemetry)setPolicyTelemetry(value.policyTelemetry);
   },[]);
 
   const refreshSettings = useCallback(async () => {
-    const [settingsResponse, infrastructureResponse] = await Promise.all([
-      fetch("/api/settings",{cache:"no-store"}),
-      fetch("/api/infrastructure/config",{cache:"no-store"}),
-    ]);
-    if(settingsResponse.ok){const value=await settingsResponse.json(); setSafeSettings(Array.isArray(value.items)?value.items:[]); setBindingStatus(value.bindings||null);}
-    if(infrastructureResponse.ok){
-      const value=await infrastructureResponse.json();
-      const profile=(value.profile||null) as InfrastructureProfile|null;
-      setInfraProfile(profile);
-      setInfraEvents(Array.isArray(value.events)?value.events:[]);
-      if(profile && !infraEditing)setInfraDraft({bffProjectName:profile.bffProjectName,workerName:profile.workerName,d1DatabaseName:profile.d1DatabaseName,r2BucketName:profile.r2BucketName,queueName:profile.queueName,dlqName:profile.dlqName});
-    }
+    const cached=readViewCache<any>("settings",10*60_000);
+    const apply=(value:any)=>{if(Array.isArray(value?.settings))setSafeSettings(value.settings);if(value?.bindings)setBindingStatus(value.bindings);const profile=(value?.infrastructure?.profile||null) as InfrastructureProfile|null;setInfraProfile(profile);setInfraEvents(Array.isArray(value?.infrastructure?.events)?value.infrastructure.events:[]);if(profile&&!infraEditing)setInfraDraft({bffProjectName:profile.bffProjectName,workerName:profile.workerName,d1DatabaseName:profile.d1DatabaseName,r2BucketName:profile.r2BucketName,queueName:profile.queueName,dlqName:profile.dlqName});};
+    if(cached)apply(cached);
+    const response=await fetch("/api/ui/settings",{cache:"no-store"});if(response.ok){const value=await response.json();apply(value);writeViewCache("settings",value);}
   },[infraEditing]);
 
   const refreshStock = useCallback(async () => {
-    const response=await fetch("/api/stock",{cache:"no-store"}); if(response.ok)setStockDetail(await response.json());
+    const cached=readViewCache<any>("analysis:stock",10*60_000);if(cached?.stock)setStockDetail(cached.stock);
+    const response=await fetch("/api/ui/analysis",{cache:"no-store"}); if(response.ok){const value=await response.json();if(value.stock)setStockDetail(value.stock);writeViewCache("analysis:stock",value);}
   },[]);
 
   const refreshOperations = useCallback(async () => {
@@ -792,6 +805,65 @@ export default function Home() {
     finally{setProjectBulkBusy(false);}
   },[refreshRecords,refreshProjectSlot]);
 
+
+  const deleteSingleProject = useCallback(async (projectId:string) => {
+    if(!window.confirm("Excluir permanentemente este projeto? Arquivos temporários e pacotes do projeto serão removidos; assets globais aprovados permanecem na Library."))return;
+    setProjectBulkBusy(true);setProjectMessage("");
+    try{
+      const response=await fetch("/api/projects/bulk",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({projectIds:[projectId],action:"DELETE",confirm:true})});
+      const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      setProjectMessage("Projeto excluído permanentemente.");setSelectedProjectIds(current=>{const next=new Set(current);next.delete(projectId);return next;});
+      if(selectedProjectId===projectId){setSelectedProjectId(null);setProjectSlot(null);}await refreshRecords("Projetos");
+    }catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_DELETE_FAILED");}finally{setProjectBulkBusy(false);}
+  },[refreshRecords,selectedProjectId]);
+
+  const configureSlotForMcp = useCallback(async (slotKey:string,currentOpen:boolean) => {
+    if(!selectedProjectId)return;
+    const instruction=currentOpen?"":String(window.prompt("Instrução opcional para o agente MCP neste slot:",projectSlot?.slots.find(slot=>slot.key===slotKey)?.instruction||"")??"");
+    if(!currentOpen&&instruction===null)return;
+    setProjectBulkBusy(true);setProjectMessage("");
+    try{
+      const response=await fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}/slot-access`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({slotKey,open:!currentOpen,instruction,openedBy:"UI"})});
+      const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      setProjectMessage(!currentOpen?`Slot ${slotKey} aberto para MCP/IA.`:`Slot ${slotKey} fechado para MCP/IA.`);await refreshProjectSlot(selectedProjectId);
+    }catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_SLOT_ACCESS_FAILED");}finally{setProjectBulkBusy(false);}
+  },[selectedProjectId,projectSlot,refreshProjectSlot]);
+
+  const uploadLocalProjectSlotFile = useCallback(async (projectId:string,slotKey:string,itemId?:string) => {
+    const file=await new Promise<File|null>(resolve=>{const input=document.createElement("input");input.type="file";input.accept="image/*,video/*";input.onchange=()=>resolve(input.files?.[0]||null);input.click();});
+    if(!file)return;
+    const tags=[`project-slot:${slotKey}`,...(slotKey==="thumbs"?["thumb"]:slotKey==="reference"?["reference"]:[])];
+    const prepare=await fetch("/api/uploads/prepare",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({fileName:file.name,mimeType:file.type||"application/octet-stream",maxBytes:Math.max(file.size,1024),uploadType:"CANDIDATE",projectId,itemId,tags})});
+    const ticket=await prepare.json();if(!prepare.ok)throw new Error(ticket.error||"PREPARE_FAILED");
+    const upload=await fetch(ticket.uploadUrl,{method:"PUT",headers:{"content-type":file.type||"application/octet-stream"},body:file});if(!upload.ok)throw new Error(`UPLOAD_${upload.status}`);
+    const confirm=await fetch(`/api/uploads/${encodeURIComponent(ticket.uploadId)}/confirm`,{method:"POST"});const result=await confirm.json();if(!confirm.ok)throw new Error(result.error||"CONFIRM_FAILED");
+    if(result.candidateId){const linked=await fetch(`/api/projects/${encodeURIComponent(projectId)}/slot/image`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({slotKey,candidateId:result.candidateId,itemId,origin:"UI_MANUAL_FILE"})});const linkedValue=await linked.json().catch(()=>({}));if(!linked.ok)throw new Error(String(linkedValue?.error||`HTTP_${linked.status}`));}
+    return result;
+  },[]);
+
+  const manualAddProjectSlot = useCallback(async (slotKey:string) => {
+    if(!selectedProjectId)return;
+    setProjectBulkBusy(true);setProjectMessage("");
+    try{
+      if(slotKey==="script"||slotKey==="titles"){
+        const label=slotKey==="script"?"Cole o roteiro/SCRIPT:":"Digite até 3 títulos, um por linha:";const text=window.prompt(label,"");if(!text)return;
+        const response=await fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}/slot/text`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({slotKey,text,origin:"UI_MANUAL"})});const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      } else if(slotKey==="approved"){
+        const assetId=String(window.prompt("Informe o AST-* aprovado que deseja vincular ao projeto:","")??"").trim();if(!assetId)return;
+        const itemId=String(window.prompt("Cena/item opcional para este asset:","")??"").trim();
+        const response=await fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}/slot/asset`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetId,itemId:itemId||undefined,role:"Imagem aprovada manual"})});const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      } else if(slotKey==="zip"){
+        const response=await fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}/slot/package`,{method:"POST"});const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      } else if(["thumbs","reference","candidates"].includes(slotKey)){
+        const itemId=slotKey==="candidates"?String(window.prompt("Cena/item opcional (ex.: CENA-001):","")??"").trim():"";
+        const url=String(window.prompt("Cole a URL da imagem. Deixe vazio para escolher um arquivo local:","")??"").trim();
+        if(url){const response=await fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}/slot/image`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({slotKey,url,itemId:itemId||undefined,origin:"UI_MANUAL_URL"})});const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));}
+        else await uploadLocalProjectSlotFile(selectedProjectId,slotKey,itemId||undefined);
+      }
+      setProjectMessage("Slot atualizado.");await refreshProjectSlot(selectedProjectId);await refreshRecords("Projetos");
+    }catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_SLOT_WRITE_FAILED");}finally{setProjectBulkBusy(false);}
+  },[selectedProjectId,refreshProjectSlot,refreshRecords,uploadLocalProjectSlotFile]);
+
   const refreshCandidates = useCallback(async () => {
     setCandidateLoading(true);
     try {
@@ -807,136 +879,84 @@ export default function Home() {
   const loadAuthoritativeBootstrap = useCallback(async () => {
     if (!readBrowserConnection() || releaseGateState === "running") return;
     setReleaseGateState("running");
-    setReleaseGateMessage("Limpando o estado operacional antigo…");
-    setHealth(null);
+    setReleaseGateMessage("Abrindo FAST READ…");
     setLoading(true);
-    setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]); setRecentOperations([]);
-    setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
-    setTotal(0); setNextCursor(null);
-    try {
-      // The legacy Worker cannot safely clean heterogeneous D1 schemas. Update
-      // it first, tolerate the response being lost during redeploy, and only
-      // then call the idempotent dynamic cleanup endpoint from the current Core.
-      setReleaseGateMessage("Atualizando o Core seguro…");
-      let coreReady = false;
-      try {
-        const currentResponse = await fetch("/api/health", { cache:"no-store" });
-        const current = await currentResponse.json().catch(()=>({})) as any;
-        const version = unwrapCoreHealth(current).version;
-        coreReady = version === EXPECTED_CORE_VERSION;
-      } catch { coreReady = false; }
 
-      if (!coreReady) {
-        try {
-          const updateResponse = await fetch("/api/control/update-core", { method:"POST", cache:"no-store" });
-          if (!updateResponse.ok && updateResponse.status < 500) {
-            const value = await updateResponse.json().catch(()=>({})) as any;
-            throw new Error(value?.detail || value?.error || `CORE_UPDATE_HTTP_${updateResponse.status}`);
-          }
-        } catch (error) {
-          if (!isTransientFetchError(error)) throw error;
-        }
-        for (let attempt=0; attempt<30; attempt+=1) {
-          await sleep(attempt===0 ? 900 : Math.min(2200,900+attempt*70));
-          try {
-            const probe = await fetch("/api/health", { cache:"no-store" });
-            if (!probe.ok) continue;
-            const raw = await probe.json() as any;
-            const version = unwrapCoreHealth(raw).version;
-            if (version === EXPECTED_CORE_VERSION) { coreReady=true; break; }
-          } catch { /* Worker is restarting; keep polling. */ }
-        }
-      }
-      if (!coreReady) throw new Error(`CORE_UPDATE_TIMEOUT:${EXPECTED_CORE_VERSION}`);
-
-      // Never let a newly published Worker serve pipeline writes against an
-      // older D1 contract. Migration application also performs schema drift
-      // reconciliation and returns the critical schema gate.
-      setReleaseGateMessage("Sincronizando schema do D1…");
-      const migrationResponse = await fetchWithNetworkRetry(
-        "/api/control/apply-migrations",
-        { method:"POST", cache:"no-store" },
-        { attempts:6, baseDelayMs:650 },
-      );
-      const migration = await migrationResponse.json().catch(()=>({})) as any;
-      if (!migrationResponse.ok) throw new Error(migration?.detail || migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
-      if (migration?.schemaContract && migration.schemaContract.ready !== true) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(migration.schemaContract)}`);
-
-      const schemaProbeResponse = await fetch("/api/health", { cache:"no-store" });
-      const schemaProbe = await schemaProbeResponse.json().catch(()=>({})) as any;
-      const schemaCore = unwrapCoreHealth(schemaProbe);
-      if (!schemaProbeResponse.ok || schemaCore.schemaContract?.ready !== true) {
-        throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaGateDetail(schemaProbe,schemaProbeResponse.status))}`);
-      }
-
-      // Queue configuration lives in the Cloudflare control plane and is not
-      // changed by merely redeploying a Worker script. Reconcile the consumer
-      // once per policy version so old queues do not keep the default/stale
-      // batch wait after a Core update.
-      setReleaseGateMessage("Aplicando perfil de Queue de baixa latência…");
-      try {
-        const queueResponse=await fetchWithNetworkRetry("/api/control/reconcile-queue-consumer",{method:"POST",headers:{"content-type":"application/json"},body:"{}",cache:"no-store"},{attempts:3,baseDelayMs:500});
-        if(!queueResponse.ok){
-          const queueError=await queueResponse.json().catch(()=>({})) as any;
-          console.warn("QUEUE_POLICY_RECONCILE_FAILED",queueError?.detail||queueError?.error||queueResponse.status);
-        }
-      } catch(error) { console.warn("QUEUE_POLICY_RECONCILE_FAILED",error); }
-
-      // Production data is authoritative now. The old one-shot cleanup endpoint
-      // remains available for explicit maintenance, but is never called during
-      // normal boot after the Library has begun receiving real assets.
-      setReleaseGateMessage("Lendo o D1 real…");
-      const read = (path:string) => fetchWithNetworkRetry(path, { cache:"no-store" }, { attempts:4, baseDelayMs:500 });
-      const [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse, operationsResponse] = await Promise.all([
-        read("/api/health"),
-        read("/api/catalog/stats"),
-        read("/api/catalog/universes"),
-        read("/api/assets?limit=48&status=APPROVED"),
-        read("/api/projects?limit=100"),
-        read("/api/operations?limit=25").catch(()=>null),
-      ]);
-      const critical = [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse];
-      if (critical.some(response => !response.ok)) {
-        const failed = critical.find(response => !response.ok)!;
-        const payload = await failed.json().catch(()=>({})) as {error?:string;detail?:string};
-        throw new Error(payload.error || payload.detail || `REAL_STATE_HTTP_${failed.status}`);
-      }
-
-      const rawHealth = await healthResponse.json() as any;
-      const nextHealth: Health = rawHealth?.app === "ok" && rawHealth?.core
-        ? rawHealth as Health
-        : { app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:{ ...rawHealth, ok:Boolean(rawHealth?.ok) } };
-      const nextStats = await statsResponse.json() as CatalogStats;
-      const universeValue = await universeResponse.json() as any;
-      const nextUniverses = Array.isArray(universeValue?.universes) ? universeValue.universes as UniverseFacet[] : [];
-      const nextCatalog = await catalogResponse.json() as CatalogResponse;
-      const projectValue = await projectResponse.json() as any;
-      const nextProjects = Array.isArray(projectValue?.items) ? projectValue.items as AutomaticProject[] : [];
-      let nextOperations: Operation[] = [];
-      if (operationsResponse?.ok) {
-        const operationValue = await operationsResponse.json().catch(()=>({})) as any;
-        nextOperations = Array.isArray(operationValue?.items) ? operationValue.items as Operation[] : [];
-      }
-
-      // React 18+ agrupa estes setters: o usuário recebe um snapshot final, nunca
-      // o estado anterior seguido de uma 'correção' visual.
+    const applyBoot=(value:any)=>{
+      const nextHealth = value?.health?.app === "ok" && value?.health?.core
+        ? value.health as Health
+        : { app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:unwrapCoreHealth(value?.health||value) } as Health;
       setHealth(nextHealth);
-      setStats(nextStats || { total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
-      setUniverses(nextUniverses);
-      setAssets(Array.isArray(nextCatalog?.items) ? nextCatalog.items : []);
-      setTotal(Number(nextCatalog?.total || 0));
-      setNextCursor(nextCatalog?.nextCursor || null);
-      setProjects(nextProjects);
-      setRecentOperations(nextOperations);
+      if(value?.stats)setStats(value.stats as CatalogStats);
+      const projectValue=value?.projects;
+      setProjects(Array.isArray(projectValue?.items)?projectValue.items as AutomaticProject[]:[]);
+      setRecentOperations(Array.isArray(value?.operations)?value.operations as Operation[]:[]);
+    };
+
+    const cached=readViewCache<any>("overview",10*60_000);
+    if(cached)applyBoot(cached);
+
+    try {
+      const readBoot=async()=>{
+        const response=await fetchWithNetworkRetry("/api/ui/boot",{cache:"no-store"},{attempts:3,baseDelayMs:450});
+        const value=await response.json().catch(()=>({})) as any;
+        return {response,value};
+      };
+
+      let bootResult:Awaited<ReturnType<typeof readBoot>>|null=null;
+      try{bootResult=await readBoot();}catch{bootResult=null;}
+      let bootCore=bootResult?.response.ok?unwrapCoreHealth(bootResult.value?.health):({ok:false} as CoreHealthState);
+      let coreReady=Boolean(bootResult?.response.ok && bootCore.version===EXPECTED_CORE_VERSION && bootCore.schemaContract?.ready===true);
+
+      // A normal visit stops here: one compact Worker request contains health,
+      // KPIs, a small project slice and recent operations. Update/migration work
+      // only runs when the version/schema gate actually requires it.
+      if(!coreReady){
+        setReleaseGateMessage("Validando versão do Core…");
+        let currentVersion=bootCore.version||"";
+        if(!currentVersion){
+          try{const response=await fetch("/api/health",{cache:"no-store"});const value=await response.json().catch(()=>({})) as any;currentVersion=unwrapCoreHealth(value).version||"";}catch{/* old/unreachable core */}
+        }
+
+        if(currentVersion!==EXPECTED_CORE_VERSION){
+          setReleaseGateMessage("Atualizando o Core seguro…");
+          try{
+            const updateResponse=await fetch("/api/control/update-core",{method:"POST",cache:"no-store"});
+            if(!updateResponse.ok&&updateResponse.status<500){const value=await updateResponse.json().catch(()=>({})) as any;throw new Error(value?.detail||value?.error||`CORE_UPDATE_HTTP_${updateResponse.status}`);}
+          }catch(error){if(!isTransientFetchError(error))throw error;}
+          let versionOk=false;
+          for(let attempt=0;attempt<30;attempt+=1){
+            await sleep(attempt===0?900:Math.min(2200,900+attempt*70));
+            try{const probe=await fetch("/api/health",{cache:"no-store"});if(!probe.ok)continue;const raw=await probe.json() as any;if(unwrapCoreHealth(raw).version===EXPECTED_CORE_VERSION){versionOk=true;break;}}catch{/* Worker restarting */}
+          }
+          if(!versionOk)throw new Error(`CORE_UPDATE_TIMEOUT:${EXPECTED_CORE_VERSION}`);
+        }
+
+        setReleaseGateMessage("Sincronizando schema do D1…");
+        const migrationResponse=await fetchWithNetworkRetry("/api/control/apply-migrations",{method:"POST",cache:"no-store"},{attempts:6,baseDelayMs:650});
+        const migration=await migrationResponse.json().catch(()=>({})) as any;
+        if(!migrationResponse.ok)throw new Error(migration?.detail||migration?.error||`MIGRATION_HTTP_${migrationResponse.status}`);
+        if(migration?.schemaContract&&migration.schemaContract.ready!==true)throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(migration.schemaContract)}`);
+
+        // Queue reconciliation is tied to update/migration, not every page load.
+        try{await fetchWithNetworkRetry("/api/control/reconcile-queue-consumer",{method:"POST",headers:{"content-type":"application/json"},body:"{}",cache:"no-store"},{attempts:3,baseDelayMs:500});}catch(error){console.warn("QUEUE_POLICY_RECONCILE_FAILED",error);}
+
+        setReleaseGateMessage("Lendo snapshot compacto…");
+        bootResult=await readBoot();
+        bootCore=unwrapCoreHealth(bootResult.value?.health);
+        coreReady=Boolean(bootResult.response.ok&&bootCore.version===EXPECTED_CORE_VERSION&&bootCore.schemaContract?.ready===true);
+      }
+
+      if(!bootResult?.response.ok||!coreReady)throw new Error(`FAST_READ_BOOT_FAILED:${JSON.stringify(schemaGateDetail(bootResult?.value,bootResult?.response.status))}`);
+      applyBoot(bootResult.value);
+      writeViewCache("overview",bootResult.value);
       setLoading(false);
-      setReleaseGateMessage("D1 real carregado.");
+      setReleaseGateMessage("FAST READ pronto.");
       setReleaseGateState("done");
     } catch (error) {
       setReleaseGateState("error");
       setLoading(false);
-      setHealth(null);
-      setAssets([]); setProjects([]); setUniverses([]); setRecentOperations([]);
-      setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
+      if(!cached){setHealth(null);setProjects([]);setRecentOperations([]);setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });}
       setReleaseGateMessage(error instanceof Error ? error.message : "AUTHORITATIVE_BOOT_FAILED");
     }
   }, [releaseGateState]);
@@ -961,16 +981,13 @@ export default function Home() {
 
   useEffect(() => {
     if (!localConnection || releaseGateState !== "done") return;
-    if (active === "Assets" && assetView === "Importar & R2") return;
+    if (active !== "Assets" || assetView === "Importar & R2") return;
     const timer = setTimeout(() => void fetchCatalog(null, false), 280);
     return () => clearTimeout(timer);
   }, [active, assetView, fetchCatalog, localConnection]);
 
   useEffect(() => {
     if (!localConnection || releaseGateState !== "done") return;
-    if (currentView === "Visão geral") {
-      void Promise.all([refreshRecords("Projetos"), refreshOperations()]);
-    }
     if (currentView === "Inbox candidatas") void refreshCandidates();
     if (["Projetos","Solicitações","Lotes","Importações"].includes(currentView)) void refreshRecords(currentView);
     if (currentView === "Importar & R2") void refreshRecords("Importações");
@@ -1502,7 +1519,7 @@ Tudo é configurado pela própria tela Configurações.
           {loading ? <div className="empty">Carregando catálogo…</div> : assets.length === 0 ? <div className="empty"><Mark /><strong>Nenhum asset para estes filtros</strong><span>O catálogo é lido diretamente do D1 real conectado, sem seed, cache de dados ou snapshot intermediário.</span></div> : <>
             <div className="resultMeta"><span>{total.toLocaleString("pt-BR")} resultados</span><span>{assets.length.toLocaleString("pt-BR")} carregados</span></div>
             <div className="grid">{assets.map(asset => <article className={`card ${selectedAssets.has(asset.id)?"selected":""}`} key={asset.id}>
-              <div className="preview"><label className="assetCheck"><input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={()=>toggleAssetSelection(asset.id)} aria-label={`Selecionar ${asset.name}`}/><span>✓</span></label><span className="previewFallback">◇</span>{asset.previewUrl && <img src={asset.previewUrl} alt={asset.name} loading="lazy" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
+              <div className="preview"><label className="assetCheck"><input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={()=>toggleAssetSelection(asset.id)} aria-label={`Selecionar ${asset.name}`}/><span>✓</span></label><span className="previewFallback">◇</span>{asset.previewUrl && <img src={asset.previewUrl} alt={asset.name} loading="lazy" decoding="async" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
               <div className="cardBody"><strong>{asset.name}</strong><span className="universeLine">{asset.universe || "Sem universo"}{asset.subject ? ` · ${asset.subject}` : ""}</span><div className="assetMetaLine"><i>{asset.kind}</i><i>{formatBytes(Number(asset.sizeBytes||0))}</i>{asset.qaStatus&&<i>{asset.qaStatus.replace(/_/g," ")}</i>}</div><div>{asset.tags.slice(0,3).map(tag => <small key={tag}>{tag}</small>)}</div><footer><code>{asset.id}</code><b>{asset.uses} usos</b></footer></div>
             </article>)}</div>
             {nextCursor && <div className="loadMore"><button disabled={loadingMore} onClick={() => void fetchCatalog(nextCursor, true)}>{loadingMore ? "Carregando…" : "Carregar mais"}</button></div>}
@@ -1549,7 +1566,7 @@ Tudo é configurado pela própria tela Configurações.
                 <span>{filteredProjects.length} projeto(s)</span>
                 <button disabled={!filteredProjects.length} onClick={()=>setSelectedProjectIds(new Set(filteredProjects.map(project=>project.id)))}>Selecionar visíveis</button>
               </div>
-              {selectedProjectIds.size>0&&<div className="projectBulkBar projectBulkRail"><span>{selectedProjectIds.size} selecionado(s)</span><button disabled={projectBulkBusy} onClick={()=>void bulkProjectAction("COMPLETE")}>Concluir</button><button className="reject" disabled={projectBulkBusy} onClick={()=>void bulkProjectAction("REJECT")}>Rejeitar</button><button className="danger" disabled={projectBulkBusy} onClick={()=>void bulkProjectAction("DELETE")}>Excluir</button><button disabled={projectBulkBusy} onClick={()=>setSelectedProjectIds(new Set())}>Limpar</button></div>}
+              <div className="projectBulkBar projectBulkRail always"><span><b>{selectedProjectIds.size}</b> selecionado(s)</span><button disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("COMPLETE")}>Concluir</button><button className="reject" disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("REJECT")}>Rejeitar</button><button className="danger" disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("DELETE")}>Excluir permanentemente</button><button disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>setSelectedProjectIds(new Set())}>Limpar</button></div>
               {recordLoading&&projects.length===0?<div className="projectEmpty">Carregando projetos…</div>:filteredProjects.length===0?<div className="projectEmpty">Nenhum projeto neste estágio.</div>:<div className="projectCardList">
                 {filteredProjects.map((item,index)=>{
                   const lifecycle=projectLifecycle(item),activeTags=item.workflow_tags||[],selected=selectedProjectId===item.id,locked=Boolean(item.mcp_locked)||lifecycle!=="ACTIVE",progress=progressForProject(item);
@@ -1577,7 +1594,7 @@ Tudo é configurado pela própria tela Configurações.
                 return <>
                   <header className="projectDetailHeader">
                     <div className="projectDetailIdentity"><div className="projectDetailCover"><span>{projectInitials(projectSlot.project.name)}</span></div><div><div className="projectDetailTitleLine"><h3>{projectSlot.project.name}</h3><span className={`projectStatusPill ${lifecycle.toLowerCase()}`}>{lifecycle==="ACTIVE"?"Em execução":lifecycle==="COMPLETED"?"Concluído":"Rejeitado"}</span></div><p>{projectSlot.project.project_domain||"Corvo Library"} · criado em {formatProjectMoment(projectSlot.project.created_at)} · <code>{projectSlot.project.id}</code></p>{Boolean(projectSlot.project.mcp_locked)&&<span className="projectLockedCallout">🔒 MCP bloqueado — reabertura somente por comando explícito</span>}</div></div>
-                    <div className="projectDetailProgress"><strong>{projectSlot.progress}%</strong><span>progresso geral</span></div>
+                    <div className="projectDetailHeaderActions"><div className="projectDetailProgress"><strong>{projectSlot.progress}%</strong><span>progresso geral</span></div><button className="projectDeleteButton" disabled={projectBulkBusy} onClick={()=>void deleteSingleProject(projectSlot.project.id)}>Excluir projeto</button></div>
                   </header>
 
                   <section className="projectPipelineTrack">
@@ -1586,7 +1603,7 @@ Tudo é configurado pela própria tela Configurações.
 
                   <section className="projectSlotSection">
                     <header><div><span className="eyebrow">CONTEÚDO DO PROJETO</span><h4>Slots integrados</h4></div><span>{projectSlot.slots.filter(slot=>slot.state==="READY").length}/{projectSlot.slots.length} prontos</span></header>
-                    <div className="projectSlotCards">{projectSlot.slots.map(slot=><article className={`projectContentSlot state-${slot.state.toLowerCase()}`} key={slot.key}><div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><p>{slot.summary}</p><div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><small>{slot.progress}%</small></article>)}</div>
+                    <div className="projectSlotCards">{projectSlot.slots.map(slot=><article className={`projectContentSlot state-${slot.state.toLowerCase()} ${slot.mcpOpen?"mcp-open":""}`} key={slot.key}><div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><p>{slot.summary}</p>{slot.mcpOpen&&<div className="slotMcpInstruction"><b>IA/MCP aberto</b>{slot.instruction&&<span>{slot.instruction}</span>}</div>}<div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><div className="projectSlotFooter"><small>{slot.progress}%</small><div className="projectSlotActions"><button disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void manualAddProjectSlot(slot.key)}>＋ Adicionar</button><button className={slot.mcpOpen?"mcpOpen active":"mcpOpen"} disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void configureSlotForMcp(slot.key,Boolean(slot.mcpOpen))}>{slot.mcpOpen?"● MCP aberto":"○ Abrir para MCP"}</button></div></div></article>)}</div>
                   </section>
 
                   <div className="projectDetailLower">
@@ -1651,7 +1668,7 @@ Tudo é configurado pela própria tela Configurações.
         {currentView === "Inbox candidatas" && <>
           <section className="candidateToolbar"><div><b>Inbox de materialização</b><span>Aprovar move o objeto de incoming/ para assets/ e cria o AST-* no D1 histórico.</span></div><select value={candidateState} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setCandidateState(e.target.value)}><option value="MATERIALIZED">Materializadas</option><option value="RETRYING">Em retry</option><option value="FAILED">Falhas</option><option value="APPROVED">Aprovadas</option><option value="REJECTED">Rejeitadas</option></select></section>
           {candidateLoading ? <div className="empty">Carregando candidatas…</div> : candidates.length === 0 ? <div className="empty"><strong>Inbox vazia</strong><span>As mídias do FAST PUSH aparecem aqui depois que a Queue conclui a materialização.</span></div> : <div className="candidateGrid">{candidates.map(candidate => <article className="candidate" key={candidate.id}>
-            <div className="candidatePreview"><span className="previewFallback">◇</span>{candidate.previewUrl && <img src={candidate.previewUrl} alt="" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}</div>
+            <div className="candidatePreview"><span className="previewFallback">◇</span>{candidate.previewUrl && <img src={candidate.previewUrl} alt="" loading="lazy" decoding="async" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}</div>
             <div className="candidateBody"><div className="candidateTitle"><strong>{candidate.subject || "Sem assunto"}</strong><b className={statusClass(candidate.status)}>{candidate.status}</b></div><span>{candidate.universe || "Sem universo"}</span><code>{candidate.id}</code><small>{formatBytes(candidate.sizeBytes)} · tentativa {candidate.attempts}</small>{candidate.failureReason && <p>{candidate.failureReason}</p>}
               {candidate.status === "MATERIALIZED" && <div className="decisionRow"><button className="approve" onClick={() => void decideCandidate(candidate.id,"approve")}>Aprovar</button><button className="reject" onClick={() => void decideCandidate(candidate.id,"reject")}>Rejeitar</button></div>}
             </div>

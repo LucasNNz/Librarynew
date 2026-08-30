@@ -1,30 +1,36 @@
-# Corvo Library V2 0.20.26 — Projects Visual Studio
+# Corvo Library V2 0.20.28 — FAST READ + Project Slot Customization
 
-## 0.20.26 — Projects Visual Studio
+Checkpoint operacional da Corvo Library V2 com **FAST READ**, Project Slots, agentes paralelos e customização manual/MCP.
 
-Atualização visual da aba **Projetos** sobre o Core 0.20.25. Nenhuma migration nova e nenhuma alteração de contrato do Data Plane.
+## Destaques preservados do 0.20.27
+- visual de Projetos e seleção múltipla sempre visível;
+- concluir, rejeitar e excluir projetos em massa;
+- exclusão permanente individual;
+- slots de projeto: roteiro, thumbs, títulos, referências, candidatas, aprovadas e ZIP;
+- preenchimento manual ou abertura explícita para IA/MCP;
+- lifecycle lock preservado para projetos concluídos/rejeitados;
+- schema **2.20.0** e migration 9020 preservados.
 
-### Interface de Projetos
+## FAST READ 0.20.28
+- boot normal consolidado em `GET /ui/boot`;
+- snapshots compactos por visão: `/ui/assets`, `/ui/projects`, `/ui/executions`, `/ui/analysis` e `/ui/settings`;
+- Assets inicia com 36 registros e continua por cursor;
+- cache curto no Worker com `stale-while-revalidate`;
+- cache/SWR de visão no navegador via `sessionStorage`;
+- catálogo não é mais buscado ao navegar por telas que não são Assets;
+- previews de Assets usam endpoint assinado `/thumbs/:assetId`;
+- thumbnails WebP são geradas on-demand e persistidas em `thumbs/assets/` quando existe `source_url` utilizável;
+- assets legados/importados sem `source_url` mantêm fallback compatível ao original para não quebrar cards existentes;
+- `loading="lazy"`, `decoding="async"` e `content-visibility` reduzem trabalho de rede/renderização;
+- cabeçalhos FAST READ expõem cache HIT/MISS, rota, duração e bytes da resposta;
+- MCP mantém `obter_snapshot_operacional` com `since_version` e ganha `obter_resumo_curto` como hot path explícito;
+- rotas completas antigas permanecem disponíveis para diagnóstico e compatibilidade.
 
-- composição visual inspirada no painel operacional de referência;
-- KPIs de projetos totais, em execução, em análise, concluídos e rejeitados;
-- busca por nome, ID, domínio e status;
-- lista compacta à esquerda com progresso, lifecycle e agente ativo;
-- detalhe amplo do projeto selecionado;
-- pipeline visual: Roteiro → Referência → Coletor → Analista visual → Baixador;
-- slots integrados visíveis em cards: roteiro, thumbs, títulos, referências, candidatas, aprovadas e ZIP;
-- painel de agentes atuando com owner, execution ID, heartbeat e lease;
-- resumo real do projeto usando contadores do slot/D1;
-- sinais recentes derivados de tags e slots reais;
-- lifecycle lock e reabertura explícita preservados;
-- seleção em massa, concluir, rejeitar e excluir permanentemente preservados.
+## Compatibilidade
+- App/Core/MCP: **0.20.28**;
+- schema: **2.20.0**;
+- Worker + D1 + R2 + Queue preservados;
+- nenhuma migration destrutiva adicionada;
+- Worker autoatualizável embutido atualizado para 0.20.28.
 
-### Compatibilidade
-
-- Core esperado: **0.20.25**;
-- schema: **2.19.0**;
-- Worker embutido: **0.20.25**, sem necessidade de republicação apenas por esta atualização visual;
-- nenhuma migration nova;
-- nenhum dado D1/R2 alterado pela atualização.
-
-Consulte também `RELEASE_0_20_25_PROJECT_SLOTS_PARALLEL_AGENTS.md` para a camada operacional de slots/estados.
+Consulte `RELEASE_0_20_28_FAST_READ.md` e `VALIDATION_0_20_28_FAST_READ.json`.
