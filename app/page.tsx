@@ -40,17 +40,88 @@ const defaultInfrastructureDraft: InfrastructureDraft = {
 };
 
 const primaryNav = [
-  { id:"Visão geral", icon:"⌂", label:"Visão geral" },
-  { id:"Assets", icon:"▦", label:"Assets" },
-  { id:"Projetos", icon:"◇", label:"Projetos" },
-  { id:"Execuções", icon:"↯", label:"Execuções" },
-  { id:"Análise", icon:"◫", label:"Análise" },
-  { id:"Configurações", icon:"⚙", label:"Configurações" },
+  { id:"Visão geral", icon:"grid" as UiIconName, label:"Visão geral" },
+  { id:"Assets", icon:"assets" as UiIconName, label:"Assets" },
+  { id:"Projetos", icon:"folder" as UiIconName, label:"Projetos" },
+  { id:"Execuções", icon:"play" as UiIconName, label:"Execuções" },
+  { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
+  { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.17.0";
+const EXPECTED_CORE_VERSION = "0.19.0";
+
+type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
+
+function UiIcon({name, size=20}:{name:UiIconName; size?:number}) {
+  const common = { width:size, height:size, viewBox:"0 0 24 24", fill:"none", stroke:"currentColor", strokeWidth:1.8, strokeLinecap:"round" as const, strokeLinejoin:"round" as const, "aria-hidden":true };
+  const shapes: Record<UiIconName, React.ReactNode> = {
+    grid:<><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,
+    assets:<><path d="M4 5.5h16v13H4z"/><path d="m7 15 3-3 2.2 2.2 2.4-2.5L18 15"/><circle cx="8.2" cy="9" r="1.25"/></>,
+    folder:<><path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M3.5 8.5h17"/></>,
+    play:<><circle cx="12" cy="12" r="9"/><path d="m10 8.7 5.2 3.3L10 15.3z"/></>,
+    chart:<><path d="M5 20V9"/><path d="M10 20V4"/><path d="M15 20v-7"/><path d="M20 20V7"/><path d="M3 20h19"/></>,
+    settings:<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05-2.78 2.78-.05-.05A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1.1 1.65V21h-3.8v-.05A1.8 1.8 0 0 0 9 19.4a1.8 1.8 0 0 0-1.98.36l-.05.05-2.78-2.78.05-.05A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.1H3v-3.8h.05A1.8 1.8 0 0 0 4.6 9a1.8 1.8 0 0 0-.36-1.98l-.05-.05 2.78-2.78.05.05A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1.1-1.65V3h3.8v.05A1.8 1.8 0 0 0 15 4.6a1.8 1.8 0 0 0 1.98-.36l.05-.05 2.78 2.78-.05.05A1.8 1.8 0 0 0 19.4 9a1.8 1.8 0 0 0 1.65 1.1H21v3.8h-.05A1.8 1.8 0 0 0 19.4 15Z"/></>,
+    layers:<><path d="m12 3 8 4-8 4-8-4z"/><path d="m4 12 8 4 8-4"/><path d="m4 17 8 4 8-4"/></>,
+    pulse:<><path d="M3 12h4l2-6 4 12 2-6h6"/></>,
+    target:<><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M16.7 7.3 21 3"/><path d="M17.5 3H21v3.5"/></>,
+    activity:<><path d="M3 12h4l2.2-5.5 4.2 11 2.2-5.5H21"/></>,
+    search:<><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></>,
+    bell:<><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></>,
+    download:<><path d="M12 3v12"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 20h16"/></>,
+    brain:<><path d="M9.5 4.5A3 3 0 0 0 4 6.2 3.2 3.2 0 0 0 4.5 12 3.2 3.2 0 0 0 6 17.8 3 3 0 0 0 11.5 19V5.8a2.5 2.5 0 0 0-2-1.3Z"/><path d="M14.5 4.5A3 3 0 0 1 20 6.2a3.2 3.2 0 0 1-.5 5.8 3.2 3.2 0 0 1-1.5 5.8 3 3 0 0 1-5.5 1.2V5.8a2.5 2.5 0 0 1 2-1.3Z"/><path d="M8 9.5h3.5M12.5 13.5H16"/></>,
+    spark:<><path d="m12 3 1.4 4.2L18 9l-4.6 1.8L12 15l-1.4-4.2L6 9l4.6-1.8z"/><path d="m18.5 15 .7 2 2 .8-2 .7-.7 2-.8-2-2-.7 2-.8z"/></>,
+  };
+  return <svg {...common}>{shapes[name]}</svg>;
+}
 
 function Mark() {
-  return <span className="mark" aria-hidden="true"><i /></span>;
+  return <span className="markV18" aria-hidden="true"><svg viewBox="0 0 54 54"><path d="M38.8 5.5c-8.4.7-15.2 5.2-18 12.2l-9.1 5.2 8.1 2.6c.5 4.8 3.2 8.7 7.4 10.8L22 47h6.2l5.6-9.4c5.6-1.4 9.8-5.1 11.4-10.3-3.2 1.7-6.8 2.4-10.4 1.8 4.6-3.1 7.5-8.4 7.4-14.1 0-3.7-1.2-7-3.4-9.5Z"/><path d="M21.2 18.2c4.1-1.4 7.4-4.2 9.5-8.1"/><circle cx="31.2" cy="16.4" r="1.8"/></svg></span>;
+}
+
+function progressForProject(project: AutomaticProject) {
+  const total = Number(project.total_items || 0);
+  const approved = Number(project.approved_count || 0);
+  return total ? Math.min(100, Math.round((approved / total) * 100)) : 0;
+}
+
+function AgentProjectNetwork({projects, pending, queueBacklog, online}:{projects:AutomaticProject[]; pending:number; queueBacklog:number; online:boolean}) {
+  const visible = projects.slice(0,5);
+  const slots = Array.from({length:5},(_,index)=>visible[index] || null);
+  const agents = [
+    {name:"Coletor", icon:"search" as UiIconName, tone:"violet", detail:"captura e descoberta"},
+    {name:"Analista", icon:"target" as UiIconName, tone:"blue", detail:`${pending} decisões pendentes`},
+    {name:"Roteirista", icon:"spark" as UiIconName, tone:"green", detail:"roteiros e requirements"},
+    {name:"Exportador", icon:"download" as UiIconName, tone:"orange", detail:"ZIPs e pacotes"},
+    {name:"Supervisor", icon:"brain" as UiIconName, tone:"purple", detail:"políticas via MCP"},
+  ];
+  const ys=[128,166,204,242,280];
+  const projectXs=[380,545,710,875,1040];
+  const colors=["#8d5cff","#418cff","#35d99b","#ff9b4d","#b35cff"];
+  return <div className="agentNetwork">
+    <svg className="networkWires" viewBox="0 0 1160 338" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <filter id="wireGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        {colors.map((color,index)=><linearGradient id={`wire-${index}`} key={color} x1="0" x2="1"><stop offset="0" stopColor={color} stopOpacity=".08"/><stop offset=".14" stopColor={color} stopOpacity=".8"/><stop offset=".9" stopColor={color} stopOpacity=".55"/><stop offset="1" stopColor={color} stopOpacity=".08"/></linearGradient>)}
+      </defs>
+      {ys.map((y,row)=><g key={y}>
+        <path className="wirePath" d={`M 168 ${y} C 280 ${y-20}, 315 ${y+16}, 395 ${y} S 535 ${y-14}, 595 ${y} S 720 ${y+16}, 780 ${y} S 910 ${y-13}, 992 ${y} S 1080 ${y+10}, 1140 ${y}`} stroke={`url(#wire-${row})`} filter="url(#wireGlow)"/>
+        {projectXs.map((x,index)=><circle key={x} cx={x} cy={y} r="3.8" fill={colors[row]} opacity={slots[index]?1:.25} filter="url(#wireGlow)"/>)}
+      </g>)}
+    </svg>
+    <div className="networkLegend">
+      {agents.map(agent=><div className={`networkAgent ${agent.tone}`} key={agent.name}><span><UiIcon name={agent.icon} size={16}/></span><div><strong>{agent.name}</strong><small>{agent.detail}</small></div><b>{online?"●":"○"}</b></div>)}
+    </div>
+    <div className="networkProjects">
+      {slots.map((project,index)=>{
+        const progress=project?progressForProject(project):0;
+        return <div className={`networkProject ${project?"live":"idle"}`} key={project?.id || `slot-${index}`}>
+          <div className="networkProjectHead"><strong>{project?.name || "Slot livre"}</strong><small>{project?String(project.pipeline_status||project.status||"ATIVO"):"Aguardando projeto"}</small></div>
+          <div className={`progressRing p${Math.round(progress/10)*10}`} style={{"--progress":`${progress*3.6}deg`} as any}><span>{project?`${progress}%`:"—"}</span></div>
+          <div className="projectWireNodes">{agents.map((agent,row)=><i key={agent.name} style={{"--node-color":colors[row]} as any}/>)}</div>
+        </div>;
+      })}
+    </div>
+    <div className="networkFooter"><span><i className={online?"live":""}/>Core {online?"online":"offline"}</span><span>Queue <b>{queueBacklog}</b></span><span>{projects.length} projeto(s) ativo(s)</span></div>
+  </div>;
 }
 
 function formatBytes(value: number) {
@@ -691,73 +762,50 @@ Tudo é configurado pela própria tela Configurações.
   }
 
 
-  return <main className="shell shellV17">
-    <aside className="sidebar sidebarV17">
-      <div className="brand brandV17"><Mark /><div><strong>Corvo Library</strong><span>OPERAÇÕES & ASSETS</span></div></div>
-      <p className="navLabel">WORKSPACE</p>
-      <nav className="primaryNav">{primaryNav.map(item => <button key={item.id} className={active===item.id ? "active" : ""} onClick={() => setActive(item.id)}><span className="glyph">{item.icon}</span><span>{item.label}</span>{item.id === "Assets" && stats.pending > 0 && <em>{stats.pending}</em>}</button>)}</nav>
+  const greeting = new Date().getHours() < 12 ? "Bom dia" : new Date().getHours() < 18 ? "Boa tarde" : "Boa noite";
+
+  return <main className="shell shellV18">
+    <aside className="sidebar sidebarV18">
+      <div className="brand brandV18"><Mark /><div><strong>CORVO</strong><span>LIBRARY</span></div><button className="collapseHint" aria-label="Recolher menu">‹</button></div>
+      <nav className="primaryNav">{primaryNav.map(item => <button key={item.id} className={active===item.id ? "active" : ""} onClick={() => setActive(item.id)}><span className="glyph"><UiIcon name={item.icon} size={19}/></span><span>{item.label}</span>{item.id === "Assets" && stats.pending > 0 && <em>{stats.pending}</em>}</button>)}</nav>
       <div className="sidebarFooter">
-        <div className="sideStatus"><span className={health?.core.ok ? "dot live" : "dot"}/><div><strong>Corvo Core</strong><small>{coreState}</small></div></div>
-        <div className="profileMini"><span className="profileAvatar">A</span><div><strong>Administrador</strong><small>Corvo Library V2</small></div><b>···</b></div>
+        <div className="profileMini"><span className="profileAvatar"><Mark /></span><div><strong>Corvo</strong><small>Administrador</small></div><b>⌄</b></div>
       </div>
     </aside>
 
     <section className="workspace">
-      <header className="topbar topbarV17">
-        <div className="topIdentity"><b>{active}</b><span>Corvo Library · produção inteligente</span></div>
-        <div className="topActions"><span className={`systemPill ${health?.core.ok ? "live" : "warn"}`}><i />{health?.core.ok ? "Sistema operacional" : coreState}</span><span className="versionPill">CORE 0.17</span></div>
+      <header className="topbar topbarV18">
+        <div />
+        <div className="topActions"><button className="roundAction" aria-label="Notificações"><UiIcon name="bell" size={16}/></button><span className={`systemPill ${health?.core.ok ? "live" : "warn"}`}><i />Sistema operacional <b>{health?.core.ok ? "Saudável" : coreState}</b></span></div>
       </header>
 
-      <div className="content contentV17">
-        <div className="titleRow titleRowV17"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>
+      <div className="content contentV18">
+        {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>}
 
         {active === "Visão geral" && <div className="overviewDashboard">
           <section className="overviewKpis">
-            <article className="kpiCard violet"><div><span>ASSETS APROVADOS</span><strong>{stats.approved.toLocaleString("pt-BR")}</strong><small>{stats.universes} universos ativos</small></div><i>▦</i></article>
-            <article className="kpiCard blue"><div><span>AGENTES ATIVOS</span><strong>{activeWorkerCount}</strong><small>{health?.core.ok ? "Core conectado" : coreState}</small></div><i>◎</i></article>
-            <article className="kpiCard green"><div><span>PROJETOS EM EXECUÇÃO</span><strong>{activeProjects.length}</strong><small>{projects.length} projetos V2</small></div><i>◇</i></article>
-            <article className="kpiCard orange"><div><span>TAXA DE SUCESSO</span><strong>{operationSuccessRate}%</strong><small>{recentOperations.length} operações recentes</small></div><i>↗</i></article>
+            <article className="kpiCard violet"><span className="kpiIcon"><UiIcon name="layers" size={25}/></span><div><strong>{activeWorkerCount}</strong><span>Agentes ativos</span><small><i className="miniDot green"/> {health?.core.ok ? `${activeWorkerCount} online` : "Core indisponível"}</small></div></article>
+            <article className="kpiCard blue"><span className="kpiIcon"><UiIcon name="folder" size={25}/></span><div><strong>{activeProjects.length}</strong><span>Projetos em execução</span><small><i className="miniDot blue"/> {projects.length} registrados na V2</small></div></article>
+            <article className="kpiCard green"><span className="kpiIcon"><UiIcon name="pulse" size={25}/></span><div><strong>{recentOperations.length}</strong><span>Execuções recentes</span><small><i className="miniArrow">↑</i> Queue: {health?.core.queueBacklog ?? 0}</small></div></article>
+            <article className="kpiCard violet"><span className="kpiIcon"><UiIcon name="target" size={25}/></span><div><strong>{operationSuccessRate}%</strong><span>Taxa de sucesso</span><small><i className="miniDot violet"/> {completedOps} concluídas</small></div></article>
           </section>
 
-          <section className="overviewMainGrid">
-            <article className="dashboardPanel agentsPanel">
-              <header><div><span className="eyebrow">TEMPO REAL</span><h2>Agentes da fábrica</h2></div><span className={`panelStatus ${health?.core.ok ? "live" : "warn"}`}><i />{health?.core.ok ? "Ativos" : "Core offline"}</span></header>
-              <div className="agentFlow">
-                {[
-                  ["Coletor","Busca e entrada de mídia","↯",health?.core.ok?"Disponível":"Offline"],
-                  ["Analista",`${stats.pending} pendentes para decisão`,"◉",health?.core.ok?"Disponível":"Offline"],
-                  ["Materializador",`${health?.core.queueBacklog ?? 0} itens na Queue`,"⬡",health?.core.ok?"Ativo":"Offline"],
-                  ["Supervisor","Políticas e decisões MCP","◇",supervisorPanel?"Ativo":health?.core.ok?"Disponível":"Offline"],
-                  ["Exportador","ZIPs e pacotes no R2","⇩",health?.core.ok?"Disponível":"Offline"],
-                  ["Roteirista","Pronto para projetos novos","✦",health?.core.ok?"Disponível":"Offline"],
-                ].map(([name,detail,icon,state])=><div className="agentNode" key={String(name)}><span className="agentIcon">{icon}</span><div><strong>{name}</strong><small>{detail}</small></div><em className={state==="Offline"?"off":"on"}>{state}</em></div>)}
-              </div>
-            </article>
+          <article className="dashboardPanel agentsHeroPanel">
+            <header><div><h2>Agentes em tempo real</h2><p>Atuando entre projetos</p></div><button className="panelButton" onClick={()=>{setActive("Execuções");setExecutionView("Operação");}}>Ver todos os agentes</button></header>
+            <AgentProjectNetwork projects={activeProjects} pending={stats.pending} queueBacklog={health?.core.queueBacklog ?? 0} online={Boolean(health?.core.ok)}/>
+            <div className="systemMicrobar"><span><i className={health?.core.d1==="ok"?"live":""}/>D1 {health?.core.d1?.toUpperCase() || "—"}</span><span><i className={health?.core.r2==="ok"?"live":""}/>R2 {health?.core.r2?.toUpperCase() || "—"}</span><span><i className={health?.core.ok?"live":""}/>Heartbeats {activeWorkerCount}</span><span><i className={stats.pending===0?"live":"warn"}/>Pendentes {stats.pending}</span></div>
+          </article>
 
-            <article className="dashboardPanel pulsePanel">
-              <header><div><span className="eyebrow">PULSO OPERACIONAL</span><h2>Saúde do sistema</h2></div></header>
-              <div className="pulseRows">
-                <div><span>D1 / schema</span><b className={health?.core.d1==="ok"?"good":"warn"}>{health?.core.d1?.toUpperCase() || "—"}</b></div>
-                <div><span>R2</span><b className={health?.core.r2==="ok"?"good":"warn"}>{health?.core.r2?.toUpperCase() || "—"}</b></div>
-                <div><span>Queue</span><b>{health?.core.queueBacklog ?? 0} aguardando</b></div>
-                <div><span>Heartbeats / sessões</span><b>{activeWorkerCount} sessão(ões)</b></div>
-                <div><span>Pendentes</span><b className={stats.pending>0?"warn":"good"}>{stats.pending}</b></div>
-              </div>
-              <button className="panelLink" onClick={()=>{setActive("Execuções");setExecutionView("Operação");}}>Abrir operação <span>→</span></button>
-            </article>
-          </section>
+          <article className="dashboardPanel projectsHeroPanel">
+            <header><div><h2>Projetos em execução</h2></div><button className="panelButton" onClick={()=>{setActive("Projetos");setProjectView("Projetos");}}>Ver todos os projetos</button></header>
+            <div className="projectStrip">{Array.from({length:5},(_,index)=>activeProjects[index] || null).map((project,index)=>{const progress=project?progressForProject(project):0;return <div className={`projectTile ${project?"live":"idle"}`} key={project?.id || `project-slot-${index}`}><span className={`projectCover cover${index+1}`}>{project?.name?.slice(0,1).toUpperCase() || "+"}</span><div className="projectTileBody"><strong>{project?.name || "Slot livre"}</strong><small>{project?String(project.pipeline_status||project.status||"EM EXECUÇÃO"):"Aguardando projeto"}</small><span className="projectState"><i className={project?"live":""}/>{project?"Em execução":"Disponível"}</span><div className="projectTileProgress"><i style={{width:`${progress}%`}}/></div></div><b>{project?`${progress}%`:"—"}</b></div>})}</div>
+          </article>
 
-          <section className="overviewBottomGrid">
-            <article className="dashboardPanel projectsOverview">
-              <header><div><span className="eyebrow">PRODUÇÃO</span><h2>Projetos em execução</h2></div><button className="ghostLink" onClick={()=>{setActive("Projetos");setProjectView("Projetos");}}>Ver todos</button></header>
-              <div className="projectOverviewList">{activeProjects.length===0?<div className="overviewEmpty"><strong>Nenhum projeto em execução</strong><span>Projetos novos aparecerão aqui assim que entrarem na esteira.</span></div>:activeProjects.slice(0,4).map(project=>{const totalItems=Number(project.total_items||0);const approved=Number(project.approved_count||0);const progress=totalItems?Math.min(100,Math.round((approved/totalItems)*100)):0;return <div className="projectOverviewRow" key={project.id}><span className="projectBadge">◆</span><div className="projectOverviewBody"><div><strong>{project.name}</strong><em>{String(project.pipeline_status||project.status||"ATIVO")}</em></div><small>{approved}/{totalItems || "—"} aprovados</small><div className="miniProgress"><i style={{width:`${progress}%`}}/></div></div><b>{progress}%</b></div>})}</div>
-            </article>
-
-            <article className="dashboardPanel activityOverview">
-              <header><div><span className="eyebrow">ATIVIDADE RECENTE</span><h2>O que mudou agora</h2></div></header>
-              <div className="activityList">{recentOperations.length===0?<div className="overviewEmpty"><strong>Sem atividade recente</strong><span>FAST PUSH, exports e operações aparecerão aqui.</span></div>:recentOperations.slice(0,6).map((item,index)=>{const state=String(item.status||"PROCESSING");return <div className="activityRow" key={String(item.id||index)}><span className={`activityDot ${state.toLowerCase()}`}/><div><strong>{String(item.type||item.operation_type||"Operação")}</strong><small>{String(item.id||"").slice(0,28)}</small></div><em className={statusClass(state)}>{state}</em></div>})}</div>
-            </article>
-          </section>
+          <article className="activityBar">
+            <div className="activityBarTitle"><strong>Atividade recente</strong></div>
+            <div className="activityBarItems">{recentOperations.length===0?<div className="activityCompact emptyActivity"><span className="activityIcon violet"><UiIcon name="activity" size={15}/></span><div><strong>Sistema aguardando atividade</strong><small>FAST PUSH, análises e exports aparecerão aqui.</small></div></div>:recentOperations.slice(0,4).map((item,index)=>{const state=String(item.status||"PROCESSING"); const icons:[UiIconName,string][]=[["layers","violet"],["target","blue"],["spark","green"],["download","orange"]];const [icon,tone]=icons[index%icons.length];return <div className="activityCompact" key={String(item.id||index)}><span className={`activityIcon ${tone}`}><UiIcon name={icon} size={15}/></span><div><strong>{String(item.type||item.operation_type||"Operação")}</strong><small>{state} · {String(item.id||"").slice(0,12)}</small></div></div>})}</div>
+            <button className="panelButton" onClick={()=>{setActive("Execuções");setExecutionView("Operação");}}>Ver todas</button>
+          </article>
         </div>}
 
         {active === "Assets" && <>

@@ -1,7 +1,22 @@
 {
-  "removed_secret_settings": 3,
-  "removed_transaction_wrappers": 2,
-  "retained_sanitized_markers": 11,
-  "bytes": 24947407,
-  "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5"
+  "baseline": "clean-zero",
+  "historical_recovered_content_seeded": false,
+  "configuration_tables_preserved": [
+    "collection_sources",
+    "operational_policies",
+    "semantic_stock_policies",
+    "settings",
+    "source_profiles",
+    "worker_capacity_limits"
+  ],
+  "preserved_insert_rows": {
+    "collection_sources": 22,
+    "operational_policies": 5,
+    "settings": 39,
+    "source_profiles": 4,
+    "worker_capacity_limits": 11
+  },
+  "removed_recovered_insert_rows": 39210,
+  "bytes": 77058,
+  "sha256": "0e509963f4c63fa2d28d4833b116595b1f542c9bbe06bc4446ab7ef0ac0f89fc"
 }

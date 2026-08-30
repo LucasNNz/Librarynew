@@ -11,7 +11,7 @@ O frontend não depende de `CORVO_CORE_URL` ou chaves configuradas manualmente n
 Antes de publicar uma nova versão do código, mantenha os gates de engenharia:
 
 ```bash
-python scripts/validate-checkpoint.py /caminho/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql
+python scripts/validate-checkpoint.py /caminho/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql
 npm ci
 npm run build
 ```

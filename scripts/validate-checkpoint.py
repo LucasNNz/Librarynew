@@ -3,20 +3,19 @@ from __future__ import annotations
 import argparse, collections, gzip, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BASELINE_PATH = ROOT / "docs" / "HISTORICAL_INTEGRITY_BASELINE.json"
 MATRIX_PATH = ROOT / "docs" / "MCP_COMPATIBILITY_MATRIX.md"
 MCP_PATH = ROOT / "cloudflare" / "src" / "mcp.ts"
 
 EXPECTED = {
-    "assets": 929,
-    "approved": 849,
-    "pending": 77,
-    "rejected": 3,
-    "approved_universes": 174,
-    "all_universes": 175,
-    "asset_usage": 1176,
+    "assets": 0,
+    "approved": 0,
+    "pending": 0,
+    "rejected": 0,
+    "approved_universes": 0,
+    "all_universes": 0,
+    "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.9.0",
+    "schema_version": "2.10.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
@@ -143,7 +142,7 @@ def self_sufficient_checks(restore: pathlib.Path):
     cloudflare_control = (ROOT / "lib" / "cloudflare-control.ts").read_text("utf8")
     worker_control = (ROOT / "cloudflare" / "src" / "core" / "control-plane.ts").read_text("utf8")
     package = json.loads((ROOT / "package.json").read_text("utf8"))
-    gzip_path = ROOT / "bootstrap" / "CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql.gz"
+    gzip_path = ROOT / "bootstrap" / "CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql.gz"
     gzip_matches_restore = False
     gzip_sha256 = None
     if gzip_path.exists():
@@ -267,13 +266,12 @@ def heartbeat_contract_checks():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("restore_sql", help="Caminho para CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql")
+    ap.add_argument("restore_sql", help="Caminho para CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql")
     ap.add_argument("--output", default=str(ROOT / "docs" / "VALIDATION_REPORT.json"))
     ap.add_argument("--keep-db", default="")
     args = ap.parse_args()
     started = time.time()
     restore = pathlib.Path(args.restore_sql).resolve()
-    baseline = json.loads(BASELINE_PATH.read_text("utf8"))
     errors = []
     tmp_path = pathlib.Path(args.keep_db) if args.keep_db else pathlib.Path(tempfile.mkstemp(prefix="corvo-v2-gate-", suffix=".db")[1])
     try:
@@ -305,6 +303,30 @@ def main():
         if db["integrity_check"] != "ok": errors.append(f"PRAGMA integrity_check={db['integrity_check']}")
         if db["sensitive_settings_rows"] != 0: errors.append("sensitive historical settings were restored")
 
+        clean_zero_tables = [
+            "asset_consultations","asset_usage","assets","automatic_project_events","automatic_project_files","automatic_project_items","automatic_projects",
+            "batch_assets","batches","collection_batches","collection_candidates","collection_source_runs","collection_terms","export_jobs","imports",
+            "materialization_batches","materialization_candidates","materialization_files","materialization_host_health","materialization_host_probes",
+            "materialization_items","materialization_logs","mcp_audit","operation_results","operational_gaps","operational_policy_events","plan_branches",
+            "project_runs","queue_snapshots","requests","source_route_metrics","source_routing_plans","stage_metrics","supervisor_config_events",
+            "supervisor_decision_queue","supervisor_executions","supervisor_plans","supervisor_project_candidates","worker_events","worker_sessions","worker_work_items",
+            "v2_ingest_candidates","v2_ingest_events","v2_ingest_operations","v2_storage_audits","v2_direct_uploads","v2_control_jobs",
+            "v2_download_packages","v2_project_media","v2_project_titles","v2_collection_events","v2_asset_exports","v2_recovery_events","v2_runtime_heartbeats"
+        ]
+        clean_zero_counts = {table:int(q1(conn, f'SELECT COUNT(*) FROM "{table}"') or 0) for table in clean_zero_tables}
+        dirty_after_zero = {k:v for k,v in clean_zero_counts.items() if v != 0}
+        if dirty_after_zero: errors.append(f"recovered/runtime rows remain after clean-zero: {dirty_after_zero}")
+        configuration_rows = {
+            "settings": int(q1(conn,"SELECT COUNT(*) FROM settings") or 0),
+            "collection_sources": int(q1(conn,"SELECT COUNT(*) FROM collection_sources") or 0),
+            "source_profiles": int(q1(conn,"SELECT COUNT(*) FROM source_profiles") or 0),
+            "worker_capacity_limits": int(q1(conn,"SELECT COUNT(*) FROM worker_capacity_limits") or 0),
+            "operational_policies": int(q1(conn,"SELECT COUNT(*) FROM operational_policies") or 0),
+        }
+        for table,minimum in {"settings":39,"collection_sources":22,"source_profiles":4,"worker_capacity_limits":11,"operational_policies":2}.items():
+            if configuration_rows[table] < minimum: errors.append(f"configuration table {table} lost rows: {configuration_rows[table]} < {minimum}")
+        if q1(conn,"SELECT value FROM v2_schema_meta WHERE key='data_baseline'") != 'CLEAN_ZERO': errors.append("data_baseline is not CLEAN_ZERO")
+
         heartbeat_smoke = heartbeat_sql_smoke(conn)
         if not all(heartbeat_smoke.values()): errors.append(f"heartbeat SQL smoke failed: {heartbeat_smoke}")
 
@@ -317,24 +339,25 @@ def main():
             "v2_download_packages": int(q1(conn, "SELECT COUNT(*) FROM v2_download_packages") or 0),
             "missing_r2_recapture_policy": int(q1(conn, "SELECT COUNT(*) FROM operational_policies WHERE policy_key='missing-r2-recapture' AND status='ACTIVE'") or 0),
             "supervisor_autonomy_policy": int(q1(conn, "SELECT COUNT(*) FROM operational_policies WHERE policy_key='supervisor-policy-autonomy' AND status='ACTIVE'") or 0),
-            "legacy_project_r2_maintenance": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key='PURGE_LEGACY_PROJECT_R2' AND status IN ('PENDING','RUNNING','DONE')") or 0),
+            "clean_zero_marker": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key='CLEAN_ZERO_BASELINE' AND status='DONE'") or 0),
+            "r2_purge_jobs": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key LIKE 'PURGE_%' AND status IN ('PENDING','RUNNING','FAILED')") or 0),
         }
         for key in ["automatic_projects","automatic_project_items","automatic_project_files","supervisor_plans","worker_project_items","v2_download_packages"]:
             if operational_cleanup[key] != 0: errors.append(f"operational_cleanup.{key}: expected 0, got {operational_cleanup[key]}")
         if operational_cleanup["missing_r2_recapture_policy"] != 1: errors.append("missing-r2-recapture policy is not active")
         if operational_cleanup["supervisor_autonomy_policy"] != 1: errors.append("supervisor-policy-autonomy policy is not active")
-        if operational_cleanup["legacy_project_r2_maintenance"] != 1: errors.append("legacy projects R2 cleanup maintenance marker is missing")
+        if operational_cleanup["clean_zero_marker"] != 1: errors.append("clean-zero maintenance marker is missing")
+        if operational_cleanup["r2_purge_jobs"] != 0: errors.append("R2 purge job must not be scheduled because the bucket was already emptied")
 
         fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
         fk_groups = collections.Counter(f"{r[0]}->{r[2]}" for r in fk_rows)
-        fk = {"total": len(fk_rows), "groups": dict(sorted(fk_groups.items())), "baseline_exact_match": False}
-        fk["baseline_exact_match"] = fk["total"] == baseline["foreign_key_violations_total"] and fk["groups"] == baseline["foreign_key_violation_groups"]
-        if not fk["baseline_exact_match"]: errors.append("foreign-key violations differ from immutable historical baseline")
+        fk = {"total": len(fk_rows), "groups": dict(sorted(fk_groups.items())), "clean_zero": len(fk_rows) == 0}
+        if fk["total"] != 0: errors.append(f"clean-zero foreign-key violations={fk['total']}")
 
         historical, active_risk, v2 = logical_health(conn)
         health = {"historical": historical, "active_historical_risk": active_risk, "v2": v2, "v2_orphans": sum(v2.values())}
-        if historical != baseline["logical_orphans"]: errors.append("logical historical orphan baseline changed")
-        if active_risk != baseline["active_historical_risk"]: errors.append("active historical risk baseline changed")
+        if any(historical.values()): errors.append(f"historical logical rows remain after clean-zero: {historical}")
+        if any(active_risk.values()): errors.append(f"active historical risk remains after clean-zero: {active_risk}")
         if health["v2_orphans"] != 0: errors.append(f"V2 logical orphans={health['v2_orphans']}")
 
         # Persistence contract: configuration is never seeded by migration and survives migration replay byte-for-byte.
@@ -429,6 +452,8 @@ def main():
             "duration_seconds": round(time.time() - started, 3),
             "restore": {"path": str(restore), "sha256": hashlib.sha256(restore.read_bytes()).hexdigest(), "migrations": [p.name for p in migration_files]},
             "database": db,
+            "clean_zero_counts": clean_zero_counts,
+            "preserved_configuration_rows": configuration_rows,
             "historical_integrity": fk,
             "logical_integrity": health,
             "operational_cleanup": operational_cleanup,

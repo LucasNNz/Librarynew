@@ -25,10 +25,10 @@ async function migrationFiles() {
 }
 
 async function bootstrapSql() {
-  const compressed = await readFile(path.join(process.cwd(), "bootstrap", "CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql.gz"));
-  const historical = gunzipSync(compressed).toString("utf8");
+  const compressed = await readFile(path.join(process.cwd(), "bootstrap", "CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql.gz"));
+  const baseline = gunzipSync(compressed).toString("utf8");
   const migrations = await migrationFiles();
-  return `${historical}\n\n-- CORVO V2 MIGRATIONS\n${migrations.map(item => item.sql).join("\n\n")}`;
+  return `${baseline}\n\n-- CORVO V2 MIGRATIONS\n${migrations.map(item => item.sql).join("\n\n")}`;
 }
 
 async function importD1(token: string, accountId: string, databaseId: string, sql: string) {
@@ -67,7 +67,7 @@ async function importD1(token: string, accountId: string, databaseId: string, sq
 const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
-  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql",
+  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
