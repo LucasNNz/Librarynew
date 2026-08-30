@@ -15,15 +15,23 @@ EXPECTED = {
     "all_universes": 0,
     "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.14.0",
+    "schema_version": "2.18.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
 }
 SUBSTITUTED = {"obter_configuracao_cloudflare", "configurar_cloudflare"}
-EXPECTED_EXTRA_TOOLS = {"auditar_armazenamento_r2", "obter_status_upload_midia", "auditar_integridade_d1", "vasculhar_r2", "reparar_pendentes_r2", "explorar_r2_fisico", "excluir_assets_permanentemente_em_lote", "excluir_pendentes_nao_encontrados_r2", "definir_politica_supervisor_livre", "atualizar_manifesto_recuperacao_d1_r2", "obter_status_export_assets_zip", "obter_link_export_assets_zip", "heartbeat_worker", "heartbeat_supervisor", "heartbeat_operacao", "obter_status_heartbeats", "executar_watchdog_heartbeats"}
+EXPECTED_EXTRA_TOOLS = {"auditar_armazenamento_r2", "obter_status_upload_midia", "auditar_integridade_d1", "vasculhar_r2", "reparar_pendentes_r2", "explorar_r2_fisico", "excluir_assets_permanentemente_em_lote", "excluir_pendentes_nao_encontrados_r2", "definir_politica_supervisor_livre", "atualizar_manifesto_recuperacao_d1_r2", "obter_status_export_assets_zip", "obter_link_export_assets_zip", "heartbeat_worker", "heartbeat_supervisor", "heartbeat_operacao", "obter_status_heartbeats", "executar_watchdog_heartbeats", "fast_push_project_candidates", "get_collection_snapshot", "get_materialization_telemetry", "get_qa_work_packet", "submit_qa_decisions"}
 FORBIDDEN = ["@libsql", "TURSO_", "production-recovery", "secret_cloudflare_connection"]
 SOURCE_EXTENSIONS = {".ts", ".tsx", ".js", ".mjs", ".cjs"}
+
+LEGACY_DESTRUCTIVE_MIGRATIONS = {
+    "9008_v2_operational_cleanup_recovery.sql",
+    "9010_v2_clean_zero_baseline.sql",
+    "9011_v2_purge_all_projects.sql",
+    "9012_v2_factory_zero_assets.sql",
+    "9013_v2_live_factory_zero_gate.sql",
+}
 
 
 def load_sql_transactionally(conn: sqlite3.Connection, text: str) -> None:
@@ -278,7 +286,8 @@ def main():
         if tmp_path.exists(): tmp_path.unlink()
         conn = sqlite3.connect(tmp_path)
         load_sql_transactionally(conn, restore.read_text("utf8"))
-        migration_files = sorted((ROOT / "cloudflare" / "migrations").glob("*.sql"))
+        migration_files_all = sorted((ROOT / "cloudflare" / "migrations").glob("*.sql"))
+        migration_files = [mig for mig in migration_files_all if mig.name not in LEGACY_DESTRUCTIVE_MIGRATIONS]
         for mig in migration_files: load_sql_transactionally(conn, mig.read_text("utf8"))
         conn.execute("PRAGMA foreign_keys=ON")
 
@@ -326,7 +335,6 @@ def main():
         for table in ["settings","collection_sources","source_profiles","worker_capacity_limits","operational_policies"]:
             if configuration_rows[table] != 0: errors.append(f"factory-zero table {table} must be empty, got {configuration_rows[table]}")
         if int(q1(conn,"SELECT COUNT(*) FROM semantic_stock_policies") or 0) != 0: errors.append("semantic_stock_policies must be empty at factory zero")
-        if q1(conn,"SELECT value FROM v2_schema_meta WHERE key='data_baseline'") != 'FACTORY_ZERO': errors.append("data_baseline is not FACTORY_ZERO")
 
         heartbeat_smoke = heartbeat_sql_smoke(conn)
         if not all(heartbeat_smoke.values()): errors.append(f"heartbeat SQL smoke failed: {heartbeat_smoke}")
@@ -346,9 +354,10 @@ def main():
         for key in ["automatic_projects","automatic_project_items","automatic_project_files","supervisor_plans","worker_project_items","v2_download_packages"]:
             if operational_cleanup[key] != 0: errors.append(f"operational_cleanup.{key}: expected 0, got {operational_cleanup[key]}")
         if operational_cleanup["operational_policies"] != 0: errors.append("operational policies must be empty at factory zero")
-        if operational_cleanup["factory_zero_marker"] != 1: errors.append("factory-zero schema marker is missing")
-        if operational_cleanup["factory_zero_r2_purge"] != 0: errors.append("0.20.6 must not schedule an R2 purge during boot")
-        if operational_cleanup["r2_purge_jobs"] != 0: errors.append("0.20.6 must have no pending R2 purge jobs")
+        if operational_cleanup["factory_zero_r2_purge"] != 0: errors.append("safe-forward bootstrap must not schedule factory-zero R2 purge")
+        if operational_cleanup["r2_purge_jobs"] != 0: errors.append("safe-forward bootstrap must have no pending R2 purge jobs")
+        migration_policy = q1(conn, "SELECT value FROM v2_schema_meta WHERE key=\'migration_executor_policy\'")
+        if migration_policy != "SAFE_LIVE_V1": errors.append(f"migration executor policy mismatch: {migration_policy}")
 
         fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
         fk_groups = collections.Counter(f"{r[0]}->{r[2]}" for r in fk_rows)
@@ -451,7 +460,7 @@ def main():
             "checkpoint": package["version"],
             "validation": "PASS" if not errors else "FAIL",
             "duration_seconds": round(time.time() - started, 3),
-            "restore": {"path": str(restore), "sha256": hashlib.sha256(restore.read_bytes()).hexdigest(), "migrations": [p.name for p in migration_files]},
+            "restore": {"path": str(restore), "sha256": hashlib.sha256(restore.read_bytes()).hexdigest(), "migrations": [p.name for p in migration_files], "legacy_destructive_excluded": sorted(LEGACY_DESTRUCTIVE_MIGRATIONS)},
             "database": db,
             "clean_zero_counts": clean_zero_counts,
             "preserved_configuration_rows": configuration_rows,

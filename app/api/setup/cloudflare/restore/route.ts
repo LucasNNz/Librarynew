@@ -11,6 +11,14 @@ export const maxDuration = 300;
 
 type Body = { apiToken?: string; accountId?: string; databaseId?: string; force?: boolean };
 
+const LEGACY_DESTRUCTIVE_MIGRATIONS = new Set([
+  "9008_v2_operational_cleanup_recovery.sql",
+  "9010_v2_clean_zero_baseline.sql",
+  "9011_v2_purge_all_projects.sql",
+  "9012_v2_factory_zero_assets.sql",
+  "9013_v2_live_factory_zero_gate.sql",
+]);
+
 async function tableExists(token: string, accountId: string, databaseId: string, table: string) {
   try {
     const result = await queryD1<{ name?: string }>(token, accountId, databaseId, "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", [table]);
@@ -59,7 +67,7 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   for(const table of ["v2_ingest_candidates","automatic_project_items","v2_ingest_operations","v2_ingest_events"]){
     if(!(await tableExists(token,accountId,databaseId,table))) missingTables.push(table);
   }
-  if(missingTables.length) return {ready:false,contractVersion:"2.17.0",missingTables,missingColumns:[],repaired};
+  if(missingTables.length) return {ready:false,contractVersion:"2.18.0",missingTables,missingColumns:[],repaired};
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     let columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs){
@@ -73,13 +81,13 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
   await queryD1(token,accountId,databaseId,"CREATE TABLE IF NOT EXISTS v2_schema_meta (key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL)");
-  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.17.0',?)",[Date.now()]);
+  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.18.0',?)",[Date.now()]);
   const missingColumns:Array<{table:string;column:string}>=[];
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     const columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs) if(!columns.has(spec.name)) missingColumns.push({table,column:spec.name});
   }
-  return {ready:missingColumns.length===0,contractVersion:"2.17.0",missingTables:[],missingColumns,repaired};
+  return {ready:missingColumns.length===0,contractVersion:"2.18.0",missingTables:[],missingColumns,repaired};
 }
 
 async function migrationFiles() {
@@ -91,8 +99,8 @@ async function migrationFiles() {
 async function bootstrapSql() {
   const compressed = await readFile(path.join(process.cwd(), "bootstrap", "CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql.gz"));
   const baseline = gunzipSync(compressed).toString("utf8");
-  const migrations = await migrationFiles();
-  return `${baseline}\n\n-- CORVO V2 MIGRATIONS\n${migrations.map(item => item.sql).join("\n\n")}`;
+  const migrations = (await migrationFiles()).filter(item=>!LEGACY_DESTRUCTIVE_MIGRATIONS.has(item.name));
+  return `${baseline}\n\n-- CORVO V2 SAFE FORWARD MIGRATIONS\n${migrations.map(item => item.sql).join("\n\n")}`;
 }
 
 async function importD1(token: string, accountId: string, databaseId: string, sql: string) {
@@ -131,7 +139,7 @@ async function importD1(token: string, accountId: string, databaseId: string, sq
 const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
-  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql",
+  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
@@ -164,25 +172,46 @@ async function applyPendingMigrations(token: string, accountId: string, database
   const files = await migrationFiles();
   const applied = await ensureMigrationRegistry(token, accountId, databaseId, files);
   const executed: string[] = [];
+  const skippedLegacy: string[] = [];
+
+  await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_migration_decisions (
+    name TEXT PRIMARY KEY NOT NULL,
+    decision TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    checksum TEXT NOT NULL DEFAULT '',
+    decided_at INTEGER NOT NULL
+  )`);
 
   const preSchemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId).catch(()=>null);
   const collectorMigration=files.find(item=>item.name==="9016_v2_collector_qa_pipeline.sql");
   if(preSchemaContract?.ready && collectorMigration && !applied.has(collectorMigration.name)){
     const checksum=createHash("sha256").update(collectorMigration.sql).digest("hex");
-    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[collectorMigration.name,checksum,Date.now()]);
+    const now=Date.now();
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[collectorMigration.name,checksum,now]);
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[collectorMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
     applied.add(collectorMigration.name);
   }
 
   for (const item of files) {
     if (applied.has(item.name)) continue;
-    await importD1(token, accountId, databaseId, item.sql);
     const checksum = createHash("sha256").update(item.sql).digest("hex");
-    await queryD1(token, accountId, databaseId, "INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)", [item.name, checksum, Date.now()]);
+    const now=Date.now();
+    if (LEGACY_DESTRUCTIVE_MIGRATIONS.has(item.name)) {
+      await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[item.name,checksum,now]);
+      await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[item.name,"SKIPPED_LEGACY_DESTRUCTIVE","historical_reset_not_safe_for_live_restore",checksum,now]);
+      applied.add(item.name);
+      skippedLegacy.push(item.name);
+      continue;
+    }
+    await importD1(token, accountId, databaseId, item.sql);
+    await queryD1(token, accountId, databaseId, "INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)", [item.name, checksum, now]);
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[item.name,"APPLIED","normal_forward_migration",checksum,now]);
+    applied.add(item.name);
     executed.push(item.name);
   }
   const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
   if(!schemaContract.ready) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(schemaContract)}`);
-  return {executed,schemaContract};
+  return {executed,skippedLegacy,schemaContract};
 }
 
 export async function POST(request: NextRequest) {
@@ -199,12 +228,12 @@ export async function POST(request: NextRequest) {
       const sql = await bootstrapSql();
       const result = await importD1(token, accountId, databaseId, sql);
       const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
-      return NextResponse.json({ ok: true, imported: true, bytes: Buffer.byteLength(sql), migrationsApplied: (await migrationFiles()).map(item=>item.name), schemaContract, ...result }, { headers: { "cache-control": "no-store" } });
+      return NextResponse.json({ ok: true, imported: true, bytes: Buffer.byteLength(sql), migrationsApplied: (await migrationFiles()).filter(item=>!LEGACY_DESTRUCTIVE_MIGRATIONS.has(item.name)).map(item=>item.name), schemaContract, ...result }, { headers: { "cache-control": "no-store" } });
     }
 
     // Existing historical/V2 database: never restore again. Only migrations that are not registered are applied.
     const migrationResult = await applyPendingMigrations(token, accountId, databaseId);
-    return NextResponse.json({ ok: true, skippedHistoricalRestore: true, hadV2: hasV2, migrationsApplied:migrationResult.executed, schemaContract:migrationResult.schemaContract }, { headers: { "cache-control": "no-store" } });
+    return NextResponse.json({ ok: true, skippedHistoricalRestore: true, hadV2: hasV2, migrationsApplied:migrationResult.executed, migrationsSkippedLegacy:migrationResult.skippedLegacy, schemaContract:migrationResult.schemaContract }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "D1_RESTORE_FAILED" }, { status: 500, headers: { "cache-control": "no-store" } });
   }

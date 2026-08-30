@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.17.0";
+const CONTRACT_VERSION = "2.18.0";
 
 const REQUIRED: TableSpec[] = [
   {
