@@ -1,4 +1,13 @@
-# Corvo Library V2 0.20.7 — Fetch Bridge Seguro
+# Corvo Library V2 0.20.8 — Clean Once
+
+Esta versão limpa uma única vez todos os dados operacionais persistidos no D1
+(assets, projetos, execuções, filas e históricos), inclusive quando o bucket R2
+já está vazio. A configuração de infraestrutura é preservada, assim como a
+chave salva no navegador e os secrets/token guardados no Worker.
+
+Veja `RELEASE_0_20_8_CLEAN_ONCE.md`.
+
+# Histórico: Corvo Library V2 0.20.7 — Fetch Bridge Seguro
 
 Esta correção substitui o acesso direto navegador → Worker por um proxy
 same-origin do próprio app. Assim, Workers antigos não derrubam o boot com um
