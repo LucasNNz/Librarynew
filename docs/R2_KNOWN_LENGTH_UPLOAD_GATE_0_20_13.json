@@ -1,0 +1,15 @@
+{
+  "version": "0.20.13",
+  "gate": "R2_KNOWN_LENGTH_UPLOAD",
+  "status": "PASS",
+  "regression_target": "Provided readable stream must have a known length",
+  "checks": {
+    "direct_upload_transform_removed": true,
+    "known_length_request_body_preserved": true,
+    "unknown_length_bounded_buffer_fallback": true,
+    "zip_limit_48mb_preserved": true,
+    "import_queue_preserved": true,
+    "public_mcp_no_auth_preserved": true,
+    "new_migration": false
+  }
+}

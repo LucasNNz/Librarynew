@@ -1,7 +1,6 @@
 import type { Env } from "../types";
 import { createSignedUploadUrl, validSignedUploadRequest } from "./auth";
 import { id, nowMs } from "./ids";
-import { limitedStream } from "./net";
 import { recordIngestEvent } from "./materialization";
 import { refreshRecoveryAfterWrite, writeCandidateRecoveryRecord, writeImportRecoveryRecord } from "./recovery-manifest";
 
@@ -39,8 +38,27 @@ export async function receiveDirectUpload(request:Request,uploadId:string,env:En
   const claimed=await env.DB.prepare("UPDATE v2_direct_uploads SET status='UPLOADING',upload_attempts=upload_attempts+1,last_attempt_at=?,failure_reason=NULL,updated_at=? WHERE id=? AND status='PREPARED' AND expires_at>=? RETURNING *").bind(ts,ts,uploadId,ts).first<Record<string,unknown>>();
   if(!claimed)return new Response("Upload already claimed",{status:409});
   try{
-    await env.MEDIA.put(String(claimed.r2_key),limitedStream(request.body,maxBytes),{httpMetadata:{contentType:actualMime},customMetadata:{uploadId,uploadType:String(claimed.upload_type)}});
-    const object=await env.MEDIA.head(String(claimed.r2_key)); const size=Number(object?.size||length||0); const done=nowMs();
+    // R2 rejects TransformStream bodies because the transformed readable loses its known length.
+    // Preserve the original Request body when Content-Length is known; otherwise buffer safely
+    // up to maxBytes and upload a Uint8Array, whose length is explicit.
+    let uploadBody: ReadableStream<Uint8Array> | Uint8Array = request.body;
+    let storedLength = length;
+    if (!(length > 0)) {
+      const reader=request.body.getReader(); const chunks:Uint8Array[]=[]; let seen=0;
+      while(true){
+        const {done,value}=await reader.read();
+        if(done)break;
+        if(!value)continue;
+        seen+=value.byteLength;
+        if(seen>maxBytes)throw new Error("FILE_TOO_LARGE");
+        chunks.push(value);
+      }
+      const buffered=new Uint8Array(seen); let offset=0;
+      for(const chunk of chunks){buffered.set(chunk,offset); offset+=chunk.byteLength;}
+      uploadBody=buffered; storedLength=seen;
+    }
+    await env.MEDIA.put(String(claimed.r2_key),uploadBody,{httpMetadata:{contentType:actualMime},customMetadata:{uploadId,uploadType:String(claimed.upload_type)}});
+    const object=await env.MEDIA.head(String(claimed.r2_key)); const size=Number(object?.size||storedLength||0); const done=nowMs();
     await env.DB.prepare("UPDATE v2_direct_uploads SET status='STORED',actual_mime=?,size_bytes=?,failure_reason=NULL,updated_at=? WHERE id=? AND status='UPLOADING'").bind(actualMime,size,done,uploadId).run();
     return new Response(JSON.stringify({ok:true,uploadId,status:"STORED",sizeBytes:size,mimeType:actualMime}),{status:201,headers:{"content-type":"application/json"}});
   }catch(error){

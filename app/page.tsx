@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.12";
+const EXPECTED_CORE_VERSION = "0.20.13";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -614,7 +614,7 @@ export default function Home() {
     try {
       // The legacy Worker cannot safely clean heterogeneous D1 schemas. Update
       // it first, tolerate the response being lost during redeploy, and only
-      // then call the idempotent dynamic cleanup endpoint from Core 0.20.12.
+      // then call the idempotent dynamic cleanup endpoint from Core 0.20.13.
       setReleaseGateMessage("Atualizando o Core seguro…");
       let coreReady = false;
       try {

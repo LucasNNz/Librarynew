@@ -1,6 +1,6 @@
 {
   "name": "corvo-library-v2",
-  "version": "0.20.12",
+  "version": "0.20.13",
   "private": true,
   "engines": {
     "node": "22.x"

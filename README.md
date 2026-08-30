@@ -1,10 +1,13 @@
-# Corvo Library V2 0.20.12 — Public ChatGPT MCP
+# Corvo Library V2 0.20.13 — R2 Known-Length Upload
 
-Corrige `D1_EXEC_ERROR` causado por `PRAGMA foreign_keys = OFF`. A limpeza não
-desabilita mais integridade referencial: o Core lê as foreign keys do D1 e
-apaga tabelas filhas antes das tabelas pai.
+Corrige a falha de upload de lotes ZIP no R2 causada por um `TransformStream`
+sem comprimento conhecido. O upload direto agora preserva o `request.body` original
+quando `Content-Length` existe e usa um buffer limitado quando não existe.
 
-Veja `RELEASE_0_20_11_FK_ORDERED_CLEAN.md`.
+A fila de múltiplos ZIPs do 0.20.11 e o MCP público sem autenticação do 0.20.12
+continuam preservados.
+
+Veja `RELEASE_0_20_13_R2_KNOWN_LENGTH_UPLOAD.md`.
 
 # Histórico: Corvo Library V2 0.20.9 — Dynamic Clean Recovery
 
