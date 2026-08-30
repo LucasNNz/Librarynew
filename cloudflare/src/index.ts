@@ -65,7 +65,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.13", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.16", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -92,7 +92,7 @@ export default {
     if (url.pathname.startsWith("/package-files/") && request.method === "GET") return withCors(await servePackageFile(request,decodeURIComponent(url.pathname.slice(15)),env),request);
     if (url.pathname.startsWith("/project-media/") && request.method === "GET") return withCors(await serveProjectMedia(request,decodeURIComponent(url.pathname.slice(15)),env),request);
     if (url.pathname.startsWith("/project-files/") && request.method === "GET") return withCors(await serveProjectFile(request,decodeURIComponent(url.pathname.slice(15)),env),request);
-    if (url.pathname.startsWith("/asset-exports/") && request.method === "GET") return withCors(await serveAssetExport(request,env,decodeURIComponent(url.pathname.slice(15))),request);
+    if (/^\/asset-exports\/[^/]+$/.test(url.pathname) && request.method === "GET") return withCors(await serveAssetExport(request,env,decodeURIComponent(url.pathname.slice(15))),request);
     if (/^\/uploads\/[^/]+$/.test(url.pathname) && request.method === "PUT") {
       return withCors(await receiveDirectUpload(request, decodeURIComponent(url.pathname.split("/")[2]), env), request);
     }
@@ -117,7 +117,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.13",
+        version:"0.20.16",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,

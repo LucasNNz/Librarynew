@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.13";
+const EXPECTED_CORE_VERSION = "0.20.16";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -351,8 +351,32 @@ export default function Home() {
 
   async function downloadSelectedZip() {
     const ids=selectedAssetIds;if(!ids.length)return;
+    const parsePayload=async(response:Response)=>{
+      const text=await response.text();
+      if(!text)return {} as Record<string,unknown>;
+      try{return JSON.parse(text) as Record<string,unknown>;}catch{return {error:text};}
+    };
     setBulkBusy(true);setBulkMessage("Gerando ZIP no R2…");
-    try{const response=await fetch("/api/asset-exports",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetIds:ids,name:`corvo-${ids.length}-assets.zip`})});const queued=await response.json();if(!response.ok)throw new Error(queued.error||`HTTP_${response.status}`);const exportId=String(queued.export_id||queued.id||"");if(!exportId)throw new Error("EXPORT_ID_MISSING");for(let attempt=0;attempt<90;attempt+=1){const linkResponse=await fetch(`/api/asset-exports/${encodeURIComponent(exportId)}/link?ttlMinutes=30`,{cache:"no-store"});const value=await linkResponse.json();if(linkResponse.ok&&value.download_url){setBulkMessage(`ZIP pronto: ${formatBytes(Number(value.size_bytes||0))}. O download foi iniciado.`);window.location.assign(String(value.download_url));return;}if(linkResponse.status!==409)throw new Error(value.error||`EXPORT_LINK_HTTP_${linkResponse.status}`);await new Promise(resolve=>setTimeout(resolve,1000));}throw new Error("EXPORT_TIMEOUT");}catch(error){setBulkMessage(error instanceof Error?error.message:"EXPORT_FAILED");}finally{setBulkBusy(false);}
+    try{
+      const response=await fetch("/api/asset-exports",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetIds:ids,name:`corvo-${ids.length}-assets.zip`})});
+      const queued=await parsePayload(response);
+      if(!response.ok)throw new Error(String(queued.error||`HTTP_${response.status}`));
+      const exportId=String(queued.export_id||queued.id||"");
+      if(!exportId)throw new Error("EXPORT_ID_MISSING");
+      for(let attempt=0;attempt<90;attempt+=1){
+        const linkResponse=await fetch(`/api/asset-exports/${encodeURIComponent(exportId)}/link?ttlMinutes=30`,{cache:"no-store"});
+        const value=await parsePayload(linkResponse);
+        if(linkResponse.ok&&value.download_url){
+          setBulkMessage(`ZIP pronto: ${formatBytes(Number(value.size_bytes||0))}. O download foi iniciado.`);
+          window.location.assign(String(value.download_url));
+          return;
+        }
+        if(linkResponse.status!==409)throw new Error(String(value.error||`EXPORT_LINK_HTTP_${linkResponse.status}`));
+        await new Promise(resolve=>setTimeout(resolve,1000));
+      }
+      throw new Error("EXPORT_TIMEOUT");
+    }catch(error){setBulkMessage(error instanceof Error?error.message:"EXPORT_FAILED");}
+    finally{setBulkBusy(false);}
   }
 
   const refreshRecords = useCallback(async (module: string) => {
@@ -614,7 +638,7 @@ export default function Home() {
     try {
       // The legacy Worker cannot safely clean heterogeneous D1 schemas. Update
       // it first, tolerate the response being lost during redeploy, and only
-      // then call the idempotent dynamic cleanup endpoint from Core 0.20.13.
+      // then call the idempotent dynamic cleanup endpoint from the current Core.
       setReleaseGateMessage("Atualizando o Core seguro…");
       let coreReady = false;
       try {
@@ -655,11 +679,16 @@ export default function Home() {
       );
       const clean = await cleanResponse.json().catch(()=>({})) as any;
       if (!cleanResponse.ok) throw new Error(clean?.detail || clean?.error || `OPERATIONAL_CLEAN_HTTP_${cleanResponse.status}`);
-      if (Number(clean?.assets || 0) !== 0 || Number(clean?.projects || 0) !== 0) {
+      // CLEAN_ZERO is a one-shot release gate. Once the Core returns the
+      // persisted DONE marker (`idempotent: true`), assets/projects created
+      // after that baseline are legitimate production data and must never be
+      // interpreted as a failed cleanup on later boots.
+      const cleanBaselineAlreadyDone = clean?.idempotent === true && clean?.marker === "operational_clean_release_0_20_10";
+      if (!cleanBaselineAlreadyDone && (Number(clean?.assets || 0) !== 0 || Number(clean?.projects || 0) !== 0)) {
         throw new Error(`OPERATIONAL_CLEAN_VERIFICATION_FAILED:${String(clean?.assets)}/${String(clean?.projects)}`);
       }
 
-      setReleaseGateMessage("Confirmando o D1 vazio…");
+      setReleaseGateMessage(cleanBaselineAlreadyDone ? "Lendo o D1 real…" : "Confirmando o D1 vazio…");
       const read = (path:string) => fetchWithNetworkRetry(path, { cache:"no-store" }, { attempts:4, baseDelayMs:500 });
       const [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse, operationsResponse] = await Promise.all([
         read("/api/health"),
@@ -692,7 +721,7 @@ export default function Home() {
         nextOperations = Array.isArray(operationValue?.items) ? operationValue.items as Operation[] : [];
       }
 
-      if (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0) {
+      if (!cleanBaselineAlreadyDone && (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0)) {
         throw new Error("OPERATIONAL_CLEAN_FINAL_VERIFICATION_FAILED");
       }
 
@@ -707,7 +736,7 @@ export default function Home() {
       setProjects(nextProjects);
       setRecentOperations(nextOperations);
       setLoading(false);
-      setReleaseGateMessage("D1 limpo; configurações preservadas.");
+      setReleaseGateMessage(cleanBaselineAlreadyDone ? "D1 real carregado." : "D1 limpo; configurações preservadas.");
       setReleaseGateState("done");
     } catch (error) {
       setReleaseGateState("error");

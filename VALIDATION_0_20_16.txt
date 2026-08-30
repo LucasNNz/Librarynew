@@ -1,0 +1,29 @@
+CORVO LIBRARY V2 0.20.16 — VALIDATION
+
+FAST PUSH remote materialization
+- fetch remote -> limited stream -> Uint8Array -> R2.put
+- 30 MB safety limit preserved
+- unknown-length R2 put removed: PASS
+
+ZIP by URL
+- fetch remote -> limited stream -> Uint8Array -> R2.put
+- 48 MB safety limit preserved
+- direct response.body R2 put removed: PASS
+
+Version propagation
+- app EXPECTED_CORE_VERSION: 0.20.16
+- Worker health/core version: 0.20.16
+- embedded bundle version: 0.20.16
+- Cloudflare package version: 0.20.16
+- bundle build script version: 0.20.16
+
+Gates
+- frontend structural TypeScript: PASS
+- Worker structural TypeScript: PASS
+- embedded bundle assertions: PASS
+- embedded Worker node --check: PASS
+
+Schema/migrations
+- no new migration
+- no data cleanup
+- existing assets preserved

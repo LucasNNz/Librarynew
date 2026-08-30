@@ -185,21 +185,28 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
     if (!mime.startsWith("image/") && !mime.startsWith("video/")) throw new Error(`INVALID_MIME_${mime}`);
     const ext = mime.split("/")[1]?.replace("jpeg", "jpg").replace("svg+xml", "svg") || "bin";
     const r2Key = `incoming/${job.operationId}/${job.candidateId}.${ext}`;
-    await env.MEDIA.put(r2Key, limitedStream(response.body, 30 * 1024 * 1024), {
+    // R2 requires a body with a known length. Remote fetch bodies are generic
+    // ReadableStreams, and wrapping them in limitedStream() keeps the safety
+    // limit but still leaves the resulting stream length unknown. Materialize
+    // the bounded stream first, then put fixed-size bytes into R2.
+    const maxRemoteBytes = 30 * 1024 * 1024;
+    const remoteBytes = new Uint8Array(await new Response(limitedStream(response.body, maxRemoteBytes)).arrayBuffer());
+    if (remoteBytes.byteLength > maxRemoteBytes) throw new Error("FILE_TOO_LARGE");
+    await env.MEDIA.put(r2Key, remoteBytes, {
       httpMetadata: { contentType: mime },
       customMetadata: { sourceUrl: job.url, operationId: job.operationId, candidateId: job.candidateId },
     });
     const stored = await env.MEDIA.head(r2Key);
     const done = nowMs();
     await env.DB.batch([
-      env.DB.prepare("UPDATE v2_ingest_candidates SET status='MATERIALIZED',r2_key=?,mime_type=?,size_bytes=?,failure_reason=NULL,updated_at=? WHERE id=?").bind(r2Key, mime, Number(stored?.size || contentLength || 0), done, job.candidateId),
+      env.DB.prepare("UPDATE v2_ingest_candidates SET status='MATERIALIZED',r2_key=?,mime_type=?,size_bytes=?,failure_reason=NULL,updated_at=? WHERE id=?").bind(r2Key, mime, Number(stored?.size || remoteBytes.byteLength || contentLength || 0), done, job.candidateId),
       env.DB.prepare("UPDATE v2_ingest_operations SET succeeded=succeeded+1,updated_at=? WHERE id=?").bind(done, job.operationId),
     ]);
     await writeCandidateRecoveryRecord(env,job.candidateId,"CANDIDATE_MATERIALIZED").catch(() => undefined);
     await refreshRecoveryAfterWrite(env,"IMAGE_MATERIALIZED",job.candidateId);
     await updateHostHealth(env, remote.hostname.toLowerCase(), true);
     if (job.projectId && (job.tags || []).some(tag => String(tag).toLowerCase() === "thumb")) {
-      await createProjectMediaFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,r2Key,mimeType:mime,sizeBytes:Number(stored?.size || contentLength || 0),sourceUrl:job.url,agentOrigin:"FAST_PUSH"}).catch(()=>undefined);
+      await createProjectMediaFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,r2Key,mimeType:mime,sizeBytes:Number(stored?.size || remoteBytes.byteLength || contentLength || 0),sourceUrl:job.url,agentOrigin:"FAST_PUSH"}).catch(()=>undefined);
     }
     await recordIngestEvent(env, job.operationId, job.candidateId, "MATERIALIZED", "MATERIALIZED", r2Key, done - started);
   } catch (error) {

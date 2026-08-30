@@ -1,0 +1,16 @@
+{
+  "version": "0.20.14",
+  "gate": "ASSET_EXPORT_DOWNLOAD_ROUTE",
+  "status": "PASS",
+  "regression_target": "Unexpected token F / Forbidden is not valid JSON",
+  "checks": {
+    "signed_file_route_exact_match": true,
+    "link_route_not_shadowed": true,
+    "link_route_still_authenticated": true,
+    "frontend_non_json_fallback": true,
+    "import_queue_preserved": true,
+    "known_length_upload_preserved": true,
+    "public_mcp_no_auth_preserved": true,
+    "new_migration": false
+  }
+}

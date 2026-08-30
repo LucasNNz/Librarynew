@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import { catalogAsset, registerAssetUsage } from "./asset-ops";
 import { id, nowMs } from "./ids";
-import { safeRemoteUrl } from "./net";
+import { limitedStream, safeRemoteUrl } from "./net";
 import { prepareDirectUpload } from "./direct-upload";
 import { refreshRecoveryAfterWrite, writeAssetRecoveryRecord, writeImportRecoveryRecord } from "./recovery-manifest";
 
@@ -224,10 +224,13 @@ export async function importZipByUrl(env: Env, input: { url:string; fileName:str
   const importId = id("IMP");
   const key = `imports/${importId}/${cleanName(input.fileName || "importacao.zip")}`;
   const ts = nowMs();
-  await env.MEDIA.put(key, response.body, { httpMetadata:{ contentType:"application/zip" }, customMetadata:{ importId } });
+  const maxZipBytes = 48 * 1024 * 1024;
+  const zipBytes = new Uint8Array(await new Response(limitedStream(response.body, maxZipBytes)).arrayBuffer());
+  if (zipBytes.byteLength > maxZipBytes) return { error:"ZIP_TOO_LARGE_SPLIT_INTO_BATCHES", status:413 } as const;
+  await env.MEDIA.put(key, zipBytes, { httpMetadata:{ contentType:"application/zip" }, customMetadata:{ importId } });
   const head = await env.MEDIA.head(key);
   await env.DB.prepare("INSERT INTO imports (id,file_name,r2_key,size_bytes,status,created_at,manifest_text,warnings) VALUES (?,?,?,?, 'Recebido',?,?, '[]')")
-    .bind(importId, input.fileName || "importacao.zip", key, Number(head?.size || length), ts, input.manifestText || null).run();
+    .bind(importId, input.fileName || "importacao.zip", key, Number(head?.size || zipBytes.byteLength || length), ts, input.manifestText || null).run();
   await writeImportRecoveryRecord(env, importId, "IMPORT_RECEIVED").catch(() => undefined);
   await refreshRecoveryAfterWrite(env, "IMPORT_RECEIVED", importId);
   return { importId, status:"Recebido", r2Key:key };
