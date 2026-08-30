@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import { createSignedSupervisorCandidateUrl } from "./auth";
 import { id, nowMs } from "./ids";
 import { reconcileAutomaticProject } from "./projects";
+import { recordRuntimeHeartbeat } from "./heartbeats";
 
 const parseJson=(value:unknown,fallback:unknown={})=>{try{return JSON.parse(String(value??""))}catch{return fallback}};
 const boolValue=(value:unknown)=>String(value).toLowerCase()==="true"||String(value)==="1";
@@ -55,8 +56,29 @@ export async function claimNextSupervisorWork(env:Env,input:{workerId?:string;pr
   if(!update)return {claimed:false,reason:"LEASE_RACE_LOST"};
   await env.DB.prepare("INSERT INTO supervisor_executions (id,project_id,previous_execution_id,status,lease_started_at,last_seen_at,lease_expires_at,resume_reason,created_at,updated_at) VALUES (?,?,?,'ATIVO',?,?,?,?,?,?)")
     .bind(executionId,project.id,previous,ts,ts,expires,input.workerId?`CLAIM:${input.workerId}`:"CLAIM_MCP",ts,ts).run();
+  await recordRuntimeHeartbeat(env,{scopeType:"SUPERVISOR",scopeId:String(project.id),ownerId:input.workerId||"SUPERVISOR_MCP",executionId,ttlSeconds:ttl*60,metadata:{projectId:project.id}});
   if(boolValue(cfg.supervisor_reconcile_before_resume??"true")) await reconcileAutomaticProject(env,String(project.id));
   return {claimed:true,executionId,leaseExpiresAt:expires,project:update};
+}
+
+export async function heartbeatSupervisor(env:Env,input:{projectId:string;executionId:string;ownerId?:string;leaseMinutes?:number}){
+  const cfg=await settings(env); const ttl=Math.max(1,Math.min(input.leaseMinutes||safeInt(cfg.supervisor_lease_ttl_minutes,10),120));
+  const ts=nowMs(),expires=ts+ttl*60_000,ownerId=input.ownerId||"SUPERVISOR_MCP";
+  const current=await env.DB.prepare("SELECT * FROM supervisor_executions WHERE id=? AND project_id=?").bind(input.executionId,input.projectId).first<Record<string,unknown>>();
+  if(!current)return {error:"SUPERVISOR_EXECUTION_NOT_FOUND",status:404} as const;
+  if(String(current.status)!=="ATIVO")return {error:"SUPERVISOR_LEASE_NOT_ACTIVE",currentStatus:current.status,status:409} as const;
+  if(Number(current.lease_expires_at||0)<ts)return {error:"SUPERVISOR_LEASE_EXPIRED",leaseExpiresAt:current.lease_expires_at,status:409} as const;
+  const runtime=await env.DB.prepare("SELECT owner_id,execution_id,lease_expires_at,status FROM v2_runtime_heartbeats WHERE scope_type='SUPERVISOR' AND scope_id=?").bind(input.projectId).first<Record<string,unknown>>();
+  if(runtime && String(runtime.status)==="ACTIVE" && Number(runtime.lease_expires_at||0)>=ts && (String(runtime.owner_id)!==ownerId || String(runtime.execution_id)!==input.executionId))
+    return {error:"SUPERVISOR_HEARTBEAT_OWNED_BY_ANOTHER_EXECUTION",ownerId:runtime.owner_id,executionId:runtime.execution_id,leaseExpiresAt:runtime.lease_expires_at,status:409} as const;
+  const results=await env.DB.batch([
+    env.DB.prepare("UPDATE supervisor_executions SET last_seen_at=?,lease_expires_at=?,updated_at=? WHERE id=? AND project_id=? AND status='ATIVO' AND lease_expires_at>=?").bind(ts,expires,ts,input.executionId,input.projectId,ts),
+    env.DB.prepare("UPDATE automatic_projects SET supervisor_last_seen_at=?,supervisor_lease_expires_at=?,last_action='HEARTBEAT',state_version=state_version+1,updated_at=? WHERE id=? AND supervisor_execution_id=? AND supervisor_status='ATIVO' AND supervisor_lease_expires_at>=?").bind(ts,expires,ts,input.projectId,input.executionId,ts),
+  ]);
+  const changedA=Number(results[0]?.meta?.changes||0),changedB=Number(results[1]?.meta?.changes||0);
+  if(changedA!==1||changedB!==1)return {error:"SUPERVISOR_LEASE_STATE_INCONSISTENT",executionUpdated:changedA,projectUpdated:changedB,status:409} as const;
+  await recordRuntimeHeartbeat(env,{scopeType:"SUPERVISOR",scopeId:input.projectId,ownerId,executionId:input.executionId,ttlSeconds:ttl*60,metadata:{projectId:input.projectId}});
+  return {ok:true,projectId:input.projectId,ownerId,executionId:input.executionId,lastSeenAt:ts,leaseExpiresAt:expires,remainingMs:expires-ts,ttlMinutes:ttl,status:200} as const;
 }
 
 export async function supervisorWatchdog(env:Env){
@@ -66,7 +88,8 @@ export async function supervisorWatchdog(env:Env){
   for(const row of rows){
     await env.DB.batch([
       env.DB.prepare("UPDATE supervisor_executions SET status='ABANDONADO',abandoned_at=?,updated_at=? WHERE id=? AND status='ATIVO'").bind(ts,ts,row.id),
-      env.DB.prepare("UPDATE automatic_projects SET supervisor_status='ABANDONADO',abandoned_at=?,supervisor_execution_id=NULL,supervisor_lease_expires_at=NULL,updated_at=updated_at,state_version=state_version+1 WHERE id=? AND supervisor_execution_id=?").bind(ts,row.project_id,row.id)
+      env.DB.prepare("UPDATE automatic_projects SET supervisor_status='ABANDONADO',abandoned_at=?,supervisor_execution_id=NULL,supervisor_lease_expires_at=NULL,updated_at=updated_at,state_version=state_version+1 WHERE id=? AND supervisor_execution_id=?").bind(ts,row.project_id,row.id),
+      env.DB.prepare("UPDATE v2_runtime_heartbeats SET status='EXPIRED',updated_at=? WHERE scope_type='SUPERVISOR' AND scope_id=? AND execution_id=? AND status='ACTIVE'").bind(ts,row.project_id,row.id)
     ]);
   }
   return {expired:rows.length,executionIds:rows.map(r=>r.id)};

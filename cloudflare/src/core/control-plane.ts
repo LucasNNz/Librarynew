@@ -65,3 +65,24 @@ export async function selfUpdateCore(env: Env) {
   await cloudflarePut(env, bundle);
   return { ok: true, targetVersion: version, source: `${appOrigin}/api/setup/core-bundle` };
 }
+
+type MigrationPayload = { version?:string; schemaVersion?:string; items?:Array<{name:string;sql:string;checksum?:string}> };
+
+export async function applyMigrationsFromApp(env: Env) {
+  const appOrigin = required(env.CORVO_APP_ORIGIN, "CORVO_APP_ORIGIN").replace(/\/$/, "");
+  const response = await fetch(`${appOrigin}/api/setup/migrations`, { headers:{accept:"application/json"} });
+  if (!response.ok) throw new Error(`MIGRATION_MANIFEST_HTTP_${response.status}`);
+  const payload = await response.json() as MigrationPayload;
+  const items = Array.isArray(payload.items) ? payload.items.filter(item=>/^\d+_.*\.sql$/.test(item.name) && typeof item.sql==="string") : [];
+  await env.DB.exec("CREATE TABLE IF NOT EXISTS v2_migrations_applied (name TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL DEFAULT '', applied_at INTEGER NOT NULL)");
+  const rows = await env.DB.prepare("SELECT name FROM v2_migrations_applied").all<{name:string}>();
+  const applied = new Set((rows.results||[]).map(row=>String(row.name)));
+  const executed:string[]=[];
+  for(const item of items){
+    if(applied.has(item.name)) continue;
+    await env.DB.exec(item.sql);
+    await env.DB.prepare("INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)").bind(item.name,item.checksum||"",Date.now()).run();
+    executed.push(item.name);
+  }
+  return {ok:true,targetVersion:payload.version||null,schemaVersion:payload.schemaVersion||null,executed};
+}

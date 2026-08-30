@@ -1,69 +1,43 @@
-# Desenvolvimento contínuo — checkpoint 0.12
+# Development Status — Corvo Library V2 0.17.0
 
-## Núcleo implementado
+## UI 0.17
 
-- D1 histórico restaurado 1:1; nenhuma conversão permanente de catálogo.
-- R2 por binding nativo `MEDIA` no bucket `corvoquiz-prod`.
-- Queue com retry limitado, concorrência limitada e DLQ.
-- FAST PUSH assíncrono; MCP recebe ACK e não transporta mídia por URL.
-- Upload direto atômico com recuperação de claims interrompidos.
-- Catálogo, usos, pendentes, Inbox, lotes, solicitações, imports e projetos.
-- FAST APPROVE idempotente e promoção de objetos para chave canônica `assets/...`.
-- Auditoria D1↔R2 e integridade lógica D1.
-- Workers com lease atômico, limites de capacidade, retry/backoff e watchdog.
-- Supervisor com lease próprio, decisões, candidatos, circuit breaker e perfis de coleta.
-- Proteção contra dados históricos órfãos: Dispatcher e Supervisor não os assumem nem os apagam.
-- Políticas operacionais, estoque/giro, coleta automática, produção, ZIPs e downloads.
-- Secrets separados: `CORVO_INTERNAL_KEY` (API) e `CORVO_SIGNING_KEY` (somente Worker).
-- MCP stateless V2.
+- visual shell redesenhado
+- dashboard Visão geral funcional
+- sidebar reduzida a seis módulos
+- Assets consolidado com Catálogo/Pendentes/Rejeitados
+- módulos técnicos agrupados por função
+- responsividade revisada
+- backend, D1, R2, Queue, MCP e heartbeat preservados
 
-## MCP
+## Núcleo
+- D1 histórico restaurável 1:1: PASS.
+- R2 `corvoquiz-prod` por binding: implementado.
+- Queue/DLQ + materialização: implementado.
+- Setup web autossuficiente: implementado.
+- Persistência de configuração entre deploys: protegida por gate.
 
-- Ferramentas históricas: **229**.
-- Implementadas com o mesmo nome: **227**.
-- Substituídas por bindings seguros: **2** (`obter_configuracao_cloudflare`, `configurar_cloudflare`).
-- Planejadas/faltantes por nome: **0**.
-- Extras V2: `auditar_armazenamento_r2`, `auditar_integridade_d1`, `obter_status_upload_midia`.
+## Heartbeats 0.16
 
-`IMPLEMENTADO` garante presença no contrato MCP V2. Equivalência comportamental crítica é progressivamente coberta pelos gates e continua sendo validada antes do corte.
+- Worker/Supervisor possuem heartbeat MCP explícito e renovação atômica do lease.
+- Operações longas possuem heartbeat genérico com owner/execution e expiração controlada.
+- Watchdogs passam a refletir expiração também em `v2_runtime_heartbeats`.
 
-## Integridade 0.12
-
-- `PRAGMA integrity_check`: PASS.
-- Assets: 929 / 849 aprovados / 77 pendentes / 3 rejeitados.
-- Universos aprovados: 174.
-- Usos: 1.176.
-- Assets sem `r2_key`: 0.
-- `r2_key` compartilhadas: 8 grupos históricos preservados.
-- Tabelas: 62 = 47 históricas + 15 `v2_*`.
-- Schema V2: 2.7.0.
-- Órfãos lógicos `v2_*`: **0**.
-- 11.505 violações FK históricas são reproduzidas exatamente pelo backup e estão congeladas em `HISTORICAL_INTEGRITY_BASELINE.json`; aumento ou grupo novo falha o gate.
-- Risco histórico ativo detectado: 54 worker jobs + 134 decisões + 60 candidatas de Supervisor sem item pai. Todos são preservados para auditoria e ignorados pelos fluxos V2.
+## Operação 0.15
+- Bulk select / approve / permanent delete: implementado.
+- ZIP de assets em massa + link temporário: implementado.
+- R2 pending reconciliation: implementado.
+- Exclusão dos Pendentes `NOT_FOUND` após fresh scan: implementado.
+- Projetos históricos: purgados; backfill legado desativado.
+- Prefixo R2 `projects/`: manutenção automática de purge.
+- Supervisor policy autonomy: implementada via MCP.
+- Recovery manifests/sidecars/tombstones no R2: implementados.
 
 ## Gates
-
-- Worker/Core structural typecheck: PASS.
-- Frontend/setup structural typecheck: PASS.
-- Restauração + migrations 9000–9007: PASS.
-- Paridade MCP: PASS (227 históricos registrados, 2 substituídos, 0 duplicados).
-- Imports relativos/dependências legadas: PASS.
-- `next build` real: PENDENTE por instalação de dependências/registry.
-- Provisionamento real Cloudflare: PENDENTE de teste ao vivo pelo assistente web autossuficiente.
-
-## Bloqueios externos
-
-- Executar o primeiro provisionamento real pelo assistente web em uma conta Cloudflare.
-- Executar build real no ambiente de hospedagem antes de Production.
-- Validar um ciclo real de auto-update do Core após a primeira instalação.
-
-
-## Persistência de infraestrutura — 0.12
-
-- Manifesto `v2_infrastructure_profiles` não secreto e singleton.
-- Estado padrão `LOCKED`; deploy e reabertura só leem.
-- Botão explícito `Alterar configuração` habilita edição local; salvar exige revisão esperada e confirmação explícita.
-- Histórico imutável em `v2_infrastructure_config_events`.
-- Gate prova que reaplicar a migration persistente preserva o perfil byte a byte e que migrations futuras são registradas/aplicadas pela própria camada web.
-- `Verificar agora` só atualiza diagnóstico/`last_verified_at`.
-- Badge do frontend atualizado para `V2 CORE 0.12`.
+- D1 integrity: PASS.
+- Historical baseline: PASS.
+- V2 logical orphans: 0.
+- Structural TypeScript — Core: PASS.
+- Structural TypeScript — Frontend: PASS.
+- MCP historical compatibility: 227 implementadas + 2 substituídas.
+- Gates vivos de Vercel/Cloudflare continuam dependentes do ambiente implantado.

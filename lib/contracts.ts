@@ -160,6 +160,55 @@ export type StorageAudit = {
   shared?: Array<{key:string;references:Array<Record<string,unknown>>}>;
 };
 
+
+
+export type PendingR2Match = {
+  key: string;
+  size: number;
+  score: number;
+  confidence: "EXACT"|"HIGH"|"MEDIUM"|"LOW";
+  reasons: string[];
+  autoRepairable: boolean;
+};
+
+export type PendingR2Reconcile = {
+  pending: number;
+  scannedObjects: number;
+  inventoryTruncated: boolean;
+  present: number;
+  repairable: number;
+  probable: number;
+  unresolved: number;
+  readOnly: boolean;
+  items: Array<{
+    assetId: string;
+    name: string;
+    universe: string;
+    subject: string|null;
+    currentR2Key: string;
+    originalName: string;
+    expectedBytes: number;
+    state: "FOUND_CURRENT"|"FOUND_ALTERNATE"|"POSSIBLE_MATCH"|"NOT_FOUND";
+    bestMatch: PendingR2Match|null;
+    alternatives: PendingR2Match[];
+  }>;
+};
+
+export type R2Explorer = {
+  prefix: string;
+  breadcrumbs: Array<{name:string;prefix:string}>;
+  scannedObjects: number;
+  totalBytes: number;
+  referencedObjects: number;
+  orphanObjects: number;
+  directObjects: number;
+  truncated: boolean;
+  maxObjects: number;
+  readOnly: boolean;
+  folders: Array<{prefix:string;name:string;objects:number;bytes:number;referencedObjects:number;orphanObjects:number;newestUploaded:string|null}>;
+  objects: Array<{key:string;size:number;uploaded:string;etag:string;referenced:boolean;references:Array<{source_table:string;source_id:string;r2_key:string}>}>;
+};
+
 export type DispatcherHealth = {
   ok: boolean;
   expiredLeases: number;

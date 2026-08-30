@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, UniverseFacet } from "../lib/contracts";
+import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, UniverseFacet } from "../lib/contracts";
 import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
 type Health = {
@@ -39,8 +39,15 @@ const defaultInfrastructureDraft: InfrastructureDraft = {
   dlqName:"corvo-materialize-v2-dlq",
 };
 
-const nav = ["Catálogo", "Projetos", "Solicitações", "Lotes", "Importações", "Coleta automática", "Operação", "Políticas", "Estoque & giro", "Inbox candidatas", "Pendentes", "Rejeitados", "Configurações"];
-const EXPECTED_CORE_VERSION = "0.12.3";
+const primaryNav = [
+  { id:"Visão geral", icon:"⌂", label:"Visão geral" },
+  { id:"Assets", icon:"▦", label:"Assets" },
+  { id:"Projetos", icon:"◇", label:"Projetos" },
+  { id:"Execuções", icon:"↯", label:"Execuções" },
+  { id:"Análise", icon:"◫", label:"Análise" },
+  { id:"Configurações", icon:"⚙", label:"Configurações" },
+] as const;
+const EXPECTED_CORE_VERSION = "0.17.0";
 
 function Mark() {
   return <span className="mark" aria-hidden="true"><i /></span>;
@@ -62,11 +69,18 @@ function statusClass(status: string) {
 }
 
 export default function Home() {
-  const [active, setActive] = useState("Catálogo");
+  const [active, setActive] = useState("Visão geral");
+  const [assetView, setAssetView] = useState("Catálogo");
+  const [projectView, setProjectView] = useState("Projetos");
+  const [executionView, setExecutionView] = useState("Coleta automática");
+  const [analysisView, setAnalysisView] = useState("Estoque & giro");
   const [health, setHealth] = useState<Health | null>(null);
   const [stats, setStats] = useState<CatalogStats>({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
   const [universes, setUniverses] = useState<UniverseFacet[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState("");
   const [total, setTotal] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -102,6 +116,13 @@ export default function Home() {
   const [dataHealth, setDataHealth] = useState<{ok:boolean;v2Orphans:number;activeHistoricalOrphans:number;catalog:{assetsMissingR2Key:number;duplicateAssetR2Keys:number};historical:Record<string,number>;activeHistoricalRisk:Record<string,number>;v2:Record<string,number>}|null>(null);
   const [r2Objects, setR2Objects] = useState<Array<{key:string;size:number;etag:string;uploaded:string}>>([]);
   const [storageAudit, setStorageAudit] = useState<StorageAudit | null>(null);
+  const [r2Explorer, setR2Explorer] = useState<R2Explorer | null>(null);
+  const [r2ExploreBusy, setR2ExploreBusy] = useState(false);
+  const [r2ExploreError, setR2ExploreError] = useState("");
+  const [pendingR2, setPendingR2] = useState<PendingR2Reconcile | null>(null);
+  const [pendingR2Busy, setPendingR2Busy] = useState(false);
+  const [pendingR2RepairBusy, setPendingR2RepairBusy] = useState(false);
+  const [pendingR2Message, setPendingR2Message] = useState("");
   const [auditBusy, setAuditBusy] = useState(false);
   const [recentOperations, setRecentOperations] = useState<Array<Record<string,unknown>>>([]);
   const [dispatcherHealth, setDispatcherHealth] = useState<DispatcherHealth | null>(null);
@@ -129,6 +150,12 @@ export default function Home() {
   const [autoSetupStage, setAutoSetupStage] = useState("");
   const [autoSetupBusy, setAutoSetupBusy] = useState(false);
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
+
+  const currentView = active === "Assets" ? assetView
+    : active === "Projetos" ? projectView
+    : active === "Execuções" ? executionView
+    : active === "Análise" ? analysisView
+    : active;
 
   const refreshHealth = useCallback(async () => {
     const response = await fetch("/api/health", { cache:"no-store" });
@@ -171,6 +198,52 @@ export default function Home() {
       append ? setLoadingMore(false) : setLoading(false);
     }
   }, [query, universe, status]);
+
+  const selectedAssetIds = useMemo(() => [...selectedAssets], [selectedAssets]);
+  const selectedPendingCount = useMemo(() => assets.filter(asset => selectedAssets.has(asset.id) && asset.status === "PENDING").length, [assets, selectedAssets]);
+
+  function toggleAssetSelection(assetId: string) {
+    setSelectedAssets(current => { const next=new Set(current); next.has(assetId)?next.delete(assetId):next.add(assetId); return next; });
+  }
+  function selectLoadedAssets() { setSelectedAssets(new Set(assets.map(asset=>asset.id))); }
+  function clearAssetSelection() { setSelectedAssets(new Set()); }
+
+  async function bulkApproveAssets() {
+    const ids=selectedAssetIds;
+    if(!ids.length)return;
+    setBulkBusy(true);setBulkMessage("");
+    try{const response=await fetch("/api/assets/approve-pending",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetIds:ids,note:"Aprovado em lote pela Corvo Library V2"})});const value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP_${response.status}`);setBulkMessage(`${Number(value.approved||0)} asset(s) aprovado(s).`);clearAssetSelection();await Promise.all([refreshStats(),fetchCatalog(null,false)]);}catch(error){setBulkMessage(error instanceof Error?error.message:"BULK_APPROVE_FAILED");}finally{setBulkBusy(false);}
+  }
+
+  async function bulkDeleteAssets(idsInput?: string[], pendingOnly=false) {
+    const ids=idsInput?.length?idsInput:selectedAssetIds;if(!ids.length)return;
+    const ok=window.confirm(`Excluir permanentemente ${ids.length} registro(s)? Quando o arquivo existir e não for compartilhado, ele também será removido do bucket R2. Esta ação não tem desfazer.`);if(!ok)return;
+    setBulkBusy(true);setBulkMessage("");
+    try{const endpoint=pendingOnly?"/api/assets/pending/permanent-delete":"/api/assets/permanent-delete-batch";const response=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetIds:ids,confirm:true})});const value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP_${response.status}`);setBulkMessage(`${Number(value.deleted||0)} registro(s) removido(s) permanentemente.`);clearAssetSelection();setPendingR2(null);await Promise.all([refreshStats(),fetchCatalog(null,false)]);}catch(error){setBulkMessage(error instanceof Error?error.message:"BULK_DELETE_FAILED");}finally{setBulkBusy(false);}
+  }
+
+  async function deleteUnresolvedPending() {
+    const expected=(pendingR2?.items||[]).filter(item=>item.state==="NOT_FOUND").length;
+    if(!expected)return;
+    const ok=window.confirm(`Refazer a varredura completa do R2 e excluir permanentemente apenas os Pendentes que continuarem NÃO ENCONTRADOS?\n\nEles serão removidos do D1 para recaptura limpa. Esta ação não tem desfazer.`);
+    if(!ok)return;
+    setBulkBusy(true);setBulkMessage("Refazendo varredura antes da exclusão…");
+    try{
+      const response=await fetch("/api/storage/r2/pending-reconcile/delete-missing",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({confirm:true,maxObjects:20000})});
+      const value=await response.json();
+      if(!response.ok)throw new Error(value.error||`HTTP_${response.status}`);
+      setBulkMessage(`${Number(value.deleted||0)} Pendentes sem arquivo foram removidos. A política agora é recapturar mídia nova.`);
+      clearAssetSelection();setPendingR2(null);
+      await Promise.all([refreshStats(),fetchCatalog(null,false)]);
+    }catch(error){setBulkMessage(error instanceof Error?error.message:"DELETE_MISSING_PENDING_FAILED");}
+    finally{setBulkBusy(false);}
+  }
+
+  async function downloadSelectedZip() {
+    const ids=selectedAssetIds;if(!ids.length)return;
+    setBulkBusy(true);setBulkMessage("Gerando ZIP no R2…");
+    try{const response=await fetch("/api/asset-exports",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetIds:ids,name:`corvo-${ids.length}-assets.zip`})});const queued=await response.json();if(!response.ok)throw new Error(queued.error||`HTTP_${response.status}`);const exportId=String(queued.export_id||queued.id||"");if(!exportId)throw new Error("EXPORT_ID_MISSING");for(let attempt=0;attempt<90;attempt+=1){const linkResponse=await fetch(`/api/asset-exports/${encodeURIComponent(exportId)}/link?ttlMinutes=30`,{cache:"no-store"});const value=await linkResponse.json();if(linkResponse.ok&&value.download_url){setBulkMessage(`ZIP pronto: ${formatBytes(Number(value.size_bytes||0))}. O download foi iniciado.`);window.location.assign(String(value.download_url));return;}if(linkResponse.status!==409)throw new Error(value.error||`EXPORT_LINK_HTTP_${linkResponse.status}`);await new Promise(resolve=>setTimeout(resolve,1000));}throw new Error("EXPORT_TIMEOUT");}catch(error){setBulkMessage(error instanceof Error?error.message:"EXPORT_FAILED");}finally{setBulkBusy(false);}
+  }
 
   const refreshRecords = useCallback(async (module: string) => {
     setRecordLoading(true);
@@ -245,6 +318,50 @@ export default function Home() {
     } finally { setAuditBusy(false); }
   },[]);
 
+  const exploreR2 = useCallback(async (prefix = "") => {
+    setR2ExploreBusy(true);
+    setR2ExploreError("");
+    try {
+      const params=new URLSearchParams({maxObjects:"50000"});
+      if(prefix)params.set("prefix",prefix);
+      const response=await fetch(`/api/storage/r2/explore?${params}`,{cache:"no-store"});
+      const value=await response.json();
+      if(!response.ok){setR2ExploreError(String(value?.error||"Falha ao vasculhar R2"));return;}
+      setR2Explorer(value as R2Explorer);
+    } catch(error) {
+      setR2ExploreError(error instanceof Error?error.message:"Falha ao vasculhar R2");
+    } finally { setR2ExploreBusy(false); }
+  },[]);
+
+  const scanPendingR2 = useCallback(async () => {
+    setPendingR2Busy(true);
+    setPendingR2Message("");
+    try {
+      const response=await fetch("/api/storage/r2/pending-reconcile?maxObjects=50000&limit=500",{cache:"no-store"});
+      const value=await response.json();
+      if(!response.ok){setPendingR2Message(String(value?.error||"Falha ao procurar os pendentes no R2"));return;}
+      setPendingR2(value as PendingR2Reconcile);
+    } catch(error) {
+      setPendingR2Message(error instanceof Error?error.message:"Falha ao procurar os pendentes no R2");
+    } finally { setPendingR2Busy(false); }
+  },[]);
+
+  const repairPendingR2 = useCallback(async () => {
+    if(!pendingR2?.repairable)return;
+    setPendingR2RepairBusy(true);
+    setPendingR2Message("");
+    try {
+      const ids=pendingR2.items.filter(item=>item.state==="FOUND_ALTERNATE"&&item.bestMatch?.autoRepairable).map(item=>item.assetId);
+      const response=await fetch("/api/storage/r2/pending-reconcile",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({assetIds:ids,maxObjects:50000})});
+      const value=await response.json();
+      if(!response.ok){setPendingR2Message(String(value?.error||"Falha ao religar os arquivos encontrados"));return;}
+      setPendingR2Message(`${Number(value.repaired||0)} pendente(s) religado(s) ao arquivo físico. O status Pendente foi preservado.`);
+      await Promise.all([scanPendingR2(),fetchCatalog(null,false),refreshStats()]);
+    } catch(error) {
+      setPendingR2Message(error instanceof Error?error.message:"Falha ao religar os arquivos encontrados");
+    } finally { setPendingR2RepairBusy(false); }
+  },[pendingR2,scanPendingR2,fetchCatalog,refreshStats]);
+
   const projectAction = useCallback(async (projectId:string, action:"process"|"reconcile") => {
     await fetch(`/api/projects/${encodeURIComponent(projectId)}/${action}`,{method:"POST"});
     await refreshRecords("Projetos");
@@ -273,9 +390,10 @@ export default function Home() {
   }, [refreshHealth, refreshStats]);
 
   useEffect(() => {
-    if (active === "Pendentes" && status !== "PENDING") setStatus("PENDING");
-    if (active === "Rejeitados" && status !== "REJECTED") setStatus("REJECTED");
-  }, [active, status]);
+    if (active !== "Assets") return;
+    const desired = assetView === "Catálogo" ? "APPROVED" : assetView === "Pendentes" ? "PENDING" : "REJECTED";
+    if (status !== desired) setStatus(desired);
+  }, [active, assetView, status]);
 
   useEffect(() => {
     const timer = setTimeout(() => void fetchCatalog(null, false), 280);
@@ -283,13 +401,16 @@ export default function Home() {
   }, [fetchCatalog]);
 
   useEffect(() => {
-    if (active === "Inbox candidatas") void refreshCandidates();
-    if (["Projetos","Solicitações","Lotes","Importações"].includes(active)) void refreshRecords(active);
-    if (active === "Operação") void refreshOperations();
-    if (active === "Políticas") void refreshPolicies();
-    if (active === "Estoque & giro") void refreshStock();
-    if (active === "Configurações") void refreshSettings();
-  }, [active, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings]);
+    if (currentView === "Visão geral") {
+      void Promise.all([refreshRecords("Projetos"), refreshOperations()]);
+    }
+    if (currentView === "Inbox candidatas") void refreshCandidates();
+    if (["Projetos","Solicitações","Lotes","Importações"].includes(currentView)) void refreshRecords(currentView);
+    if (currentView === "Operação") void refreshOperations();
+    if (currentView === "Políticas") void refreshPolicies();
+    if (currentView === "Estoque & giro") void refreshStock();
+    if (currentView === "Configurações") void refreshSettings();
+  }, [currentView, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings]);
 
   useEffect(() => {
     if (!operation || ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(operation.status)) return;
@@ -302,6 +423,17 @@ export default function Home() {
 
   const coreState = !health ? "VERIFICANDO" : health.core.ok ? "ONLINE" : health.coreConfigured ? "INDISPONÍVEL" : "AGUARDANDO CONFIGURAÇÃO";
   const selectedUniverse = useMemo(() => universes.find(item => item.name === universe), [universes, universe]);
+  const activeProjects = useMemo(() => projects.filter(project => !["COMPLETED","DONE","CANCELLED","FAILED"].includes(String(project.pipeline_status || project.status || "").toUpperCase())), [projects]);
+  const completedOps = useMemo(() => recentOperations.filter(item => ["COMPLETED","COMPLETED_WITH_ERRORS"].includes(String(item.status || "").toUpperCase())).length, [recentOperations]);
+  const failedOps = useMemo(() => recentOperations.filter(item => String(item.status || "").toUpperCase() === "FAILED").length, [recentOperations]);
+  const operationSuccessRate = completedOps + failedOps > 0 ? Math.round((completedOps / (completedOps + failedOps)) * 100) : 100;
+  const activeWorkerCount = dispatcherHealth?.sessions?.length || 0;
+  const pageDescription = active === "Visão geral" ? "A fábrica Corvo em um único painel: agentes, projetos, fila, assets e atividade recente."
+    : active === "Assets" ? "Biblioteca visual organizada em Catálogo, Pendentes e Rejeitados, com ações reais em lote."
+    : active === "Projetos" ? "Projetos, solicitações, lotes e importações reunidos no mesmo fluxo de produção."
+    : active === "Execuções" ? "Coleta, materialização, Inbox e operação em tempo real com heartbeat e Queue."
+    : active === "Análise" ? "Estoque, giro, políticas e inteligência operacional da Library."
+    : "Infraestrutura autossuficiente, persistente e protegida entre atualizações.";
 
   async function uploadDirectMedia() {
     if (!directFile) { setDirectMessage("Selecione um arquivo."); return; }
@@ -312,7 +444,7 @@ export default function Home() {
       const upload=await fetch(ticket.uploadUrl,{method:"PUT",headers:{"content-type":directFile.type||"application/octet-stream"},body:directFile}); if(!upload.ok)throw new Error(`UPLOAD_${upload.status}`);
       const confirm=await fetch(`/api/uploads/${encodeURIComponent(ticket.uploadId)}/confirm`,{method:"POST"}); const result=await confirm.json(); if(!confirm.ok)throw new Error(result.error||"CONFIRM_FAILED");
       setDirectMessage(`Materializado: ${result.candidateId || result.projectFileId || ticket.uploadId}`); setDirectFile(null);
-      if(active==="Inbox candidatas")await refreshCandidates();
+      if(currentView==="Inbox candidatas")await refreshCandidates();
     } catch(error) { setDirectMessage(error instanceof Error?error.message:"UPLOAD_FAILED"); }
     finally { setDirectBusy(false); }
   }
@@ -504,7 +636,13 @@ export default function Home() {
         if (probe.ok) {
           const raw = await probe.json();
           const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
-          if (version === EXPECTED_CORE_VERSION) { setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION} sem reconfigurar a infraestrutura.`); break; }
+          if (version === EXPECTED_CORE_VERSION) {
+            const migrationResponse=await fetch("/api/control/apply-migrations",{method:"POST"});
+            const migration=await migrationResponse.json();
+            if(!migrationResponse.ok)throw new Error(migration.error||`MIGRATION_HTTP_${migrationResponse.status}`);
+            setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; migrations aplicadas: ${(migration.executed||[]).length}. A infraestrutura permaneceu travada.`);
+            break;
+          }
         }
       }
     } catch(error) {
@@ -553,31 +691,77 @@ Tudo é configurado pela própria tela Configurações.
   }
 
 
-  return <main className="shell">
-    <aside className="sidebar">
-      <div className="brand"><Mark /><div><strong>CORVO</strong><span>LIBRARY V2</span></div></div>
-      <p className="navLabel">NAVEGAÇÃO</p>
-      <nav>{nav.map(item => <button key={item} className={active===item ? "active" : ""} onClick={() => setActive(item)}><span className="glyph">{item === "Catálogo" ? "▦" : item === "Projetos" ? "◆" : item === "Operação" ? "⚙" : item === "Inbox candidatas" ? "▣" : item === "Coleta automática" ? "↯" : "•"}</span>{item}</button>)}</nav>
-      <div className="sideStatus"><span className={health?.core.ok ? "dot live" : "dot"}/><div><strong>Corvo Core</strong><small>{coreState}</small></div></div>
+  return <main className="shell shellV17">
+    <aside className="sidebar sidebarV17">
+      <div className="brand brandV17"><Mark /><div><strong>Corvo Library</strong><span>OPERAÇÕES & ASSETS</span></div></div>
+      <p className="navLabel">WORKSPACE</p>
+      <nav className="primaryNav">{primaryNav.map(item => <button key={item.id} className={active===item.id ? "active" : ""} onClick={() => setActive(item.id)}><span className="glyph">{item.icon}</span><span>{item.label}</span>{item.id === "Assets" && stats.pending > 0 && <em>{stats.pending}</em>}</button>)}</nav>
+      <div className="sidebarFooter">
+        <div className="sideStatus"><span className={health?.core.ok ? "dot live" : "dot"}/><div><strong>Corvo Core</strong><small>{coreState}</small></div></div>
+        <div className="profileMini"><span className="profileAvatar">A</span><div><strong>Administrador</strong><small>Corvo Library V2</small></div><b>···</b></div>
+      </div>
     </aside>
 
     <section className="workspace">
-      <header className="topbar">
-        <div><b>CORVO LIBRARY V2</b><span>D1 histórico direto · R2 por binding · FAST PUSH em Queue</span></div>
-        <div className="envBadge">V2 CORE 0.12</div>
+      <header className="topbar topbarV17">
+        <div className="topIdentity"><b>{active}</b><span>Corvo Library · produção inteligente</span></div>
+        <div className="topActions"><span className={`systemPill ${health?.core.ok ? "live" : "warn"}`}><i />{health?.core.ok ? "Sistema operacional" : coreState}</span><span className="versionPill">CORE 0.17</span></div>
       </header>
 
-      <div className="content">
-        <div className="titleRow"><div><h1>{active}</h1><p>{active === "Catálogo" ? "Sem conversão permanente: D1 estrutura, R2 armazena e o Worker materializa." : active === "Configurações" ? "Autossuficiente: a própria Library configura e preserva Cloudflare sem instalação local ou variáveis manuais." : "Reimplementação limpa por equivalência funcional."}</p></div>{active === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>
+      <div className="content contentV17">
+        <div className="titleRow titleRowV17"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>
 
-        <section className="healthGrid">
-          <article><small>APP VERCEL</small><strong>ONLINE</strong><span>Interface e BFF</span></article>
-          <article><small>CORVO CORE</small><strong className={health?.core.ok ? "good" : "warn"}>{coreState}</strong><span>Worker/API</span></article>
-          <article><small>D1 / SCHEMA</small><strong>{health?.core.d1?.toUpperCase() || "—"} / {health?.core.schema?.toUpperCase() || "—"}</strong><span>47 tabelas históricas + v2_*</span></article>
-          <article><small>R2 / QUEUE</small><strong>{health?.core.r2?.toUpperCase() || "—"} / {health?.core.queue?.toUpperCase() || "—"}</strong><span>{health?.core.queueBacklog != null ? `${health.core.queueBacklog} na fila` : "bindings nativos"}</span></article>
-        </section>
+        {active === "Visão geral" && <div className="overviewDashboard">
+          <section className="overviewKpis">
+            <article className="kpiCard violet"><div><span>ASSETS APROVADOS</span><strong>{stats.approved.toLocaleString("pt-BR")}</strong><small>{stats.universes} universos ativos</small></div><i>▦</i></article>
+            <article className="kpiCard blue"><div><span>AGENTES ATIVOS</span><strong>{activeWorkerCount}</strong><small>{health?.core.ok ? "Core conectado" : coreState}</small></div><i>◎</i></article>
+            <article className="kpiCard green"><div><span>PROJETOS EM EXECUÇÃO</span><strong>{activeProjects.length}</strong><small>{projects.length} projetos V2</small></div><i>◇</i></article>
+            <article className="kpiCard orange"><div><span>TAXA DE SUCESSO</span><strong>{operationSuccessRate}%</strong><small>{recentOperations.length} operações recentes</small></div><i>↗</i></article>
+          </section>
 
-        {["Catálogo","Pendentes","Rejeitados"].includes(active) && <>
+          <section className="overviewMainGrid">
+            <article className="dashboardPanel agentsPanel">
+              <header><div><span className="eyebrow">TEMPO REAL</span><h2>Agentes da fábrica</h2></div><span className={`panelStatus ${health?.core.ok ? "live" : "warn"}`}><i />{health?.core.ok ? "Ativos" : "Core offline"}</span></header>
+              <div className="agentFlow">
+                {[
+                  ["Coletor","Busca e entrada de mídia","↯",health?.core.ok?"Disponível":"Offline"],
+                  ["Analista",`${stats.pending} pendentes para decisão`,"◉",health?.core.ok?"Disponível":"Offline"],
+                  ["Materializador",`${health?.core.queueBacklog ?? 0} itens na Queue`,"⬡",health?.core.ok?"Ativo":"Offline"],
+                  ["Supervisor","Políticas e decisões MCP","◇",supervisorPanel?"Ativo":health?.core.ok?"Disponível":"Offline"],
+                  ["Exportador","ZIPs e pacotes no R2","⇩",health?.core.ok?"Disponível":"Offline"],
+                  ["Roteirista","Pronto para projetos novos","✦",health?.core.ok?"Disponível":"Offline"],
+                ].map(([name,detail,icon,state])=><div className="agentNode" key={String(name)}><span className="agentIcon">{icon}</span><div><strong>{name}</strong><small>{detail}</small></div><em className={state==="Offline"?"off":"on"}>{state}</em></div>)}
+              </div>
+            </article>
+
+            <article className="dashboardPanel pulsePanel">
+              <header><div><span className="eyebrow">PULSO OPERACIONAL</span><h2>Saúde do sistema</h2></div></header>
+              <div className="pulseRows">
+                <div><span>D1 / schema</span><b className={health?.core.d1==="ok"?"good":"warn"}>{health?.core.d1?.toUpperCase() || "—"}</b></div>
+                <div><span>R2</span><b className={health?.core.r2==="ok"?"good":"warn"}>{health?.core.r2?.toUpperCase() || "—"}</b></div>
+                <div><span>Queue</span><b>{health?.core.queueBacklog ?? 0} aguardando</b></div>
+                <div><span>Heartbeats / sessões</span><b>{activeWorkerCount} sessão(ões)</b></div>
+                <div><span>Pendentes</span><b className={stats.pending>0?"warn":"good"}>{stats.pending}</b></div>
+              </div>
+              <button className="panelLink" onClick={()=>{setActive("Execuções");setExecutionView("Operação");}}>Abrir operação <span>→</span></button>
+            </article>
+          </section>
+
+          <section className="overviewBottomGrid">
+            <article className="dashboardPanel projectsOverview">
+              <header><div><span className="eyebrow">PRODUÇÃO</span><h2>Projetos em execução</h2></div><button className="ghostLink" onClick={()=>{setActive("Projetos");setProjectView("Projetos");}}>Ver todos</button></header>
+              <div className="projectOverviewList">{activeProjects.length===0?<div className="overviewEmpty"><strong>Nenhum projeto em execução</strong><span>Projetos novos aparecerão aqui assim que entrarem na esteira.</span></div>:activeProjects.slice(0,4).map(project=>{const totalItems=Number(project.total_items||0);const approved=Number(project.approved_count||0);const progress=totalItems?Math.min(100,Math.round((approved/totalItems)*100)):0;return <div className="projectOverviewRow" key={project.id}><span className="projectBadge">◆</span><div className="projectOverviewBody"><div><strong>{project.name}</strong><em>{String(project.pipeline_status||project.status||"ATIVO")}</em></div><small>{approved}/{totalItems || "—"} aprovados</small><div className="miniProgress"><i style={{width:`${progress}%`}}/></div></div><b>{progress}%</b></div>})}</div>
+            </article>
+
+            <article className="dashboardPanel activityOverview">
+              <header><div><span className="eyebrow">ATIVIDADE RECENTE</span><h2>O que mudou agora</h2></div></header>
+              <div className="activityList">{recentOperations.length===0?<div className="overviewEmpty"><strong>Sem atividade recente</strong><span>FAST PUSH, exports e operações aparecerão aqui.</span></div>:recentOperations.slice(0,6).map((item,index)=>{const state=String(item.status||"PROCESSING");return <div className="activityRow" key={String(item.id||index)}><span className={`activityDot ${state.toLowerCase()}`}/><div><strong>{String(item.type||item.operation_type||"Operação")}</strong><small>{String(item.id||"").slice(0,28)}</small></div><em className={statusClass(state)}>{state}</em></div>})}</div>
+            </article>
+          </section>
+        </div>}
+
+        {active === "Assets" && <>
+          <div className="moduleTabs assetTabs">{["Catálogo","Pendentes","Rejeitados"].map(item=><button key={item} className={assetView===item?"active":""} onClick={()=>{setAssetView(item);clearAssetSelection();}}><span>{item}</span><b>{item==="Catálogo"?stats.approved:item==="Pendentes"?stats.pending:stats.rejected}</b></button>)}</div>
           <section className="metricStrip">
             <div><strong>{stats.total.toLocaleString("pt-BR")}</strong><span>Total</span></div>
             <div><strong>{stats.approved.toLocaleString("pt-BR")}</strong><span>Aprovados</span></div>
@@ -590,44 +774,59 @@ Tudo é configurado pela própria tela Configurações.
           <section className="catalogTools">
             <label className="searchBox"><span>⌕</span><input value={query} onChange={(e: ChangeEvent<HTMLInputElement>)=>setQuery(e.target.value)} placeholder="Buscar nome, universo, personagem ou tag..." /></label>
             <select value={universe} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setUniverse(e.target.value)}><option value="">Todos os universos</option>{universes.map(item => <option key={item.name} value={item.name}>{item.name} ({item.total})</option>)}</select>
-            <select value={status} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setStatus(e.target.value)}><option value="">Todos os status</option><option value="APPROVED">Aprovados</option><option value="PENDING">Pendentes</option><option value="REJECTED">Rejeitados</option></select>
+            <div className={`assetViewBadge ${assetView.toLowerCase()}`}><span>VISÃO</span><strong>{assetView}</strong></div>
           </section>
-          {selectedUniverse && <div className="filterContext"><b>{selectedUniverse.name}</b><span>{selectedUniverse.approved} aprovados · {selectedUniverse.pending} pendentes · {selectedUniverse.rejected} rejeitados</span></div>}
+          {assetView === "Pendentes" && <section className="pendingReconcilePanel">
+            <div className="pendingReconcileHead"><div><span className="eyebrow">RECONCILIAÇÃO R2</span><h2>Achar arquivos dos Pendentes</h2><p>Procura em todo o bucket <code>corvoquiz-prod</code> o arquivo físico de cada registro pendente. A varredura não aprova nem rejeita nada.</p></div><button className="primary" disabled={pendingR2Busy} onClick={()=>void scanPendingR2()}>{pendingR2Busy?"Procurando…":pendingR2?"Vasculhar novamente":"Vasculhar pendentes no R2"}</button></div>
+            {pendingR2 && <><div className="opNumbers pendingR2Numbers"><span><b>{pendingR2.pending}</b>pendentes</span><span><b>{pendingR2.present}</b>arquivo já OK</span><span><b>{pendingR2.repairable}</b>achados em outro local</span><span><b>{pendingR2.probable}</b>possíveis</span><span><b>{pendingR2.unresolved}</b>não encontrados</span></div>
+              {pendingR2.inventoryTruncated&&<div className="formError">A varredura atingiu o limite de objetos; o resultado pode ser parcial.</div>}
+              {(pendingR2.repairable>0||pendingR2.unresolved>0)&&<div className="pendingRepairBar"><span>{pendingR2.repairable>0?<>Foram encontrados <b>{pendingR2.repairable}</b> arquivo(s) com correspondência forte. Eles podem ser religados sem mudar o status.</>:<>Há <b>{pendingR2.unresolved}</b> registro(s) sem arquivo no bucket. A política V2 é excluir o estado morto e recaptar novo.</>}</span><div className="pendingRepairActions">{pendingR2.repairable>0&&<button disabled={pendingR2RepairBusy||bulkBusy} onClick={()=>void repairPendingR2()}>{pendingR2RepairBusy?"Religando…":`Religar ${pendingR2.repairable}`}</button>}{pendingR2.unresolved>0&&<button className="danger" disabled={bulkBusy} onClick={()=>void deleteUnresolvedPending()}>{bulkBusy?"Excluindo…":`Excluir ${pendingR2.unresolved} não encontrado(s)`}</button>}</div></div>}
+              <div className="pendingMatchList">{pendingR2.items.filter(item=>item.state!=="FOUND_CURRENT").slice(0,80).map(item=><article key={item.assetId} className={`pendingMatch ${item.state.toLowerCase()}`}><div><strong>{item.name}</strong><span>{item.universe} · {item.assetId}</span><code>{item.currentR2Key}</code></div><div className="pendingMatchResult"><b>{item.state==="FOUND_ALTERNATE"?"ENCONTRADO":item.state==="POSSIBLE_MATCH"?"POSSÍVEL":"NÃO LOCALIZADO"}</b>{item.bestMatch&&<><code>{item.bestMatch.key}</code><small>{item.bestMatch.reasons.join(" · ")}</small></>}</div></article>)}</div>
+            </>}
+            {pendingR2Message&&<div className="setupMessage">{pendingR2Message}</div>}
+          </section>}
+          {assets.length>0&&<section className="bulkAssetBar"><div className="bulkSelect"><button onClick={selectLoadedAssets} disabled={bulkBusy}>Selecionar carregados</button>{selectedAssetIds.length>0&&<button onClick={clearAssetSelection} disabled={bulkBusy}>Limpar seleção</button>}<strong>{selectedAssetIds.length} selecionado(s)</strong></div><div className="bulkActions"><button disabled={bulkBusy||selectedAssetIds.length===0} onClick={()=>void downloadSelectedZip()}>Baixar ZIP</button>{(assetView==="Pendentes"||selectedPendingCount>0)&&<button className="approve" disabled={bulkBusy||selectedPendingCount===0} onClick={()=>void bulkApproveAssets()}>Aprovar ({selectedPendingCount})</button>}<button className="danger" disabled={bulkBusy||selectedAssetIds.length===0} onClick={()=>void bulkDeleteAssets()}>Excluir permanentemente</button></div></section>}
+          {bulkMessage&&<div className={bulkMessage.includes("FAILED")||bulkMessage.includes("HTTP_")||bulkMessage.includes("ERROR")?"formError":"setupMessage"}>{bulkMessage}</div>}
+                    {selectedUniverse && <div className="filterContext"><b>{selectedUniverse.name}</b><span>{selectedUniverse.approved} aprovados · {selectedUniverse.pending} pendentes · {selectedUniverse.rejected} rejeitados</span></div>}
 
           {!health?.coreConfigured && <div className="notice"><strong>Fundação criada.</strong><span>Falta apenas conectar o projeto ao Corvo Core. A V2 não solicitará credenciais Cloudflare na interface.</span></div>}
 
           {loading ? <div className="empty">Carregando catálogo…</div> : assets.length === 0 ? <div className="empty"><Mark /><strong>Nenhum asset para estes filtros</strong><span>O catálogo será lido diretamente do D1 restaurado, sem seed de produção ou snapshot intermediário.</span></div> : <>
             <div className="resultMeta"><span>{total.toLocaleString("pt-BR")} resultados</span><span>{assets.length.toLocaleString("pt-BR")} carregados</span></div>
-            <div className="grid">{assets.map(asset => <article className="card" key={asset.id}>
-              <div className="preview">{asset.previewUrl ? <img src={asset.previewUrl} alt={asset.name} loading="lazy" /> : <span>R2</span>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
+            <div className="grid">{assets.map(asset => <article className={`card ${selectedAssets.has(asset.id)?"selected":""}`} key={asset.id}>
+              <div className="preview"><label className="assetCheck"><input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={()=>toggleAssetSelection(asset.id)} aria-label={`Selecionar ${asset.name}`}/><span>✓</span></label><span className="previewFallback">◇</span>{asset.previewUrl && <img src={asset.previewUrl} alt="" loading="lazy" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
               <div className="cardBody"><strong>{asset.name}</strong><span>{asset.universe || "Sem universo"}{asset.subject ? ` · ${asset.subject}` : ""}</span><div>{asset.tags.slice(0,3).map(tag => <small key={tag}>{tag}</small>)}</div><footer><code>{asset.id}</code><b>{asset.uses} usos</b></footer></div>
             </article>)}</div>
             {nextCursor && <div className="loadMore"><button disabled={loadingMore} onClick={() => void fetchCatalog(nextCursor, true)}>{loadingMore ? "Carregando…" : "Carregar mais"}</button></div>}
           </>}
         </>}
 
-        {active === "Projetos" && <section className="modulePanel twoCol">
-          <div><span className="eyebrow">PROJETOS AUTOMÁTICOS</span><h2>Control plane preservado</h2><p>A V2 lê e cria projetos sobre <code>automatic_projects</code> sem reconciliação implícita ou varredura R2.</p><form className="pushForm" onSubmit={createProject}><input value={projectName} onChange={(e: ChangeEvent<HTMLInputElement>)=>setProjectName(e.target.value)} placeholder="Nome do projeto"/><button className="primary">Criar projeto</button></form></div>
+        {active === "Projetos" && <div className="moduleTabs">{["Projetos","Solicitações","Lotes","Importações"].map(item=><button key={item} className={projectView===item?"active":""} onClick={()=>setProjectView(item)}><span>{item}</span></button>)}</div>}
+        {active === "Execuções" && <div className="moduleTabs">{["Coleta automática","Inbox candidatas","Operação"].map(item=><button key={item} className={executionView===item?"active":""} onClick={()=>setExecutionView(item)}><span>{item}</span></button>)}</div>}
+        {active === "Análise" && <div className="moduleTabs">{["Estoque & giro","Políticas"].map(item=><button key={item} className={analysisView===item?"active":""} onClick={()=>setAnalysisView(item)}><span>{item}</span></button>)}</div>}
+
+        {currentView === "Projetos" && <section className="modulePanel twoCol">
+          <div><span className="eyebrow">PROJETOS V2</span><h2>Projetos novos e funcionais</h2><p>O histórico visual antigo foi removido. Daqui em diante só ficam projetos criados e operados pela V2.</p><form className="pushForm" onSubmit={createProject}><input value={projectName} onChange={(e: ChangeEvent<HTMLInputElement>)=>setProjectName(e.target.value)} placeholder="Nome do projeto"/><button className="primary">Criar projeto</button></form></div>
           <div className="recordList">{recordLoading?<div className="quiet">Carregando…</div>:projects.length===0?<div className="quiet">Nenhum projeto.</div>:projects.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.pipeline_status || item.status} · {item.approved_count||0}/{item.total_items||0} aprovados</span></div><div className="inlineActions"><code>{item.id}</code><button onClick={()=>void projectAction(item.id,"reconcile")}>Reconciliar</button><button onClick={()=>void projectAction(item.id,"process")}>Processar</button></div></article>)}</div>
         </section>}
 
-        {active === "Solicitações" && <section className="modulePanel twoCol">
+        {currentView === "Solicitações" && <section className="modulePanel twoCol">
           <div><span className="eyebrow">SOLICITAÇÕES</span><h2>Fila estrutural preservada</h2><p>Cria e lê diretamente a tabela histórica <code>requests</code>.</p>
             <form className="pushForm" onSubmit={createLibraryRequest}><input value={requestProject} onChange={(e: ChangeEvent<HTMLInputElement>)=>setRequestProject(e.target.value)} placeholder="Projeto"/><textarea rows={8} value={requestItems} onChange={(e: ChangeEvent<HTMLTextAreaElement>)=>setRequestItems(e.target.value)} placeholder="Um item por linha"/><button className="primary">Criar solicitação</button></form>
           </div>
           <div className="recordList">{recordLoading ? <div className="quiet">Carregando…</div> : requests.length===0 ? <div className="quiet">Nenhuma solicitação.</div> : requests.map(item=><article key={item.id}><div><strong>{item.project}</strong><span>{item.item_count} itens · {item.status}</span></div><code>{item.id}</code></article>)}</div>
         </section>}
 
-        {active === "Lotes" && <section className="modulePanel twoCol">
+        {currentView === "Lotes" && <section className="modulePanel twoCol">
           <div><span className="eyebrow">LOTES</span><h2>Lotes sobre o D1 histórico</h2><p>Manifestos novos são gravados diretamente no R2 via binding.</p>
             <form className="pushForm" onSubmit={createLibraryBatch}><input value={batchName} onChange={(e: ChangeEvent<HTMLInputElement>)=>setBatchName(e.target.value)} placeholder="Nome do lote"/><input value={batchProject} onChange={(e: ChangeEvent<HTMLInputElement>)=>setBatchProject(e.target.value)} placeholder="Projeto opcional"/><button className="primary">Criar lote</button></form>
           </div>
           <div className="recordList">{recordLoading ? <div className="quiet">Carregando…</div> : batches.length===0 ? <div className="quiet">Nenhum lote.</div> : batches.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.project || "Sem projeto"} · {item.status}</span></div><div className="inlineActions"><code>{item.id}</code><button onClick={()=>void generateManifest(item.id)}>Manifesto</button></div></article>)}</div>
         </section>}
 
-        {active === "Importações" && <section className="modulePanel"><span className="eyebrow">HISTÓRICO</span><h2>Importações preservadas</h2><p>Nesta fase a V2 lê a tabela histórica sem reinterpretar os registros.</p><div className="recordList wide">{recordLoading ? <div className="quiet">Carregando…</div> : imports.length===0 ? <div className="quiet">Nenhuma importação.</div> : imports.map(item=><article key={item.id}><div><strong>{item.file_name}</strong><span>{formatBytes(item.size_bytes)} · {item.status}</span></div><code>{item.id}</code></article>)}</div></section>}
+        {currentView === "Importações" && <section className="modulePanel"><span className="eyebrow">HISTÓRICO</span><h2>Importações preservadas</h2><p>Nesta fase a V2 lê a tabela histórica sem reinterpretar os registros.</p><div className="recordList wide">{recordLoading ? <div className="quiet">Carregando…</div> : imports.length===0 ? <div className="quiet">Nenhuma importação.</div> : imports.map(item=><article key={item.id}><div><strong>{item.file_name}</strong><span>{formatBytes(item.size_bytes)} · {item.status}</span></div><code>{item.id}</code></article>)}</div></section>}
 
-        {active === "Coleta automática" && <section className="modulePanel twoCol">
+        {currentView === "Coleta automática" && <section className="modulePanel twoCol">
           <div>
             <span className="eyebrow">FAST PUSH V2</span>
             <h2>Materializar URLs sem transportar arquivos pelo MCP</h2>
@@ -651,17 +850,17 @@ Tudo é configurado pela própria tela Configurações.
           </div>
         </section>}
 
-        {active === "Inbox candidatas" && <>
+        {currentView === "Inbox candidatas" && <>
           <section className="candidateToolbar"><div><b>Inbox de materialização</b><span>Aprovar move o objeto de incoming/ para assets/ e cria o AST-* no D1 histórico.</span></div><select value={candidateState} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setCandidateState(e.target.value)}><option value="MATERIALIZED">Materializadas</option><option value="RETRYING">Em retry</option><option value="FAILED">Falhas</option><option value="APPROVED">Aprovadas</option><option value="REJECTED">Rejeitadas</option></select></section>
           {candidateLoading ? <div className="empty">Carregando candidatas…</div> : candidates.length === 0 ? <div className="empty"><strong>Inbox vazia</strong><span>As mídias do FAST PUSH aparecem aqui depois que a Queue conclui a materialização.</span></div> : <div className="candidateGrid">{candidates.map(candidate => <article className="candidate" key={candidate.id}>
-            <div className="candidatePreview">{candidate.previewUrl ? <img src={candidate.previewUrl} alt=""/> : <span>{candidate.status}</span>}</div>
+            <div className="candidatePreview"><span className="previewFallback">◇</span>{candidate.previewUrl && <img src={candidate.previewUrl} alt="" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}</div>
             <div className="candidateBody"><div className="candidateTitle"><strong>{candidate.subject || "Sem assunto"}</strong><b className={statusClass(candidate.status)}>{candidate.status}</b></div><span>{candidate.universe || "Sem universo"}</span><code>{candidate.id}</code><small>{formatBytes(candidate.sizeBytes)} · tentativa {candidate.attempts}</small>{candidate.failureReason && <p>{candidate.failureReason}</p>}
               {candidate.status === "MATERIALIZED" && <div className="decisionRow"><button className="approve" onClick={() => void decideCandidate(candidate.id,"approve")}>Aprovar</button><button className="reject" onClick={() => void decideCandidate(candidate.id,"reject")}>Rejeitar</button></div>}
             </div>
           </article>)}</div>}
         </>}
 
-        {active === "Operação" && <section className="modulePanel operationGrid">
+        {currentView === "Operação" && <section className="modulePanel operationGrid">
           <div><span className="eyebrow">INTEGRIDADE RÁPIDA</span><h2>D1 ↔ R2</h2><p>A amostra valida os <code>r2_key</code> mais recentes sem alterar qualquer registro.</p><div className="opNumbers"><span><b>{integrity?.checked ?? 0}</b>checados</span><span><b>{integrity?.present ?? 0}</b>presentes</span><span><b>{integrity?.missing ?? 0}</b>faltantes</span></div>{integrity?.missing ? <div className="formError">{integrity.missing} referências sem objeto na amostra.</div> : <div className="notice compact"><strong>Amostra limpa</strong><span>Nenhum objeto faltante na checagem rápida.</span></div>}</div>
           <div><span className="eyebrow">AUDITORIA COMPLETA</span><h2>Todas as referências conhecidas</h2><p>Compara assets, arquivos de projeto, imports, exports e materializações com o inventário físico do R2.</p><div className="opNumbers"><span><b>{storageAudit?.r2Objects ?? 0}</b>objetos R2</span><span><b>{storageAudit?.missingReferences ?? 0}</b>faltantes</span><span><b>{storageAudit?.orphanObjects ?? 0}</b>órfãos</span><span><b>{storageAudit?.sharedKeys ?? 0}</b>chaves compartilhadas</span></div><button className="primary" disabled={auditBusy} onClick={()=>void runStorageAudit()}>{auditBusy?"Auditando…":"Executar auditoria completa"}</button></div>
           <div><span className="eyebrow">INTEGRIDADE LÓGICA D1</span><h2>Histórico separado da V2</h2><p>Orfandades antigas permanecem auditáveis, mas o dispatcher novo não as assume. Regressões <code>v2_*</code> são tratadas separadamente.</p><div className="opNumbers"><span><b>{dataHealth?.v2Orphans ?? 0}</b>órfãos V2</span><span><b>{dataHealth?.activeHistoricalOrphans ?? 0}</b>históricos ativos</span><span><b>{dataHealth?.catalog.assetsMissingR2Key ?? 0}</b>assets sem r2_key</span><span><b>{dataHealth?.catalog.duplicateAssetR2Keys ?? 0}</b>r2_key compartilhadas</span></div><div className={(dataHealth?.v2Orphans||0)>0?"formError":"notice compact"}><strong>{(dataHealth?.v2Orphans||0)>0?"Regressão V2 detectada":"Camada V2 consistente"}</strong><span>{dataHealth?.activeHistoricalOrphans ? "Há filas históricas órfãs preservadas; elas são ignoradas pelo dispatcher V2." : "Nenhuma inconsistência ativa detectada."}</span></div></div>
@@ -669,17 +868,24 @@ Tudo é configurado pela própria tela Configurações.
           <div><span className="eyebrow">MATERIALIZAÇÃO</span><h2>FAST PUSH</h2><div className="recordList">{(materializationStats?.candidateStates||[]).length===0?<div className="quiet">Sem estatísticas.</div>:(materializationStats?.candidateStates||[]).map((item,index)=><article key={`${String(item.status)}-${index}`}><div><strong>{String(item.status)}</strong><span>{Number(item.bytes||0)>0?formatBytes(Number(item.bytes)):""}</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
           <div><span className="eyebrow">OPERAÇÕES RECENTES</span><h2>Fila assíncrona</h2><div className="recordList">{recentOperations.length===0?<div className="quiet">Nenhuma operação.</div>:recentOperations.map(item=><article key={String(item.id)}><div><strong>{String(item.type||"OP")}</strong><span>{String(item.status||"")} · {String(item.succeeded||0)}/{String(item.requested||0)}</span></div><code>{String(item.id)}</code></article>)}</div></div>
           <div><span className="eyebrow">R2 — assets/</span><h2>Inventário recente</h2><div className="recordList">{r2Objects.length===0?<div className="quiet">Nenhum objeto carregado ou Core ainda desconectado.</div>:r2Objects.map(item=><article key={item.key}><div><strong>{item.key.split("/").pop()}</strong><span>{formatBytes(item.size)}</span></div><code>{item.key}</code></article>)}</div></div>
+          <div className="r2ExplorerPanel"><div className="r2ExplorerHead"><div><span className="eyebrow">EXPLORADOR FÍSICO R2</span><h2>Explorar armazenamento R2</h2><p>Ferramenta secundária de diagnóstico. Navega pelas pastas físicas e cruza chaves com o D1; não é a reconciliação de Pendentes.</p></div><button className="primary" disabled={r2ExploreBusy} onClick={()=>void exploreR2(r2Explorer?.prefix||"")}>{r2ExploreBusy?"Explorando…":r2Explorer?"Atualizar exploração":"Explorar R2"}</button></div>
+            {r2ExploreError&&<div className="formError">{r2ExploreError}</div>}
+            {r2Explorer&&<><div className="r2Breadcrumbs">{r2Explorer.breadcrumbs.map((crumb,index)=><button key={`${crumb.prefix}-${index}`} onClick={()=>void exploreR2(crumb.prefix)} disabled={r2ExploreBusy}>{crumb.name}</button>)}</div><div className="opNumbers r2Numbers"><span><b>{r2Explorer.scannedObjects.toLocaleString("pt-BR")}</b>objetos</span><span><b>{formatBytes(r2Explorer.totalBytes)}</b>armazenados</span><span><b>{r2Explorer.referencedObjects.toLocaleString("pt-BR")}</b>referenciados</span><span><b>{r2Explorer.orphanObjects.toLocaleString("pt-BR")}</b>sem referência</span></div>{r2Explorer.truncated&&<div className="formError">A varredura atingiu o limite de {r2Explorer.maxObjects.toLocaleString("pt-BR")} objetos. Os números são parciais.</div>}
+              <div className="r2FolderGrid">{r2Explorer.folders.length===0&&r2Explorer.objects.length===0?<div className="quiet">Nenhum objeto neste caminho.</div>:r2Explorer.folders.map(folder=><button className="r2Folder" key={folder.prefix} onClick={()=>void exploreR2(folder.prefix)} disabled={r2ExploreBusy}><span className="r2FolderIcon">▰</span><strong>{folder.name}/</strong><small>{folder.objects.toLocaleString("pt-BR")} objetos · {formatBytes(folder.bytes)}</small><em className={folder.orphanObjects>0?"waitState":"okState"}>{folder.referencedObjects} ligados · {folder.orphanObjects} sem referência</em></button>)}</div>
+              {r2Explorer.objects.length>0&&<div className="recordList wide r2ObjectList">{r2Explorer.objects.map(item=><article key={item.key}><div><strong>{item.key.split("/").pop()}</strong><span>{formatBytes(item.size)} · {new Date(item.uploaded).toLocaleString("pt-BR")}</span></div><div className="r2ObjectMeta"><b className={item.referenced?"okState":"waitState"}>{item.referenced?"REFERENCIADO":"SEM REFERÊNCIA"}</b><code>{item.key}</code></div></article>)}</div>}
+            </>}
+          </div>
         </section>}
 
-        {active === "Políticas" && <section className="modulePanel operationGrid">
+        {currentView === "Políticas" && <section className="modulePanel operationGrid">
           <div><span className="eyebrow">APRENDIZADO OPERACIONAL</span><h2>Gaps</h2><p>Os gaps são deduplicados por assinatura e permanecem auditáveis.</p><div className="recordList">{(policyWorkspace?.gaps||[]).length===0?<div className="quiet">Nenhum gap registrado.</div>:(policyWorkspace?.gaps||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"GAP")}</strong><span>{String(item.severity||"")} · {String(item.status||"")}</span></div><code>{String(item.count||item.occurrence_count||0)}</code></article>)}</div></div>
           <div><span className="eyebrow">POLÍTICAS</span><h2>Versões e estado</h2><p>Alterações criam novas versões; rollback não apaga histórico.</p><div className="recordList">{(policyWorkspace?.policies||[]).length===0?<div className="quiet">Nenhuma política registrada.</div>:(policyWorkspace?.policies||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"POLICY")}</strong><span>{String(item.status||"")} · {String(item.applied||0)} aplicações</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
           <div><span className="eyebrow">TELEMETRIA</span><h2>Aplicações e resultados</h2><div className="recordList">{(policyTelemetry?.events||[]).length===0?<div className="quiet">Sem eventos de política.</div>:(policyTelemetry?.events||[]).map((item,index)=><article key={`${String(item.event_type)}-${index}`}><div><strong>{String(item.event_type||"EVENT")}</strong><span>{String(item.successes||"")}</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
         </section>}
 
-        {active === "Estoque & giro" && <section className="modulePanel operationGrid"><div><span className="eyebrow">ESTOQUE</span><h2>{stats.approved.toLocaleString("pt-BR")} aprovados em {stats.universes.toLocaleString("pt-BR")} universos ativos</h2><p>Derivado diretamente da tabela histórica <code>assets</code>, sem conversão.</p><div className="recordList wide">{universes.slice(0,40).map(item=><article key={item.name}><div><strong>{item.name}</strong><span>{item.approved} aprovados · {item.pending} pendentes · {item.rejected} rejeitados</span></div><code>{item.total} total</code></article>)}</div></div><div><span className="eyebrow">GIRO</span><h2>Uso do catálogo</h2><div className="recordList">{(stockDetail?.rotation||[]).map((item,index)=><article key={`${String(item.bucket)}-${index}`}><div><strong>{String(item.bucket)}</strong><span>assets aprovados</span></div><code>{String(item.count||0)}</code></article>)}</div></div><div><span className="eyebrow">POLÍTICAS DE ESTOQUE</span><h2>Limites semânticos</h2><div className="recordList">{(stockDetail?.policies||[]).length===0?<div className="quiet">Nenhuma política ativa.</div>:(stockDetail?.policies||[]).slice(0,50).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.concept||"conceito")}</strong><span>{String(item.universe||"Sem universo")} · min {String(item.minimum||0)} / ideal {String(item.ideal||0)}</span></div><code>{String(item.maximum||0)} max</code></article>)}</div></div></section>}
+        {currentView === "Estoque & giro" && <section className="modulePanel operationGrid"><div><span className="eyebrow">ESTOQUE</span><h2>{stats.approved.toLocaleString("pt-BR")} aprovados em {stats.universes.toLocaleString("pt-BR")} universos ativos</h2><p>Derivado diretamente da tabela histórica <code>assets</code>, sem conversão.</p><div className="recordList wide">{universes.slice(0,40).map(item=><article key={item.name}><div><strong>{item.name}</strong><span>{item.approved} aprovados · {item.pending} pendentes · {item.rejected} rejeitados</span></div><code>{item.total} total</code></article>)}</div></div><div><span className="eyebrow">GIRO</span><h2>Uso do catálogo</h2><div className="recordList">{(stockDetail?.rotation||[]).map((item,index)=><article key={`${String(item.bucket)}-${index}`}><div><strong>{String(item.bucket)}</strong><span>assets aprovados</span></div><code>{String(item.count||0)}</code></article>)}</div></div><div><span className="eyebrow">POLÍTICAS DE ESTOQUE</span><h2>Limites semânticos</h2><div className="recordList">{(stockDetail?.policies||[]).length===0?<div className="quiet">Nenhuma política ativa.</div>:(stockDetail?.policies||[]).slice(0,50).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.concept||"conceito")}</strong><span>{String(item.universe||"Sem universo")} · min {String(item.minimum||0)} / ideal {String(item.ideal||0)}</span></div><code>{String(item.maximum||0)} max</code></article>)}</div></div></section>}
 
-        {active === "Configurações" && <section className="modulePanel configPanel">
+        {currentView === "Configurações" && <section className="modulePanel configPanel">
           <span className="eyebrow">INFRAESTRUTURA AUTOSSUFICIENTE</span><h2>Configura uma vez e fica cravado</h2><p>A própria Corvo Library cria/verifica o Core na Cloudflare. Nada para instalar no computador e nenhuma variável manual na hospedagem do app. O D1 guarda somente o manifesto não secreto; chaves sensíveis ficam como secrets do Worker.</p>
           <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : localConnection ? "Conexão local encontrada — verificando Core" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Cole uma única credencial Cloudflare e a Library cuida de D1, R2, Queue, Worker e restauração."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
           {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
@@ -691,7 +897,7 @@ Tudo é configurado pela própria tela Configurações.
           <div className="recordList wide">{safeSettings.slice(0,60).map(item=><article key={item.key}><div><strong>{item.key}</strong><span>setting operacional persistente</span></div><code>{item.value}</code></article>)}</div>
         </section>}
 
-        {!["Catálogo","Projetos","Solicitações","Lotes","Importações","Coleta automática","Operação","Políticas","Estoque & giro","Inbox candidatas","Pendentes","Rejeitados","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo está na matriz de equivalência da V61.9. Ele será ligado ao núcleo V2 sem copiar bootstrap, recovery ou configuração legada.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
+        {!["Visão geral","Assets","Projetos","Execuções","Análise","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo será ligado ao núcleo V2 sem duplicar navegação ou estado visual.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
 
         {setupOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Configurar infraestrutura">
           <div className="setupModal">

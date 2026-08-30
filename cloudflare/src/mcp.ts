@@ -5,16 +5,16 @@ import type { Env } from "./types";
 import { catalogStats, getAsset, getAssetLink, getAssetLinks, listAssets, listUniverses } from "./core/assets";
 import { approveCandidate, deleteIngestCandidates, enqueueFastPushItems, fastPush, getOperation, linkCandidatesToProject, listCandidates, rejectCandidate } from "./core/ingest";
 import { confirmDirectUpload, getDirectUpload, prepareDirectUpload } from "./core/direct-upload";
-import { approvePendingAssets, catalogAsset, deleteAssetPermanently, deletePendingAssetsPermanently, findDuplicateR2Keys, getAssetHistory, registerAssetUsage, rejectAsset, restoreAsset, updateAssetMetadata } from "./core/asset-ops";
+import { approvePendingAssets, catalogAsset, deleteAssetPermanently, deleteAssetsPermanently, deletePendingAssetsPermanently, findDuplicateR2Keys, getAssetHistory, registerAssetUsage, rejectAsset, restoreAsset, updateAssetMetadata } from "./core/asset-ops";
 import { addAssetsToBatch, createBatch, createRequest, generateBatchManifest, getBatch, listBatches, listImports, listRequests, removeAssetsFromBatch, updateBatchStatus, updateRequest } from "./core/work-items";
 import { integritySample } from "./core/storage";
 import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listAdapters, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
-import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, workerWatchdog } from "./core/workers";
+import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
 import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { appliedPolicies, createOperationalPolicy, detectOperationalGap, editOperationalPolicy, getOperationalGap, linkGapPolicy, listOperationalGaps, listOperationalPolicies, policyTelemetry, policyWorkspace, resolveGapAndLearn, rollbackPolicy, setPolicyStatus, testPolicy } from "./core/policies";
-import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, decideSupervisorCandidate, listSourceProfiles, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, relinkItem, relinkItems, resolveSupervisorDecision, saveSourceProfile, setDefaultSourceProfile, setHostBlocked, setItemProcessingState, setProjectProcessingState, setSourceProfileStatus, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog, updateCollectionSettings, updateCollectionSource, updateItemSearch, updateSourceProfile } from "./core/supervisor";
+import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, decideSupervisorCandidate, heartbeatSupervisor, listSourceProfiles, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, relinkItem, relinkItems, resolveSupervisorDecision, saveSourceProfile, setDefaultSourceProfile, setHostBlocked, setItemProcessingState, setProjectProcessingState, setSourceProfileStatus, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog, updateCollectionSettings, updateCollectionSource, updateItemSearch, updateSourceProfile } from "./core/supervisor";
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
@@ -24,8 +24,12 @@ import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPla
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, processZipImport, syncR2Uncataloged } from "./core/imports-v2";
 import { addCandidatesToMaterializationItem, addMaterializationItems, applyTechnicalCorrectionCompat, assetsForQa, cancelMaterializationBatch, cleanMaterializationTemporaries, createContinuousMaterializationQueue, getMaterializationBatchStatus, getMaterializationItemStatus, materializationLog, materializeBatchCompat, registerMaterializationQa } from "./core/materialization-compat";
-import { exportFrozenMaterializationBatch, getAssetExportLink, queueAssetExport } from "./core/asset-exports";
+import { exportFrozenMaterializationBatch, getAssetExportLink, getAssetExportStatus, queueAssetExport } from "./core/asset-exports";
 import { dataHealth } from "./core/data-health";
+import { exploreR2 } from "./core/r2-explorer";
+import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from "./core/pending-r2-reconcile";
+import { writeD1StructureManifest } from "./core/recovery-manifest";
+import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -36,7 +40,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.12.3" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.17.0" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -561,10 +565,30 @@ function createServer(env: Env, request: Request) {
     inputSchema: {},
   }, async () => output(await pipelineTelemetry(env)));
 
+  server.registerTool("heartbeat_operacao", {
+    description: "Registra/renova heartbeat de uma operação MCP longa. A mesma operação só pode ser renovada pelo owner_id + execution_id que possui o heartbeat ativo; takeover de expirado exige reclaim_expired=true.",
+    inputSchema: { operation_id:z.string().min(1), owner_id:z.string().min(1), execution_id:z.string().min(1), ttl_seconds:z.number().int().min(30).max(3600).optional(), reclaim_expired:z.boolean().optional(), metadata:z.record(z.string(),z.unknown()).optional() },
+  }, async(v)=>output(await heartbeatOperation(env,{operationId:v.operation_id,ownerId:v.owner_id,executionId:v.execution_id,ttlSeconds:v.ttl_seconds,reclaimExpired:v.reclaim_expired,metadata:v.metadata})));
+
+  server.registerTool("obter_status_heartbeats", {
+    description: "Mostra heartbeats de workers, Supervisor e operações com último sinal, expiração e tempo restante de lease.",
+    inputSchema: { scope_type:z.enum(["WORKER","SUPERVISOR","OPERATION"]).optional(), limite:z.number().int().min(1).max(500).optional() },
+  }, async(v)=>output(await runtimeHeartbeatStatus(env,{scopeType:v.scope_type,limit:v.limite})));
+
+  server.registerTool("executar_watchdog_heartbeats", {
+    description: "Marca heartbeats genéricos vencidos como EXPIRED. Os watchdogs nativos de Worker/Supervisor continuam responsáveis por requeue/abandono dos respectivos leases.",
+    inputSchema: {},
+  }, async()=>output(await runtimeHeartbeatWatchdog(env)));
+
   server.registerTool("assumir_proximo_trabalho", {
     description: "Lease atômico do próximo worker_work_item READY compatível com tipo/domínio do worker.",
     inputSchema: { worker_id:z.string().min(1), worker_type:z.string().min(1), worker_domain:z.string().optional(), execution_id:z.string().optional(), lease_seconds:z.number().int().min(30).max(1800).optional(), projeto_id:z.string().optional() },
   }, async ({worker_id,worker_type,worker_domain,execution_id,lease_seconds,projeto_id}) => output(await claimNextWork(env,{workerId:worker_id,workerType:worker_type,workerDomain:worker_domain,executionId:execution_id,leaseSeconds:lease_seconds,projectId:projeto_id})));
+
+  server.registerTool("heartbeat_worker", {
+    description: "Renova atomicamente um lease de worker ativo. Exige work_item_id + worker_id + execution_id corretos; não revive lease expirado nem permite renovar trabalho de outro agente.",
+    inputSchema: { work_item_id:z.string().min(1), worker_id:z.string().min(1), execution_id:z.string().min(1), lease_seconds:z.number().int().min(30).max(1800).optional() },
+  }, async ({work_item_id,worker_id,execution_id,lease_seconds}) => output(await heartbeatWorker(env,{workItemId:work_item_id,workerId:worker_id,executionId:execution_id,leaseSeconds:lease_seconds})));
 
   server.registerTool("concluir_trabalho_worker", {
     description: "Conclui trabalho apenas se o worker possuir o lease atual.",
@@ -699,6 +723,11 @@ function createServer(env: Env, request: Request) {
     inputSchema:{ policy_key:z.string().optional(), nome:z.string().min(1), descricao:z.string().optional(), categoria:z.string().min(1), scope_level:z.string().optional(), propagation_level:z.number().int().min(1).max(10).optional(), dominio:z.string().optional(), universo:z.string().optional(), work_type:z.string().optional(), classe_composicao:z.string().optional(), classe_semantica:z.string().optional(), preset:z.string().optional(), projeto_id:z.string().optional(), item_id:z.string().optional(), condicao:z.unknown().optional(), acao:z.unknown().optional(), prioridade:z.number().int().min(1).max(100).optional(), confianca:z.number().min(0).max(100).optional(), gap_origem_id:z.string().optional(), notas:z.string().optional() },
   }, async(v)=>output(await createOperationalPolicy(env,{policyKey:v.policy_key,name:v.nome,description:v.descricao,category:v.categoria,scopeLevel:v.scope_level,propagationLevel:v.propagation_level,domain:v.dominio,universe:v.universo,workType:v.work_type,compositionClass:v.classe_composicao,semanticClass:v.classe_semantica,preset:v.preset,projectId:v.projeto_id,itemId:v.item_id,condition:v.condicao,action:v.acao,priority:v.prioridade,confidence:v.confianca,sourceGapId:v.gap_origem_id,notes:v.notas})));
 
+  server.registerTool("definir_politica_supervisor_livre", {
+    description:"Autoria livre de política pelo Supervisor MCP. Aceita condição/ação arbitrárias, qualquer escopo e pode ativar imediatamente; o frontend não limita a criatividade operacional do Supervisor.",
+    inputSchema:{ policy_key:z.string().optional(), nome:z.string().min(1), descricao:z.string().optional(), categoria:z.string().default("SUPERVISOR"), scope_level:z.string().optional(), propagation_level:z.number().int().min(1).max(10).optional(), dominio:z.string().optional(), universo:z.string().optional(), work_type:z.string().optional(), classe_composicao:z.string().optional(), classe_semantica:z.string().optional(), preset:z.string().optional(), projeto_id:z.string().optional(), item_id:z.string().optional(), condicao:z.unknown().optional(), acao:z.unknown().optional(), prioridade:z.number().int().min(1).max(100).optional(), confianca:z.number().min(0).max(100).optional(), notas:z.string().optional(), ativar:z.boolean().optional() },
+  }, async(v)=>{ const created=await createOperationalPolicy(env,{policyKey:v.policy_key,name:v.nome,description:v.descricao,category:v.categoria,scopeLevel:v.scope_level||"GLOBAL",propagationLevel:v.propagation_level||10,domain:v.dominio,universe:v.universo,workType:v.work_type,compositionClass:v.classe_composicao,semanticClass:v.classe_semantica,preset:v.preset,projectId:v.projeto_id,itemId:v.item_id,condition:v.condicao,action:v.acao,priority:v.prioridade||100,confidence:v.confianca??100,notes:v.notas}); if(v.ativar!==false && created?.id)return output(await setPolicyStatus(env,String(created.id),"ACTIVE","SUPERVISOR_FREE_ACTIVATE")); return output(created); });
+
   server.registerTool("editar_politica_operacional", { description:"Edita por nova versão imutável e marca a versão anterior como SUPERSEDED.", inputSchema:{ politica_id:z.string().min(1), nome:z.string().optional(), descricao:z.string().optional(), condicao:z.unknown().optional(), acao:z.unknown().optional(), prioridade:z.number().int().min(1).max(100).optional(), confianca:z.number().min(0).max(100).optional(), notas:z.string().optional() } }, async({politica_id,...v})=>output((await editOperationalPolicy(env,politica_id,{name:v.nome,description:v.descricao,condition:v.condicao,action:v.acao,priority:v.prioridade,confidence:v.confianca,notes:v.notas}))||{error:"NOT_FOUND"}));
   server.registerTool("testar_politica_operacional", { description:"Dry-run: estima gaps abertos correspondentes; não executa a ação da política.", inputSchema:{ politica_id:z.string().min(1) } }, async({politica_id})=>output((await testPolicy(env,politica_id))||{error:"NOT_FOUND"}));
   server.registerTool("ativar_politica_operacional", { description:"Ativa uma política explicitamente.", inputSchema:{ politica_id:z.string().min(1) } }, async({politica_id})=>output((await setPolicyStatus(env,politica_id,"ACTIVE","ACTIVATE"))||{error:"NOT_FOUND"}));
@@ -714,7 +743,8 @@ function createServer(env: Env, request: Request) {
   server.registerTool("obter_status_supervisor_ia", { description:"Estado do Supervisor V2 e suas configurações operacionais seguras.", inputSchema:{} }, async()=>output(await supervisorStatus(env)));
   server.registerTool("configurar_supervisor_mcp", { description:"Altera apenas chaves supervisor_* explicitamente permitidas; nunca aceita segredos/credenciais.", inputSchema:{ supervisor_mcp_enabled:z.boolean().optional(), supervisor_lease_ttl_minutes:z.number().int().min(1).max(120).optional(), supervisor_watchdog_interval_minutes:z.number().int().min(1).max(120).optional(), supervisor_renew_on_activity:z.boolean().optional(), supervisor_auto_mark_abandoned:z.boolean().optional(), supervisor_auto_ready_for_resume:z.boolean().optional(), supervisor_reconcile_before_resume:z.boolean().optional(), supervisor_require_execution_id_for_writes:z.boolean().optional(), supervisor_plan_max_parallelism:z.number().int().min(1).max(100).optional(), supervisor_plan_max_wip:z.number().int().min(1).max(1000).optional(), supervisor_plan_packet_size:z.number().int().min(1).max(200).optional(), supervisor_plan_candidate_buffer_min:z.number().int().min(0).max(20).optional(), supervisor_plan_candidate_buffer_target:z.number().int().min(0).max(50).optional(), supervisor_default_source_profile:z.string().optional() } }, async(v)=>output(await configureSupervisor(env,v)));
   server.registerTool("assumir_proximo_trabalho_supervisor", { description:"Obtém lease atômico de um projeto disponível para o Supervisor.", inputSchema:{ worker_id:z.string().optional(), projeto_id:z.string().optional(), lease_minutos:z.number().int().min(1).max(120).optional() } }, async(v)=>output(await claimNextSupervisorWork(env,{workerId:v.worker_id,projectId:v.projeto_id,leaseMinutes:v.lease_minutos})));
-  server.registerTool("backfill_projetos_legados", { description:"Reconcilia projetos históricos no modelo de filas V2 sem alterar IDs ou r2_key.", inputSchema:{ limite:z.number().int().min(1).max(500).optional() } }, async({limite})=>output(await backfillLegacyProjects(env,limite||50)));
+  server.registerTool("backfill_projetos_legados", { description:"DESATIVADO: projetos históricos foram removidos por decisão operacional; a V2 não tenta reconstruir estado visual sem funcionalidade.", inputSchema:{ limite:z.number().int().min(1).max(500).optional() } }, async()=>output({error:"LEGACY_PROJECT_BACKFILL_DISABLED",status:410,detail:"Crie projetos novos na V2."}));
+  server.registerTool("heartbeat_supervisor", { description:"Renova o lease do Supervisor somente para o projeto/execution_id atual. Um agente não pode renovar a execução de outro.", inputSchema:{ projeto_id:z.string().min(1), execution_id:z.string().min(1), worker_id:z.string().optional(), lease_minutos:z.number().int().min(1).max(120).optional() } }, async(v)=>output(await heartbeatSupervisor(env,{projectId:v.projeto_id,executionId:v.execution_id,ownerId:v.worker_id,leaseMinutes:v.lease_minutos})));
   server.registerTool("executar_watchdog_supervisor", { description:"Marca execuções Supervisor com lease expirado como abandonadas.", inputSchema:{} }, async()=>output(await supervisorWatchdog(env)));
   server.registerTool("obter_telemetria_leases_supervisor", { description:"Telemetria de leases do Supervisor.", inputSchema:{} }, async()=>output(await supervisorLeaseTelemetry(env)));
   server.registerTool("executar_dispatcher_workers", { description:"Reconcilia filas dos projetos ativos e retorna saúde do dispatcher.", inputSchema:{ limite_projetos:z.number().int().min(1).max(100).optional() } }, async({limite_projetos})=>{const projects=await listAutomaticProjects(env,limite_projetos||25,null);let reconciled=0;for(const p of projects.items){if(!["COMPLETED","CANCELLED"].includes(String(p.status))){await reconcileAutomaticProject(env,String(p.id));reconciled++;}}return output({reconciled,health:await dispatcherHealth(env)});});
@@ -820,6 +850,8 @@ function createServer(env: Env, request: Request) {
   // --- V2 0.7: remaining historical compatibility surface ---
   server.registerTool("excluir_asset_permanentemente", { description:"Exclusão irreversível com confirmar=true. Desvincula referências operacionais e remove o objeto R2 somente quando a chave não é compartilhada por outro asset.", inputSchema:{ asset_id:z.string().min(1), confirmar:z.boolean() } }, async(v)=>output(await deleteAssetPermanently(env,v.asset_id,v.confirmar)));
   server.registerTool("excluir_pendentes_permanentemente_em_lote", { description:"Exclui somente assets ainda Pendentes; exige confirmar=true e preserva qualquer objeto R2 compartilhado.", inputSchema:{ asset_ids:z.array(z.string()).min(1).max(200), confirmar:z.boolean() } }, async(v)=>output(await deletePendingAssetsPermanently(env,v.asset_ids,v.confirmar)));
+  server.registerTool("excluir_assets_permanentemente_em_lote", { description:"Exclusão irreversível em massa no D1 e no R2. Objetos ausentes no bucket têm somente o metadado morto removido; objetos compartilhados são preservados.", inputSchema:{ asset_ids:z.array(z.string()).min(1).max(500), confirmar:z.boolean() } }, async(v)=>output(await deleteAssetsPermanently(env,v.asset_ids,v.confirmar)));
+  server.registerTool("atualizar_manifesto_recuperacao_d1_r2", { description:"Atualiza no R2 o arquivo canônico que descreve a estrutura do D1 e os prefixos de sidecars de recuperação.", inputSchema:{ motivo:z.string().optional() } }, async(v)=>output(await writeD1StructureManifest(env,v.motivo||"MCP_REFRESH",null)));
 
   server.registerTool("preparar_upload_zip", { description:"Gera ticket temporário para upload direto de ZIP ao R2. O MCP nunca transporta o binário.", inputSchema:{ nome_arquivo:z.string().optional() } }, async(v)=>output(await prepareZipUpload(request,env,v.nome_arquivo||"importacao.zip")));
   server.registerTool("importar_zip_por_url", { description:"Importa ZIP por HTTPS pública; origem local/sandbox recebe ticket de upload direto em vez de atravessar o MCP.", inputSchema:{ url:z.string().min(1), nome_arquivo:z.string().min(1), manifesto_txt:z.string().optional() } }, async(v)=>{ if(/^https?:\/\//i.test(v.url))return output(await importZipByUrl(env,{url:v.url,fileName:v.nome_arquivo,manifestText:v.manifesto_txt})); return output(await prepareZipUpload(request,env,v.nome_arquivo)); });
@@ -829,6 +861,8 @@ function createServer(env: Env, request: Request) {
   server.registerTool("importar_midia_arquivo", { description:"Compatibilidade segura para mídia anexada: usa URL pública do file object quando disponível; senão devolve ticket de upload direto. Binários não atravessam o MCP.", inputSchema:{ arquivo:z.unknown(), nome:z.string().min(1), universo:z.string().optional(), tipo:z.string().optional(), sujeito:z.string().optional(), tags:z.array(z.string()).optional(), projeto_origem:z.string().optional(), referencia_roteiro:z.string().optional(), referencia_visual:z.string().optional(), fonte_url:z.string().optional(), nota_operacional:z.string().optional(), status_qa:z.string().optional() } }, async(v)=>{ const f=(v.arquivo&&typeof v.arquivo==="object"?v.arquivo:{}) as Record<string,unknown>; const url=String(f.download_url||f.url||f.href||""); if(/^https?:\/\//i.test(url))return output(await enqueueFastPushItems(env,[{url,projectId:v.projeto_origem,universe:v.universo,subject:v.sujeito||v.nome,tags:v.tags}],{type:"IMPORT_MEDIA_FILE_URL"})); const fileName=String(f.name||f.filename||`${v.nome}.bin`); const mime=String(f.mime_type||f.type||"")||undefined; const size=Number(f.size_bytes||f.size||30*1024*1024); return output(await prepareDirectUpload(request,env,{fileName,mimeType:mime,maxBytes:Math.min(Math.max(size,1024),100*1024*1024),uploadType:"CANDIDATE",projectId:v.projeto_origem,universe:v.universo,subject:v.sujeito||v.nome,tags:v.tags})); });
 
   server.registerTool("exportar_assets_zip", { description:"ACK assíncrono: gera ZIP streaming no R2 e reutiliza conjunto idêntico por até 48h.", inputSchema:{ asset_ids:z.array(z.string()).min(1).max(500), nome_zip:z.string().optional(), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>{ const q=await queueAssetExport(env,{assetIds:v.asset_ids,name:v.nome_zip}); if("export_id" in q && "reused" in q && q.reused)return output({...q,link:await getAssetExportLink(request,env,String(q.export_id),v.validade_minutos||30)}); return output(q); });
+  server.registerTool("obter_status_export_assets_zip", { description:"Consulta o estado de um ZIP de assets enfileirado sem baixar o arquivo.", inputSchema:{ export_id:z.string().min(1) } }, async(v)=>output(await getAssetExportStatus(env,v.export_id)));
+  server.registerTool("obter_link_export_assets_zip", { description:"Quando o ZIP de assets estiver READY, gera link temporário direto para download sem transportar o binário pelo MCP.", inputSchema:{ export_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getAssetExportLink(request,env,v.export_id,v.validade_minutos||30)));
 
   const materializationItem=z.object({ item_id:z.string().min(1), arquivo_alvo:z.string().optional(), conceito:z.string().optional(), referencia_visual:z.string().optional(), universo:z.string().optional(), preset:z.string().optional(), slot:z.string().optional(), tipo:z.string().optional(), sujeito:z.string().optional(), tags:z.array(z.string()).optional(), referencia_roteiro:z.string().optional(), usado_para:z.string().optional(), min_width:z.number().int().positive().optional(), min_height:z.number().int().positive().optional(), transparencia_necessaria:z.boolean().optional(), candidatas:z.array(z.object({priority:z.number().int().optional(),url:z.string().url(),source:z.string().optional()})).max(5).optional() });
   server.registerTool("materializar_lote", { description:"Cria lote histórico e envia candidatas ao FAST PUSH/Queue. ACK imediato; downloads ocorrem no Data Plane.", inputSchema:{ batch_id:z.string().optional(), projeto:z.string().min(1), itens:z.array(materializationItem).min(1).max(40), execution_id:z.string().optional() } }, async(v)=>output(await materializeBatchCompat(env,{batchId:v.batch_id,project:v.projeto,items:v.itens})));
@@ -841,6 +875,26 @@ function createServer(env: Env, request: Request) {
   server.registerTool("exportar_zip_arquivo", { description:"Gera ZIP assíncrono dos assets congelados do lote usando o mesmo exportador streaming do R2.", inputSchema:{ batch_id:z.string().min(1), nome_zip:z.string().optional(), arquivos:z.array(z.object({item_id:z.string(),arquivo_alvo:z.string()})).optional(), execution_id:z.string().optional() } }, async(v)=>output(await exportFrozenMaterializationBatch(env,v.batch_id,v.nome_zip)));
   server.registerTool("cancelar_lote_materializacao", { description:"Cancela tentativas futuras sem apagar arquivos aprovados ou histórico.", inputSchema:{ batch_id:z.string().min(1), execution_id:z.string().optional() } }, async(v)=>output((await cancelMaterializationBatch(env,v.batch_id))||{error:"BATCH_NOT_FOUND"}));
   server.registerTool("limpar_temporarios_lote", { description:"Remove apenas objetos temporários não aprovados de lote terminal; exige confirmar=true.", inputSchema:{ batch_id:z.string().min(1), confirmar:z.boolean() } }, async(v)=>output(await cleanMaterializationTemporaries(env,v.batch_id,v.confirmar)));
+
+  server.registerTool("vasculhar_r2", {
+    description: "Procura em todo o R2 os arquivos físicos correspondentes aos assets Pendentes. Informa quais já estão no caminho atual, quais foram encontrados em outra chave com alta confiança e quais continuam sem correspondência. Somente leitura.",
+    inputSchema: { max_objetos:z.number().int().min(1000).max(50000).optional(), limite_pendentes:z.number().int().min(1).max(1000).optional() },
+  }, async ({max_objetos,limite_pendentes}) => output(await scanPendingMedia(requestFor(request,`/storage/r2/pending-reconcile?maxObjects=${max_objetos||20000}&limit=${limite_pendentes||500}`),env)));
+
+  server.registerTool("reparar_pendentes_r2", {
+    description: "Religa somente assets Pendentes cujo arquivo foi encontrado no R2 com correspondência forte. Preserva o status Pendente e registra a troca de r2_key na nota operacional.",
+    inputSchema: { asset_ids:z.array(z.string()).max(500).optional(), max_objetos:z.number().int().min(1000).max(50000).optional() },
+  }, async ({asset_ids,max_objetos}) => output(await repairPendingMedia(env,{assetIds:asset_ids,maxObjects:max_objetos||20000})));
+
+  server.registerTool("excluir_pendentes_nao_encontrados_r2", {
+    description: "Refaz uma varredura completa do bucket e exclui permanentemente apenas Pendentes que continuarem sem correspondência física. Exige confirmar=true; a política é recapturar mídia nova em vez de insistir na reconciliação.",
+    inputSchema: { confirmar:z.boolean(), max_objetos:z.number().int().min(1000).max(50000).optional() },
+  }, async ({confirmar,max_objetos}) => output(await deleteMissingPendingMedia(env,{confirm:confirmar,maxObjects:max_objetos||20000})));
+
+  server.registerTool("explorar_r2_fisico", {
+    description: "Explorador físico somente leitura do bucket R2 por prefixos/pastas. Ferramenta de diagnóstico; não reconcilia Pendentes.",
+    inputSchema: { prefixo:z.string().optional(), max_objetos:z.number().int().min(100).max(50000).optional() },
+  }, async ({prefixo,max_objetos}) => output(await exploreR2(requestFor(request,`/storage/r2/explore?prefix=${encodeURIComponent(prefixo||"")}&maxObjects=${max_objetos||10000}`),env)));
 
   server.registerTool("auditar_armazenamento_r2", {
     description: "Auditoria completa somente leitura: cruza todas as referências conhecidas do D1 com o inventário físico do R2 e reporta faltantes, órfãos e chaves compartilhadas.",

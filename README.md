@@ -1,81 +1,53 @@
-# Corvo Library V2 — checkpoint 0.12.3
+# Corvo Library V2 — Checkpoint 0.17.0
 
-Reconstrução limpa da Corvo Library com **UI web** + **Cloudflare Worker (Core)** + **D1 + R2 + Queue**, com configuração autossuficiente pela própria interface.
+## Novo no 0.17 — interface operacional premium
 
-A V2 usa a V61.9 como especificação funcional e preserva o banco histórico 1:1. Não usa Turso/libSQL, `production-recovery`, `secret_cloudflare_connection` nem credenciais R2 salvas no D1.
+- Nova **Visão geral** com KPIs reais, agentes, projetos, saúde e atividade recente.
+- Sidebar consolidada em **Visão geral · Assets · Projetos · Execuções · Análise · Configurações**.
+- **Assets** agora contém Catálogo, Pendentes e Rejeitados como abas internas.
+- Projetos agrupa Solicitações/Lotes/Importações; Execuções agrupa Coleta/Inbox/Operação; Análise agrupa Estoque/Políticas.
+- Linguagem visual dark premium inspirada no painel Corvo aprovado.
+- Cards de mídia com fallback visual limpo quando o arquivo físico não responde.
+- Todas as ações reais existentes continuam disponíveis: ZIP, aprovação, exclusão permanente, reconciliação R2, FAST PUSH, Supervisor, políticas e heartbeats.
+- Nenhuma migration nova: schema continua **2.9.0**.
 
-## Queue consumer fix — 0.12.3
+Corvo Library V2 limpa e autossuficiente: Vercel para a interface e Cloudflare Worker + D1 + R2 + Queue para o Core. Sem Turso, sem `production-recovery`, sem credenciais R2 salvas no D1 e sem instalação local obrigatória.
 
-O provisionamento de Queue agora é idempotente: se `corvo-materialize-v2` já tiver um Worker consumer de uma tentativa anterior, a V2 reconcilia esse consumidor via API `PUT` em vez de tentar criar um segundo consumer. Um consumidor `http_pull` continua protegido e gera conflito explícito em vez de ser alterado silenciosamente. O fluxo também relista a Queue após uma corrida entre LIST/POST.
+## Novo no 0.16 — Heartbeat MCP e leases renováveis
 
+- `heartbeat_worker`: renova lease somente com `work_item_id + worker_id + execution_id` corretos; lease expirado não é ressuscitado.
+- `heartbeat_supervisor`: renova projeto/execução atual do Supervisor e rejeita owner/execution divergente.
+- `heartbeat_operacao`: heartbeat para orquestrações MCP longas com ownership explícito e takeover de expirado somente com `reclaim_expired=true`.
+- `obter_status_heartbeats`: mostra último sinal, expiração e tempo restante.
+- `executar_watchdog_heartbeats`: expira registros genéricos; watchdogs nativos continuam requeue/abandono de Worker/Supervisor.
+- Migration `9009_v2_runtime_heartbeats.sql` adiciona apenas estado V2; nenhuma tabela histórica é remodelada.
 
-## Arquitetura
+## Novo no 0.15 — operação real, limpeza histórica e recuperação pelo R2
 
-```text
-Corvo Library (web)
-        │
-        │ app key local de baixo privilégio
-        ▼
-Cloudflare Worker / MCP
-  ├─ D1       catálogo + estado
-  ├─ R2       mídia (corvoquiz-prod)
-  ├─ Queue    materialização assíncrona
-  └─ secrets  controle/assinatura
-        ↓
-       DLQ
-```
+- Seleção múltipla no Catálogo/Pendentes/Rejeitados.
+- Geração de ZIP em massa no R2 com download por URL temporária.
+- Aprovação em lote de Pendentes.
+- Exclusão permanente em lote: remove metadados do D1 e remove o objeto R2 quando ele existir e não estiver compartilhado por outro asset.
+- `Vasculhar pendentes no R2`: procura o arquivo físico; correspondências fortes podem ser religadas mantendo o status Pendente.
+- `Excluir não encontrados`: refaz uma varredura completa no momento da ação; só depois remove os Pendentes que continuarem `NOT_FOUND`. A política passa a ser recapturar mídia nova, não insistir indefinidamente.
+- Projetos históricos e seu estado de Supervisor/Workers foram removidos do D1 por decisão operacional. A manutenção V2 também limpa o prefixo físico `projects/` no R2. Novos projetos começam limpos na V2.
+- Supervisor MCP pode criar políticas livres em qualquer escopo, ativar, versionar, suspender, substituir e fazer rollback. A UI não limita a autoria operacional da IA.
+- Todo fluxo novo de imagem/import grava material de recuperação no R2:
+  - `corvo-core/recovery/D1_STRUCTURE.json`
+  - `corvo-core/recovery/assets/<AST>.json`
+  - `corvo-core/recovery/candidates/<id>.json`
+  - `corvo-core/recovery/imports/<id>.json`
+  - `corvo-core/recovery/deleted/assets/<AST>.json` para tombstones `DO_NOT_RESTORE`.
+- A estrutura/sidecars nunca armazenam tokens, passwords ou Access Keys.
 
-O frontend pode continuar hospedado na Vercel, mas **não depende de Environment Variables da Vercel para operar a Library**. Depois do setup, o navegador fala diretamente com o Corvo Core usando uma chave própria da aplicação. O token Cloudflare nunca é salvo no D1 nem no `localStorage`; após a primeira configuração ele existe somente como secret do Worker.
+## MCP
 
-## Configuração autossuficiente — 0.12.3
+A matriz histórica continua com 229 ferramentas: 227 implementadas e 2 antigas de credencial Cloudflare substituídas por bindings nativos. A V2 acrescenta ferramentas operacionais próprias, incluindo ZIP de assets, link/status de ZIP, reconciliação R2, exclusão dos Pendentes não encontrados, auditoria de armazenamento e política livre do Supervisor.
 
-A tela **Configurações** executa o provisionamento pela API oficial da Cloudflare. O usuário informa um API Token uma única vez e o app:
+## Estado validado do banco
 
-1. localiza/cria o D1 `corvo-library-v2`;
-2. confirma e reutiliza o bucket R2 existente `corvoquiz-prod`;
-3. localiza/cria Queue e DLQ;
-4. gera as chaves internas;
-5. publica o Worker `corvo-core-v2` com bindings nativos;
-6. restaura o banco histórico embutido no app e aplica migrations V2;
-7. grava a conexão deste navegador;
-8. cria o manifesto não secreto `LOCKED` no D1.
+O gate 0.15 restaura a base histórica e aplica todas as migrations V2 em memória antes de aprovar o checkpoint. Baseline: 929 assets, 849 aprovados, 77 pendentes, 3 rejeitados, 174 universos aprovados e 1.176 usos. Projetos históricos após a migration 9008: zero.
 
-Nenhum Wrangler/npm precisa ser instalado no computador do usuário e nenhuma variável manual precisa ser adicionada na hospedagem.
+## Princípios de segurança
 
-### Persistência
-
-- fechar e abrir o app preserva a conexão;
-- redeploy do frontend preserva a conexão;
-- migrations não fazem seed/reset do manifesto;
-- uma alteração explícita cria uma nova revisão;
-- a configuração Cloudflare permanece nos próprios recursos/Worker;
-- se o armazenamento local do navegador for limpo, **reconectar** usa novamente um API Token e reaproveita os recursos existentes, sem restaurar/copiar mídia novamente.
-
-### Atualização do Core
-
-O Worker guarda o token de controle como secret e conhece a origem do app. Quando uma versão futura do frontend exigir um Core novo, a tela pode pedir ao Worker para buscar o bundle publicado pelo próprio app e atualizar **o próprio Worker**, preservando D1/R2/Queue e os secrets. Isso evita uma nova configuração manual a cada release.
-
-## Estado funcional
-
-- Restauração histórica: **929 assets**, **849 aprovados**, **77 pendentes**, **3 rejeitados**, **174 universos aprovados**, **1.176 usos**.
-- 47 tabelas históricas preservadas + 14 tabelas `v2_*`; schema V2 **2.7.0**.
-- FAST PUSH URL → ACK → Queue → R2 → D1 → Inbox.
-- Upload direto sem binário no MCP.
-- Catálogo, projetos, solicitações, lotes/imports, Supervisor, workers, coleta, políticas, estoque, pacotes/ZIP e auditoria D1↔R2.
-- **227/229** nomes MCP históricos implementados; os 2 restantes foram substituídos pela infraestrutura segura da V2.
-
-## Segurança
-
-O D1 não recebe token Cloudflare, Access Key, Secret Key, signing key ou master key. A credencial Cloudflare de controle é movida para um secret do Worker após o setup; o navegador conserva apenas `coreUrl` + `appKey` de aplicação para a sessão persistente da Library.
-
-Veja `docs/SETUP_WIZARD.md`, `docs/ARCHITECTURE.md` e `docs/DEPLOYMENT_RUNBOOK.md`.
-
-
-## Build fix — 0.12.3
-
-O bundle do Worker é gerado no `prebuild` da Vercel. Dependências do MCP/Agents usam APIs nativas do runtime Cloudflare, incluindo `node:async_hooks`. O esbuild agora usa `platform: "neutral"` e preserva imports `node:*` como externos, em vez de tentar resolvê-los como browser modules durante o build da Vercel. O Worker é publicado com compatibility date `2026-08-29`, que fornece a compatibilidade Node necessária no runtime Cloudflare.
-
-## Build fixes — 0.12.3
-
-### Post-prebuild TypeScript regression
-`generated-core-bundle.ts` now exports the generated version and source as explicit `string` values. This prevents TypeScript from narrowing the generated version to the literal checkpoint value and rejecting the defensive `UNBUILT` comparison during `next build`. The checkpoint gate simulates the post-prebuild generated file before packaging.
+A configuração de infraestrutura é persistente e imutável por padrão. Atualizações não resetam bindings/configuração. Exclusão permanente exige confirmação explícita. Objetos R2 compartilhados por mais de um asset não são apagados automaticamente. Uma varredura truncada do R2 bloqueia a exclusão automática de Pendentes não encontrados.

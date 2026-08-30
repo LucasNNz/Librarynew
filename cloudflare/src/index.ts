@@ -2,19 +2,21 @@ import type { CorvoQueueJob, Env, MaterializeJob } from "./types";
 import { handleMcp } from "./mcp";
 import { authorized } from "./core/auth";
 import { catalogStats, getAsset, listAssets, listUniverses } from "./core/assets";
-import { approvePendingAssets, catalogAsset, deleteAssetPermanently, deletePendingAssetsPermanently, getAssetHistory, registerAssetUsage, rejectAsset, restoreAsset, updateAssetMetadata } from "./core/asset-ops";
+import { approvePendingAssets, catalogAsset, deleteAssetPermanently, deleteAssetsPermanently, deletePendingAssetsPermanently, getAssetHistory, registerAssetUsage, rejectAsset, restoreAsset, updateAssetMetadata } from "./core/asset-ops";
 import { corsHeaders, json, withCors } from "./core/http";
 import { approveCandidate, fastPush, getOperation, listCandidates, materialize, rejectCandidate } from "./core/ingest";
 import { integritySample, r2Inventory, serveCandidateFile, serveFile, serveSupervisorCandidateFile } from "./core/storage";
+import { exploreR2 } from "./core/r2-explorer";
+import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from "./core/pending-r2-reconcile";
 import { addAssetsToBatch, createBatch, createRequest, generateBatchManifest, getBatch, listBatches, listImports, listRequests, removeAssetsFromBatch, updateBatchStatus, updateRequest } from "./core/work-items";
 import { configureAutomaticProject, createAutomaticProject, getAutomaticProjectDetails, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
-import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, workerWatchdog } from "./core/workers";
+import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
 import { confirmDirectUpload, getDirectUpload, prepareDirectUpload, receiveDirectUpload } from "./core/direct-upload";
 import { appliedPolicies, createOperationalPolicy, detectOperationalGap, editOperationalPolicy, getOperationalGap, linkGapPolicy, listOperationalGaps, listOperationalPolicies, policyTelemetry, policyWorkspace, resolveGapAndLearn, rollbackPolicy, setPolicyStatus, testPolicy } from "./core/policies";
-import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, resolveSupervisorDecision, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog } from "./core/supervisor";
+import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, heartbeatSupervisor, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, resolveSupervisorDecision, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog } from "./core/supervisor";
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
 import { alterInfrastructureProfile, getInfrastructureProfile, initializeInfrastructureProfile, verifyInfrastructureProfile } from "./core/infrastructure";
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
@@ -27,7 +29,10 @@ import { importZipByUrl, prepareZipUpload, processZipImport, syncR2Uncataloged }
 import { addCandidatesToMaterializationItem, addMaterializationItems, assetsForQa, cancelMaterializationBatch, cleanMaterializationTemporaries, createContinuousMaterializationQueue, getMaterializationBatchStatus, getMaterializationItemStatus, materializeBatchCompat, registerMaterializationQa } from "./core/materialization-compat";
 import { getAssetExportLink, processAssetExportJob, queueAssetExport, serveAssetExport } from "./core/asset-exports";
 import { dataHealth } from "./core/data-health";
-import { selfUpdateCore } from "./core/control-plane";
+import { applyMigrationsFromApp, selfUpdateCore } from "./core/control-plane";
+import { maintenanceStatus, runPendingMaintenance } from "./core/maintenance";
+import { writeD1StructureManifest } from "./core/recovery-manifest";
+import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
@@ -57,7 +62,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.12.3", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.17.0", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -90,9 +95,12 @@ export default {
     if (!authorized(request, env)) return withCors(json({ error: "UNAUTHORIZED" }, { status: 401 }), request);
 
     let response: Response;
-    if (url.pathname === "/health" && request.method === "GET") response = json(await health(env));
+    if (url.pathname === "/health" && request.method === "GET") { ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined)); response = json(await health(env)); }
     else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
+    else if (url.pathname === "/control/apply-migrations" && request.method === "POST") response = json(await applyMigrationsFromApp(env));
     else if (url.pathname === "/data-health" && request.method === "GET") response = json(await dataHealth(env));
+    else if (url.pathname === "/maintenance" && request.method === "GET") response = json(await maintenanceStatus(env));
+    else if (url.pathname === "/recovery/d1-structure" && request.method === "POST") response = json(await writeD1StructureManifest(env,"MANUAL_REFRESH",null));
     else if (url.pathname === "/assets" && request.method === "GET") response = json(await listAssets(request, env));
     else if (url.pathname === "/assets" && request.method === "POST") {
       const value = await catalogAsset(request, await request.json(), env);
@@ -218,6 +226,10 @@ export default {
     else if (/^\/uploads\/[^/]+\/confirm$/.test(url.pathname) && request.method === "POST") { const uploadId=decodeURIComponent(url.pathname.split("/")[2]); const value=await confirmDirectUpload(env,uploadId); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (/^\/uploads\/[^/]+$/.test(url.pathname) && request.method === "GET") { const uploadId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getDirectUpload(env,uploadId); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
     else if (url.pathname === "/storage/r2" && request.method === "GET") response = json(await r2Inventory(request, env));
+    else if (url.pathname === "/storage/r2/explore" && request.method === "GET") response = json(await exploreR2(request, env));
+    else if (url.pathname === "/storage/r2/pending-reconcile" && request.method === "GET") response = json(await scanPendingMedia(request, env));
+    else if (url.pathname === "/storage/r2/pending-reconcile" && request.method === "POST") response = json(await repairPendingMedia(env, await request.json() as {assetIds?:string[];maxObjects?:number}));
+    else if (url.pathname === "/storage/r2/pending-reconcile/delete-missing" && request.method === "POST") { const body=await request.json() as {confirm?:boolean;maxObjects?:number}; const value=await deleteMissingPendingMedia(env,body); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/storage/integrity" && request.method === "GET") response = json(await integritySample(env, Number(url.searchParams.get("limit") || 100)));
     else if (url.pathname === "/storage/audit" && request.method === "POST") response = json(await fullStorageAudit(env, Number(url.searchParams.get("maxObjects") || 10000)));
     else if (url.pathname === "/storage/audit/latest" && request.method === "GET") response = json({ audit: await latestStorageAudit(env) });
@@ -233,8 +245,12 @@ export default {
     else if (url.pathname === "/operations/mcp-performance" && request.method === "GET") response=json(await mcpPerformance(env,Number(url.searchParams.get("limit")||100)));
     else if (url.pathname === "/operations/source-ranking" && request.method === "GET") response=json({items:await sourceRouteRanking(env,Number(url.searchParams.get("limit")||100))});
     else if (url.pathname === "/operations/risk" && request.method === "GET") response=json(await operationalRisk(env));
+    else if (/^\/operations\/[^/]+\/heartbeat$/.test(url.pathname) && request.method === "POST") { const operationId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {ownerId:string;executionId:string;ttlSeconds?:number;reclaimExpired?:boolean;metadata?:unknown}; const value=await heartbeatOperation(env,{operationId,ownerId:body.ownerId,executionId:body.executionId,ttlSeconds:body.ttlSeconds,reclaimExpired:body.reclaimExpired,metadata:body.metadata}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
+    else if (url.pathname === "/heartbeats" && request.method === "GET") response=json(await runtimeHeartbeatStatus(env,{scopeType:url.searchParams.get("scopeType")||undefined,limit:Number(url.searchParams.get("limit")||100)}));
+    else if (url.pathname === "/heartbeats/watchdog" && request.method === "POST") response=json(await runtimeHeartbeatWatchdog(env));
     else if (url.pathname === "/workers/health" && request.method === "GET") response=json(await dispatcherHealth(env));
     else if (url.pathname === "/workers/claim" && request.method === "POST") response=json(await claimNextWork(env,await request.json()));
+    else if (/^\/workers\/work\/[^/]+\/heartbeat$/.test(url.pathname) && request.method === "POST") { const workItemId=decodeURIComponent(url.pathname.split("/")[3]); const body=await request.json() as {workerId:string;executionId:string;leaseSeconds?:number}; const value=await heartbeatWorker(env,{workItemId,workerId:body.workerId,executionId:body.executionId,leaseSeconds:body.leaseSeconds}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (/^\/workers\/work\/[^/]+\/complete$/.test(url.pathname) && request.method === "POST") { const workItemId=decodeURIComponent(url.pathname.split("/")[3]); const body=await request.json() as {workerId:string;result?:unknown}; const value=await completeWork(env,{workItemId,workerId:body.workerId,result:body.result}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (/^\/workers\/work\/[^/]+\/fail$/.test(url.pathname) && request.method === "POST") { const workItemId=decodeURIComponent(url.pathname.split("/")[3]); const body=await request.json() as {workerId:string;reason:string;retry?:boolean;delaySeconds?:number}; const value=await failWork(env,{workItemId,...body}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/workers/watchdog" && request.method === "POST") response=json(await workerWatchdog(env));
@@ -268,9 +284,10 @@ export default {
     else if (url.pathname === "/supervisor/panel" && request.method === "GET") response=json(await supervisorPanel(env,url.searchParams.get("projectId")||undefined));
     else if (url.pathname === "/supervisor/config" && request.method === "POST") response=json(await configureSupervisor(env,await request.json() as Record<string,unknown>));
     else if (url.pathname === "/supervisor/claim" && request.method === "POST") response=json(await claimNextSupervisorWork(env,await request.json() as Parameters<typeof claimNextSupervisorWork>[1]));
+    else if (url.pathname === "/supervisor/heartbeat" && request.method === "POST") { const body=await request.json() as {projectId:string;executionId:string;workerId?:string;leaseMinutes?:number}; const value=await heartbeatSupervisor(env,{projectId:body.projectId,executionId:body.executionId,ownerId:body.workerId,leaseMinutes:body.leaseMinutes}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/supervisor/watchdog" && request.method === "POST") response=json(await supervisorWatchdog(env));
     else if (url.pathname === "/supervisor/leases" && request.method === "GET") response=json(await supervisorLeaseTelemetry(env));
-    else if (url.pathname === "/supervisor/backfill" && request.method === "POST") { const body=await request.json() as {limit?:number}; response=json(await backfillLegacyProjects(env,body.limit||50)); }
+    else if (url.pathname === "/supervisor/backfill" && request.method === "POST") { response=json({error:"LEGACY_PROJECT_BACKFILL_DISABLED",detail:"Projetos históricos foram removidos por decisão operacional; novos projetos devem ser criados na V2."},{status:410}); }
     else if (url.pathname === "/supervisor/decisions" && request.method === "GET") response=json({items:await listSupervisorDecisions(env,{projectId:url.searchParams.get("projectId")||undefined,state:url.searchParams.get("state")||undefined,type:url.searchParams.get("type")||undefined,limit:Number(url.searchParams.get("limit")||100)})});
     else if (/^\/supervisor\/decisions\/[^/]+\/resolve$/.test(url.pathname) && request.method === "POST") { const decisionId=decodeURIComponent(url.pathname.split("/")[3]); const body=await request.json() as {decision?:string;observation?:string}; if(!body.decision) response=json({error:"INVALID_INPUT"},{status:400}); else {const value=await resolveSupervisorDecision(env,decisionId,{decision:body.decision,observation:body.observation});response=value?json(value):json({error:"NOT_FOUND_OR_RESOLVED"},{status:404});} }
     else if (url.pathname === "/supervisor/candidates" && request.method === "GET") response=json({items:await listSupervisorCandidatesWithLinks(request,env,{projectId:url.searchParams.get("projectId")||undefined,status:url.searchParams.get("status")||"PARA_ANALISE",limit:Number(url.searchParams.get("limit")||100)})});
@@ -313,6 +330,7 @@ export default {
     else if (/^\/collection\/batches\/[^/]+\/analysis$/.test(url.pathname) && request.method === "GET") { const batchId=decodeURIComponent(url.pathname.split("/")[3]); response=json(await collectionAnalysis(env,batchId)); }
     else if (/^\/collection\/batches\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname) && request.method === "POST") { const parts=url.pathname.split("/"),batchId=decodeURIComponent(parts[3]),action=parts[4].toUpperCase() as "PAUSE"|"RESUME"|"CANCEL"; const value=await controlCollectionBatch(env,batchId,action); response=value?json(value):json({error:"NOT_FOUND"},{status:404}); }
     else if (/^\/assets\/[^/]+\/permanent-delete$/.test(url.pathname) && request.method === "POST") { const assetId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {confirm?:boolean}; const value=await deleteAssetPermanently(env,assetId,Boolean(body.confirm)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
+    else if (url.pathname === "/assets/permanent-delete-batch" && request.method === "POST") { const body=await request.json() as {assetIds?:string[];confirm?:boolean}; const value=await deleteAssetsPermanently(env,body.assetIds||[],Boolean(body.confirm)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/assets/pending/permanent-delete" && request.method === "POST") { const body=await request.json() as {assetIds?:string[];confirm?:boolean}; const value=await deletePendingAssetsPermanently(env,body.assetIds||[],Boolean(body.confirm)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/imports/zip/prepare" && request.method === "POST") { const body=await request.json() as {fileName?:string}; response=json(await prepareZipUpload(request,env,body.fileName||"importacao.zip"),{status:201}); }
     else if (url.pathname === "/imports/zip/url" && request.method === "POST") { const body=await request.json() as {url:string;fileName:string;manifestText?:string}; const value=await importZipByUrl(env,body); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:201}); }

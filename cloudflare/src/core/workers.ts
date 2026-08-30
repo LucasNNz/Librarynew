@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { id, nowMs } from "./ids";
+import { expireRuntimeHeartbeat, recordRuntimeHeartbeat } from "./heartbeats";
 
 export async function claimNextWork(env: Env, input: { workerId: string; workerType: string; workerDomain?: string; executionId?: string; leaseSeconds?: number; projectId?: string }) {
   const ts = nowMs();
@@ -64,7 +65,32 @@ export async function claimNextWork(env: Env, input: { workerId: string; workerT
   }
   await env.DB.prepare("INSERT INTO worker_events (id,worker_id,worker_type,worker_domain,execution_id,project_id,work_item_id,stage,event_type,status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,'LEASED','{}',?)")
     .bind(id("WEV"), input.workerId, input.workerType, domain, executionId, row.project_id, row.id, row.stage, "CLAIM", ts).run();
+  await recordRuntimeHeartbeat(env,{scopeType:"WORKER",scopeId:String(row.id),ownerId:input.workerId,executionId,ttlSeconds:Math.floor(leaseMs/1000),metadata:{workerType:input.workerType,projectDomain:domain,projectId:row.project_id,stage:row.stage}});
   return { claimed: true, executionId, workItem: row, capacity: { maxWorkers, maxPerProject } };
+}
+
+export async function heartbeatWorker(env: Env, input: { workItemId: string; workerId: string; executionId: string; leaseSeconds?: number }) {
+  const ts=nowMs();
+  const ttl=Math.max(30,Math.min(input.leaseSeconds||300,1800));
+  const expires=ts+ttl*1000;
+  const row=await env.DB.prepare(`UPDATE worker_work_items
+    SET lease_last_seen_at=?,lease_expires_at=?,last_action='HEARTBEAT',updated_at=?
+    WHERE id=? AND status='LEASED' AND lease_owner_worker_id=? AND lease_execution_id=?
+      AND lease_expires_at IS NOT NULL AND lease_expires_at>=?
+    RETURNING id,worker_type,project_domain,project_id,stage,lease_owner_worker_id,lease_execution_id,lease_last_seen_at,lease_expires_at`)
+    .bind(ts,expires,ts,input.workItemId,input.workerId,input.executionId,ts).first<Record<string,unknown>>();
+  if(!row){
+    const current=await env.DB.prepare("SELECT status,lease_owner_worker_id,lease_execution_id,lease_expires_at FROM worker_work_items WHERE id=?").bind(input.workItemId).first<Record<string,unknown>>();
+    if(!current)return {error:"NOT_FOUND",status:404} as const;
+    if(String(current.status)!=="LEASED")return {error:"LEASE_NOT_ACTIVE",currentStatus:current.status,status:409} as const;
+    if(String(current.lease_owner_worker_id)!==input.workerId||String(current.lease_execution_id)!==input.executionId)return {error:"LEASE_MISMATCH",ownerWorkerId:current.lease_owner_worker_id,executionId:current.lease_execution_id,status:409} as const;
+    return {error:"LEASE_EXPIRED",leaseExpiresAt:current.lease_expires_at,status:409} as const;
+  }
+  const sessionId=`${input.workerId}:${input.executionId}`;
+  await env.DB.prepare("UPDATE worker_sessions SET status='ATIVO',current_work_item_id=?,last_action='HEARTBEAT',last_seen_at=?,updated_at=? WHERE id=? AND worker_id=? AND execution_id=?")
+    .bind(input.workItemId,ts,ts,sessionId,input.workerId,input.executionId).run();
+  await recordRuntimeHeartbeat(env,{scopeType:"WORKER",scopeId:input.workItemId,ownerId:input.workerId,executionId:input.executionId,ttlSeconds:ttl,metadata:{workerType:row.worker_type,projectDomain:row.project_domain,projectId:row.project_id,stage:row.stage}});
+  return {ok:true,workItemId:input.workItemId,workerId:input.workerId,executionId:input.executionId,lastSeenAt:ts,leaseExpiresAt:expires,remainingMs:expires-ts,ttlSeconds:ttl,status:200} as const;
 }
 
 export async function completeWork(env: Env, input: { workItemId: string; workerId: string; result?: unknown }) {
@@ -77,6 +103,7 @@ export async function completeWork(env: Env, input: { workItemId: string; worker
     env.DB.prepare("INSERT INTO worker_events (id,worker_id,worker_type,worker_domain,execution_id,project_id,work_item_id,stage,event_type,status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,'COMPLETED',?,?)")
       .bind(id("WEV"), input.workerId, current.worker_type, current.project_domain, current.lease_execution_id, current.project_id, input.workItemId, current.stage, "COMPLETE", JSON.stringify(input.result || {}), ts),
   ]);
+  await expireRuntimeHeartbeat(env,"WORKER",input.workItemId,"COMPLETED");
   return { ok: true, workItemId: input.workItemId, status: 200 } as const;
 }
 
@@ -94,6 +121,7 @@ export async function failWork(env: Env, input: { workItemId: string; workerId: 
     env.DB.prepare("INSERT INTO worker_events (id,worker_id,worker_type,worker_domain,execution_id,project_id,work_item_id,stage,event_type,status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
       .bind(id("WEV"), input.workerId, current.worker_type, current.project_domain, current.lease_execution_id, current.project_id, input.workItemId, current.stage, "FAIL", nextStatus, JSON.stringify({ reason: input.reason, retry }), ts),
   ]);
+  await expireRuntimeHeartbeat(env,"WORKER",input.workItemId,retry?"REQUEUED":"FAILED");
   return { ok: true, workItemId: input.workItemId, status: nextStatus, retryAt: retry ? readyAt : null };
 }
 
@@ -106,6 +134,7 @@ export async function workerWatchdog(env: Env) {
       env.DB.prepare("UPDATE worker_work_items SET status='READY',resume_priority=resume_priority+1,last_action='WATCHDOG_REQUEUE',lease_owner_worker_id=NULL,lease_execution_id=NULL,lease_started_at=NULL,lease_last_seen_at=NULL,lease_expires_at=NULL,ready_at=?,updated_at=? WHERE id=? AND status='LEASED'").bind(ts, ts, row.id),
       env.DB.prepare("INSERT INTO worker_events (id,worker_id,worker_type,worker_domain,execution_id,project_id,work_item_id,stage,event_type,status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,'READY','{}',?)")
         .bind(id("WEV"), row.lease_owner_worker_id, row.worker_type, row.project_domain, row.lease_execution_id, row.project_id, row.id, row.stage, "WATCHDOG_REQUEUE", ts),
+      env.DB.prepare("UPDATE v2_runtime_heartbeats SET status='EXPIRED',updated_at=? WHERE scope_type='WORKER' AND scope_id=? AND status='ACTIVE'").bind(ts,row.id),
     ]);
     await env.DB.batch(statements);
   }

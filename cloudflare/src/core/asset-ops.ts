@@ -1,6 +1,7 @@
 import type { Env, LegacyAssetRow } from "../types";
 import { id, nowMs } from "./ids";
 import { getAsset } from "./assets";
+import { deleteAssetRecoveryRecord, refreshRecoveryAfterWrite, writeAssetDeletionTombstone, writeAssetRecoveryRecord } from "./recovery-manifest";
 
 export type CatalogAssetInput = {
   asset_id?: string;
@@ -104,6 +105,8 @@ export async function catalogAsset(request: Request, input: CatalogAssetInput, e
       nullable(input.nota_operacional),
       qaStatus,
     ).run();
+  await writeAssetRecoveryRecord(env, assetId, "ASSET_CATALOGED").catch(() => undefined);
+  await refreshRecoveryAfterWrite(env, "ASSET_CATALOGED", assetId);
   return { asset: await getAsset(request, assetId, env) };
 }
 
@@ -128,6 +131,7 @@ export async function updateAssetMetadata(request: Request, assetId: string, inp
   assign("updated_at", nowMs());
 
   await env.DB.prepare(`UPDATE assets SET ${columns.join(",")} WHERE id=?`).bind(...values, assetId).run();
+  await writeAssetRecoveryRecord(env, assetId, "ASSET_METADATA_UPDATED").catch(() => undefined);
   return { asset: await getAsset(request, assetId, env) };
 }
 
@@ -153,6 +157,7 @@ export async function rejectAsset(request: Request, assetId: string, reason: str
   const note = [current.operational_note, `Rejeitado: ${reason.trim() || "sem motivo"}`].filter(Boolean).join("\n");
   await env.DB.prepare("UPDATE assets SET previous_status=status,status='Rejeitado',operational_note=?,updated_at=? WHERE id=?")
     .bind(note, nowMs(), assetId).run();
+  await writeAssetRecoveryRecord(env, assetId, "ASSET_REJECTED").catch(() => undefined);
   return { asset: await getAsset(request, assetId, env) };
 }
 
@@ -162,6 +167,7 @@ export async function restoreAsset(request: Request, assetId: string, env: Env) 
   const restored = current.previous_status || "Pendente";
   await env.DB.prepare("UPDATE assets SET status=?,previous_status=NULL,updated_at=? WHERE id=?")
     .bind(restored, nowMs(), assetId).run();
+  await writeAssetRecoveryRecord(env, assetId, "ASSET_RESTORED").catch(() => undefined);
   return { asset: await getAsset(request, assetId, env) };
 }
 
@@ -179,6 +185,8 @@ export async function approvePendingAssets(request: Request, assetIds: string[],
     const asset = await getAsset(request, assetId, env);
     if (asset?.rawStatus === "Aprovado") assets.push(asset);
   }
+  for (const asset of assets) await writeAssetRecoveryRecord(env, String(asset.id), "ASSET_APPROVED").catch(() => undefined);
+  if (changed) await refreshRecoveryAfterWrite(env, "ASSETS_APPROVED", String(changed));
   return { approved: changed, assets };
 }
 
@@ -195,6 +203,7 @@ export async function deleteAssetPermanently(env: Env, assetId: string, confirm:
   if (!asset) return { error: "NOT_FOUND", status: 404 } as const;
   const r2Key = String(asset.r2_key || "");
   const shared = r2Key ? await env.DB.prepare("SELECT COUNT(*) AS n FROM assets WHERE r2_key=? AND id<>?").bind(r2Key, assetId).first<{ n:number }>() : null;
+  const fileExisted = Boolean(r2Key && await env.MEDIA.head(r2Key).catch(() => null));
   const ts=nowMs();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM asset_consultations WHERE asset_id=?").bind(assetId),
@@ -208,8 +217,19 @@ export async function deleteAssetPermanently(env: Env, assetId: string, confirm:
     env.DB.prepare("DELETE FROM assets WHERE id=?").bind(assetId),
   ]);
   let fileRemoved=false;
-  if (r2Key && Number(shared?.n||0)===0) { await env.MEDIA.delete(r2Key).catch(()=>undefined); fileRemoved=true; }
-  return { deleted: assetId, r2Key, fileRemoved, sharedR2Key: Number(shared?.n||0)>0, status: 200 } as const;
+  if (r2Key && Number(shared?.n||0)===0 && fileExisted) { await env.MEDIA.delete(r2Key); fileRemoved=true; }
+  await writeAssetDeletionTombstone(env,asset,"PERMANENT_DELETE").catch(() => undefined);
+  await deleteAssetRecoveryRecord(env,assetId);
+  await refreshRecoveryAfterWrite(env,"ASSET_PERMANENTLY_DELETED",assetId);
+  return { deleted: assetId, r2Key, fileExisted, fileRemoved, sharedR2Key: Number(shared?.n||0)>0, status: 200 } as const;
+}
+
+export async function deleteAssetsPermanently(env: Env, assetIds: string[], confirm: boolean) {
+  if (!confirm) return { error: "CONFIRM_REQUIRED", status: 400 } as const;
+  const ids=[...new Set((assetIds||[]).map(String).map(v=>v.trim()).filter(Boolean))].slice(0,500);
+  const results=[] as Array<Record<string,unknown>>;
+  for(const assetId of ids){ const deleted=await deleteAssetPermanently(env,assetId,true); results.push({assetId,...deleted}); }
+  return { requested:ids.length,deleted:results.filter(r=>r.deleted).length,filesRemoved:results.filter(r=>r.fileRemoved===true).length,metadataOnly:results.filter(r=>r.deleted && r.fileExisted===false).length,results };
 }
 
 export async function deletePendingAssetsPermanently(env: Env, assetIds: string[], confirm: boolean) {

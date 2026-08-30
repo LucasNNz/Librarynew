@@ -25,3 +25,17 @@ export async function processAssetExportJob(env:Env,job:AssetExportJob){const ro
 export async function getAssetExportLink(request:Request,env:Env,exportId:string,ttlMinutes=30){const row=await env.DB.prepare("SELECT * FROM v2_asset_exports WHERE id=?").bind(exportId).first<Record<string,unknown>>();if(!row)return{error:"EXPORT_NOT_FOUND",status:404}as const;if(clean(row.status)!=="READY")return{error:`EXPORT_NOT_READY:${clean(row.status)}`,status:409}as const;const ttl=Math.max(1,Math.min(ttlMinutes,60))*60;return{export_id:exportId,status:"READY",download_url:await createSignedAssetExportUrl(request,exportId,env,ttl),filename:row.file_name,size_bytes:Number(row.size_bytes||0),expires_at:new Date(Date.now()+ttl*1000).toISOString(),direct_to_pc:true};}
 export async function serveAssetExport(request:Request,env:Env,exportId:string){if(!(await validSignedAssetExportRequest(request,exportId,env)))return new Response("Forbidden",{status:403});const row=await env.DB.prepare("SELECT * FROM v2_asset_exports WHERE id=?").bind(exportId).first<Record<string,unknown>>();if(!row?.r2_key)return new Response("Not found",{status:404});const obj=await env.MEDIA.get(clean(row.r2_key));if(!obj)return new Response("Not found",{status:404});await env.DB.prepare("UPDATE v2_asset_exports SET download_count=download_count+1,updated_at=? WHERE id=?").bind(nowMs(),exportId).run();return new Response(obj.body,{headers:{"content-type":"application/zip","content-disposition":`attachment; filename="${safeName(clean(row.file_name)||`${exportId}.zip`)}"`,"cache-control":"private, max-age=60"}});}
 export async function exportFrozenMaterializationBatch(env:Env,batchId:string,name?:string){const rows=await env.DB.prepare("SELECT frozen_asset_id FROM materialization_items WHERE batch_id=? AND frozen_asset_id IS NOT NULL ORDER BY created_at").bind(batchId).all<{frozen_asset_id:string}>();const ids=(rows.results||[]).map(r=>r.frozen_asset_id);if(!ids.length)return{error:"NO_FROZEN_ASSETS",status:409}as const;return queueAssetExport(env,{assetIds:ids,name:name||`${batchId}.zip`});}
+
+export async function getAssetExportStatus(env:Env,exportId:string){
+  const row=await env.DB.prepare("SELECT * FROM v2_asset_exports WHERE id=?").bind(exportId).first<Record<string,unknown>>();
+  if(!row)return{error:"EXPORT_NOT_FOUND",status:404}as const;
+  return {
+    export_id:exportId,
+    status:clean(row.status),
+    filename:row.file_name,
+    size_bytes:Number(row.size_bytes||0),
+    error:row.error||null,
+    ready_at:row.ready_at||null,
+    download_count:Number(row.download_count||0),
+  };
+}

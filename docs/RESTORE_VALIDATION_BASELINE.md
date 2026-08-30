@@ -7,7 +7,7 @@ Gate local executado sobre o dump histórico sanitizado + migrations `9000`–`9
 | Tabelas históricas | 47 |
 | Tabelas `v2_*` adicionadas | 15 |
 | Tabelas totais | 62 |
-| Schema V2 | 2.7.0 |
+| Schema V2 | 2.8.0 |
 | Assets | 929 |
 | Aprovados | 849 |
 | Pendentes | 77 |

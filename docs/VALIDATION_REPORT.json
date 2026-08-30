@@ -1,7 +1,7 @@
 {
-  "checkpoint": "0.12.3",
+  "checkpoint": "0.17.0",
   "validation": "PASS",
-  "duration_seconds": 3.027,
+  "duration_seconds": 3.345,
   "restore": {
     "path": "/mnt/data/CORVO_LIBRARY_V2_D1_RESTORE_SAFE.sql",
     "sha256": "898ec4c07667951d3897e6a1f852cf98637c63aa587ffd000df43be081bc32f5",
@@ -13,7 +13,9 @@
       "9004_v2_archives.sql",
       "9005_v2_delivery_hardening.sql",
       "9006_v2_persistent_infrastructure.sql",
-      "9007_v2_migration_registry.sql"
+      "9007_v2_migration_registry.sql",
+      "9008_v2_operational_cleanup_recovery.sql",
+      "9009_v2_runtime_heartbeats.sql"
     ]
   },
   "database": {
@@ -27,7 +29,7 @@
     "asset_usage": 1176,
     "assets_missing_r2_key": 0,
     "duplicate_asset_r2_keys": 8,
-    "tables_total": 62,
+    "tables_total": 65,
     "v2_tables": [
       "v2_asset_exports",
       "v2_collection_events",
@@ -39,27 +41,24 @@
       "v2_ingest_candidates",
       "v2_ingest_events",
       "v2_ingest_operations",
+      "v2_maintenance_state",
       "v2_migrations_applied",
       "v2_project_media",
       "v2_project_titles",
+      "v2_recovery_events",
+      "v2_runtime_heartbeats",
       "v2_schema_meta",
       "v2_storage_audits"
     ],
-    "schema_version": "2.7.0",
+    "schema_version": "2.9.0",
     "sensitive_settings_rows": 0
   },
   "historical_integrity": {
-    "total": 11505,
+    "total": 10934,
     "groups": {
       "collection_candidates->collection_batches": 7540,
       "collection_candidates->collection_terms": 1,
-      "collection_terms->collection_batches": 3393,
-      "operational_policy_events->automatic_project_items": 104,
-      "plan_branches->automatic_project_items": 9,
-      "source_routing_plans->automatic_project_items": 3,
-      "supervisor_decision_queue->automatic_project_items": 158,
-      "supervisor_project_candidates->automatic_project_items": 82,
-      "worker_work_items->automatic_project_items": 215
+      "collection_terms->collection_batches": 3393
     },
     "baseline_exact_match": true
   },
@@ -68,17 +67,17 @@
       "collectionTermsWithoutBatch": 3393,
       "collectionCandidatesWithoutBatch": 7540,
       "collectionCandidatesWithoutTerm": 1,
-      "workerItemsWithoutParent": 215,
-      "supervisorDecisionsWithoutItem": 158,
-      "operationalPolicyEventsWithoutItem": 104,
-      "supervisorCandidatesWithoutItem": 82,
-      "planBranchesWithoutItem": 9,
-      "sourceRoutingPlansWithoutItem": 3
+      "workerItemsWithoutParent": 0,
+      "supervisorDecisionsWithoutItem": 0,
+      "operationalPolicyEventsWithoutItem": 0,
+      "supervisorCandidatesWithoutItem": 0,
+      "planBranchesWithoutItem": 0,
+      "sourceRoutingPlansWithoutItem": 0
     },
     "active_historical_risk": {
-      "readyOrLeasedWorkerItemsWithoutParent": 54,
-      "pendingSupervisorDecisionsWithoutItem": 134,
-      "actionableSupervisorCandidatesWithoutItem": 60
+      "readyOrLeasedWorkerItemsWithoutParent": 0,
+      "pendingSupervisorDecisionsWithoutItem": 0,
+      "actionableSupervisorCandidatesWithoutItem": 0
     },
     "v2": {
       "candidatesWithoutOperation": 0,
@@ -86,9 +85,51 @@
       "packagesWithoutProject": 0,
       "projectMediaWithoutProject": 0,
       "projectTitlesWithoutProject": 0,
-      "infrastructureEventsWithoutProfile": 0
+      "infrastructureEventsWithoutProfile": 0,
+      "operationHeartbeatsWithoutOperation": 0
     },
     "v2_orphans": 0
+  },
+  "operational_cleanup": {
+    "automatic_projects": 0,
+    "automatic_project_items": 0,
+    "automatic_project_files": 0,
+    "supervisor_plans": 0,
+    "worker_project_items": 0,
+    "v2_download_packages": 0,
+    "missing_r2_recapture_policy": 1,
+    "supervisor_autonomy_policy": 1,
+    "legacy_project_r2_maintenance": 1
+  },
+  "recovery_contract": {
+    "d1_structure_manifest": true,
+    "asset_sidecars": true,
+    "candidate_sidecars": true,
+    "import_sidecars": true,
+    "deletion_tombstones": true,
+    "delete_writes_tombstone": true,
+    "reconcile_refreshes_sidecar": true,
+    "missing_delete_requires_fresh_scan": true
+  },
+  "heartbeat_contract": {
+    "runtime_table_exists": true,
+    "worker_requires_execution_match": true,
+    "worker_does_not_revive_expired": true,
+    "worker_watchdog_expires_heartbeat": true,
+    "supervisor_requires_execution_match": true,
+    "supervisor_does_not_revive_expired": true,
+    "supervisor_watchdog_expires_heartbeat": true,
+    "operation_owner_execution_guard": true,
+    "operation_terminal_guard": true,
+    "generic_watchdog": true,
+    "mcp_tools_registered": true
+  },
+  "heartbeat_sql_smoke": {
+    "initial_claim": true,
+    "active_owner_conflict_blocked": true,
+    "same_owner_renewed": true,
+    "expired_not_revived_without_reclaim": true,
+    "explicit_reclaim_after_expiry": true
   },
   "configuration_persistence": {
     "not_seeded_by_migrations": true,
@@ -128,13 +169,27 @@
     "historical_total": 229,
     "matrix_implemented": 227,
     "matrix_substituted": 2,
-    "registered_total": 230,
-    "registered_unique": 230,
+    "registered_total": 244,
+    "registered_unique": 244,
     "historical_registered": 227,
     "extras": [
+      "atualizar_manifesto_recuperacao_d1_r2",
       "auditar_armazenamento_r2",
       "auditar_integridade_d1",
-      "obter_status_upload_midia"
+      "definir_politica_supervisor_livre",
+      "excluir_assets_permanentemente_em_lote",
+      "excluir_pendentes_nao_encontrados_r2",
+      "executar_watchdog_heartbeats",
+      "explorar_r2_fisico",
+      "heartbeat_operacao",
+      "heartbeat_supervisor",
+      "heartbeat_worker",
+      "obter_link_export_assets_zip",
+      "obter_status_export_assets_zip",
+      "obter_status_heartbeats",
+      "obter_status_upload_midia",
+      "reparar_pendentes_r2",
+      "vasculhar_r2"
     ],
     "duplicates": [],
     "missing_implemented": [],
@@ -145,8 +200,8 @@
     ]
   },
   "source": {
-    "files_checked": 87,
-    "relative_imports_checked": 182,
+    "files_checked": 95,
+    "relative_imports_checked": 210,
     "missing_relative_imports": [],
     "forbidden_legacy_hits": {
       "@libsql": [],

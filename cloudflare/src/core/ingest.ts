@@ -4,6 +4,7 @@ import { limitedStream, safeRemoteUrl, transientHttpStatus } from "./net";
 import { createSignedCandidateUrl } from "./auth";
 import { recordIngestEvent, updateHostHealth } from "./materialization";
 import { createProjectMediaFromCandidate } from "./production";
+import { deleteAssetRecoveryRecord, refreshRecoveryAfterWrite, writeAssetRecoveryRecord, writeCandidateRecoveryRecord } from "./recovery-manifest";
 
 function normalizeTags(tags: unknown) {
   return Array.isArray(tags) ? [...new Set(tags.map(String).map(value => value.trim()).filter(Boolean))].slice(0, 40) : [];
@@ -139,6 +140,9 @@ export async function approveCandidate(candidateId: string, env: Env) {
       ),
     env.DB.prepare("UPDATE v2_ingest_candidates SET status='APPROVED',asset_id=?,r2_key=?,updated_at=? WHERE id=? AND status IN ('MATERIALIZED','APPROVED')").bind(assetId, finalKey, timestamp, candidateId),
   ]);
+  await writeAssetRecoveryRecord(env,assetId,"FAST_PUSH_APPROVED").catch(() => undefined);
+  await writeCandidateRecoveryRecord(env,candidateId,"CANDIDATE_APPROVED").catch(() => undefined);
+  await refreshRecoveryAfterWrite(env,"FAST_PUSH_APPROVED",assetId);
   if (sourceKey !== finalKey && sourceKey.startsWith("incoming/")) await env.MEDIA.delete(sourceKey).catch(() => undefined);
   await recordIngestEvent(env, String(candidate.operation_id), candidateId, "CANDIDATE_APPROVED", "APPROVED", assetId, null);
   return { ok: true, assetId, r2Key: finalKey, status: 200 } as const;
@@ -150,6 +154,7 @@ export async function rejectCandidate(candidateId: string, env: Env) {
   if (["APPROVED", "REJECTED"].includes(candidate.status)) return { error: "INVALID_STATE", currentStatus: candidate.status, status: 409 } as const;
   if (candidate.r2_key) await env.MEDIA.delete(candidate.r2_key).catch(() => undefined);
   await env.DB.prepare("UPDATE v2_ingest_candidates SET status='REJECTED',updated_at=? WHERE id=?").bind(nowMs(), candidateId).run();
+  await writeCandidateRecoveryRecord(env,candidateId,"CANDIDATE_REJECTED").catch(() => undefined);
   await recordIngestEvent(env, candidate.operation_id, candidateId, "CANDIDATE_REJECTED", "REJECTED", null, null);
   return { ok: true, status: 200 } as const;
 }
@@ -190,6 +195,8 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
       env.DB.prepare("UPDATE v2_ingest_candidates SET status='MATERIALIZED',r2_key=?,mime_type=?,size_bytes=?,failure_reason=NULL,updated_at=? WHERE id=?").bind(r2Key, mime, Number(stored?.size || contentLength || 0), done, job.candidateId),
       env.DB.prepare("UPDATE v2_ingest_operations SET succeeded=succeeded+1,updated_at=? WHERE id=?").bind(done, job.operationId),
     ]);
+    await writeCandidateRecoveryRecord(env,job.candidateId,"CANDIDATE_MATERIALIZED").catch(() => undefined);
+    await refreshRecoveryAfterWrite(env,"IMAGE_MATERIALIZED",job.candidateId);
     await updateHostHealth(env, remote.hostname.toLowerCase(), true);
     if (job.projectId && (job.tags || []).some(tag => String(tag).toLowerCase() === "thumb")) {
       await createProjectMediaFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,r2Key,mimeType:mime,sizeBytes:Number(stored?.size || contentLength || 0),sourceUrl:job.url,agentOrigin:"FAST_PUSH"}).catch(()=>undefined);

@@ -3,6 +3,7 @@ import { createSignedUploadUrl, validSignedUploadRequest } from "./auth";
 import { id, nowMs } from "./ids";
 import { limitedStream } from "./net";
 import { recordIngestEvent } from "./materialization";
+import { refreshRecoveryAfterWrite, writeCandidateRecoveryRecord, writeImportRecoveryRecord } from "./recovery-manifest";
 
 function sanitizeFilename(value: string) {
   const clean=value.trim().replace(/[^a-zA-Z0-9._-]+/g,"-").replace(/^-+|-+$/g,"");
@@ -74,6 +75,8 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
         env.DB.prepare("INSERT INTO imports (id,file_name,r2_key,size_bytes,status,created_at,manifest_text,warnings) VALUES (?,?,?,?,'Recebido',?,NULL,'[]')").bind(importId,claimed.file_name,claimed.r2_key,claimed.size_bytes,ts),
         env.DB.prepare("UPDATE v2_direct_uploads SET status='CONFIRMED',failure_reason=NULL,updated_at=?,completed_at=? WHERE id=? AND status='CONFIRMING'").bind(ts,ts,uploadId),
       ]);
+      await writeImportRecoveryRecord(env,importId,"DIRECT_ZIP_RECEIVED").catch(()=>undefined);
+      await refreshRecoveryAfterWrite(env,"DIRECT_ZIP_RECEIVED",importId);
       return {ok:true,importId,r2Key:claimed.r2_key,status:200} as const;
     }
     if(String(claimed.upload_type)==="PROJECT_FILE") {
@@ -95,6 +98,8 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
         .bind(candidateId,operationId,`direct-upload://${uploadId}`,claimed.project_id||null,claimed.item_id||null,claimed.universe||"",claimed.subject||"",claimed.tags_json||"[]",claimed.r2_key,claimed.actual_mime||claimed.expected_mime||"application/octet-stream",claimed.size_bytes,null,ts,ts),
       env.DB.prepare("UPDATE v2_direct_uploads SET status='CONFIRMED',candidate_id=?,failure_reason=NULL,updated_at=?,completed_at=? WHERE id=? AND status='CONFIRMING'").bind(candidateId,ts,ts,uploadId),
     ]);
+    await writeCandidateRecoveryRecord(env,candidateId,"DIRECT_UPLOAD_CONFIRMED").catch(()=>undefined);
+    await refreshRecoveryAfterWrite(env,"DIRECT_IMAGE_RECEIVED",candidateId);
     await recordIngestEvent(env,operationId,candidateId,"DIRECT_UPLOAD_CONFIRMED","MATERIALIZED",String(claimed.r2_key),null);
     return {ok:true,candidateId,operationId,r2Key:claimed.r2_key,status:200} as const;
   }catch(error){
