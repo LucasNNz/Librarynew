@@ -12,14 +12,15 @@ import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listAdapters, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
 import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
-import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
+import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
+import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
 import { appliedPolicies, createOperationalPolicy, detectOperationalGap, editOperationalPolicy, getOperationalGap, linkGapPolicy, listOperationalGaps, listOperationalPolicies, policyTelemetry, policyWorkspace, resolveGapAndLearn, rollbackPolicy, setPolicyStatus, testPolicy } from "./core/policies";
 import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, decideSupervisorCandidate, heartbeatSupervisor, listSourceProfiles, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, relinkItem, relinkItems, resolveSupervisorDecision, saveSourceProfile, setDefaultSourceProfile, setHostBlocked, setItemProcessingState, setProjectProcessingState, setSourceProfileStatus, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog, updateCollectionSettings, updateCollectionSource, updateItemSearch, updateSourceProfile } from "./core/supervisor";
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage } from "./core/production";
-import { addProjectQaEvent, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
+import { addProjectQaEvent, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getSourceRoutingPlan, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -41,7 +42,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.22" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.25" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -259,7 +260,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("fast_push_project_candidates", {
-    description: "FAST PUSH consolidado por projeto/cena com reposição automática. URLs excedentes ficam DISCOVERED como reserva; somente o necessário é enfileirado imediatamente e falhas finais (incluindo HTTP 400/403/404 sem retry) promovem a próxima reserva até target_candidates MATERIALIZED. Cada candidata é independente e idempotente.",
+    description: "FAST PUSH consolidado por projeto/cena. Se item_id/cena ainda não existir, a Library cria/upserta a cena idempotentemente no projeto, aplica target_candidates/required_approved, enfileira apenas o necessário e mantém excedentes DISCOVERED como reserva. Nunca retorna sucesso silencioso com zero itens.",
     inputSchema: {
       project_id: z.string().min(1),
       operation_id: z.string().optional(),
@@ -678,6 +679,36 @@ function createServer(env: Env, request: Request) {
     inputSchema: { worker_type:z.string().min(1), worker_domain:z.string().optional(), max_workers:z.number().int().min(1).max(100), max_por_projeto:z.number().int().min(1).max(100).optional(), ativo:z.boolean().optional() },
   }, async ({worker_type,worker_domain,max_workers,max_por_projeto,ativo}) => output(await configureWorkerLimit(env,{workerType:worker_type,workerDomain:worker_domain,maxWorkers:max_workers,maxPerProject:max_por_projeto,enabled:ativo})));
 
+  server.registerTool("obter_slot_projeto", {
+    description: "Snapshot operacional completo de um projeto-slot: lifecycle, tags simultâneas/heartbeats, roteiro, thumbs (max 3), títulos (max 3), referências, cenas/candidatas, aprovadas e ZIP final.",
+    inputSchema: { projeto_id:z.string().min(1) },
+  }, async ({projeto_id}) => output((await getProjectSlot(env,projeto_id))||{error:"NOT_FOUND"}));
+
+  server.registerTool("atualizar_estados_projeto", {
+    description: "Coordena tags simultâneas do projeto. Permite ativar/remover READ, REFERENCE_ANALYSIS_WORKING, REFERENCE_CHECKED, COLLECTOR_WORKING, COLLECTOR_FINISHED, VISUAL_ANALYST_WORKING, VISUAL_ANALYST_FINISHED, DOWNLOADER_WORKING, DOWNLOADER_COMPLETED, THUMBS_WORKING e TITLES_WORKING. Tags WORKING usam heartbeat/TTL e expiram para o passo estável anterior.",
+    inputSchema: { projeto_id:z.string().min(1), ativar:z.array(z.string()).max(20).optional(), remover:z.array(z.string()).max(20).optional(), owner_id:z.string().optional(), execution_id:z.string().optional(), ttl_segundos:z.number().int().min(30).max(7200).optional(), metadata:z.any().optional() },
+  }, async (v) => output(await updateProjectWorkflow(env,{projectId:v.projeto_id,activate:v.ativar,clear:v.remover,ownerId:v.owner_id,executionId:v.execution_id,ttlSeconds:v.ttl_segundos,metadata:v.metadata})));
+
+  server.registerTool("heartbeat_estados_projeto", {
+    description: "Renova heartbeat das tags WORKING de um agente no projeto sem bloquear outras frentes/agentes do mesmo projeto.",
+    inputSchema: { projeto_id:z.string().min(1), tags:z.array(z.string()).min(1).max(20), owner_id:z.string().min(1), execution_id:z.string().min(1), ttl_segundos:z.number().int().min(30).max(7200).optional() },
+  }, async (v) => output(await heartbeatProjectWorkflow(env,{projectId:v.projeto_id,tags:v.tags,ownerId:v.owner_id,executionId:v.execution_id,ttlSeconds:v.ttl_segundos})));
+
+  server.registerTool("concluir_projetos", {
+    description: "Conclui um ou vários projetos e bloqueia novas mutações MCP. Só reabrir_projeto_concluido, por comando explícito do usuário, remove o bloqueio.",
+    inputSchema: { projeto_ids:z.array(z.string()).min(1).max(200), motivo:z.string().optional() },
+  }, async (v) => output(await setProjectLifecycle(env,{projectIds:v.projeto_ids,action:"COMPLETE",reason:v.motivo})));
+
+  server.registerTool("rejeitar_projetos", {
+    description: "Rejeita um ou vários projetos, encerra trabalhos ativos e bloqueia novas mutações MCP até reabertura explícita.",
+    inputSchema: { projeto_ids:z.array(z.string()).min(1).max(200), motivo:z.string().optional() },
+  }, async (v) => output(await setProjectLifecycle(env,{projectIds:v.projeto_ids,action:"REJECT",reason:v.motivo})));
+
+  server.registerTool("excluir_projetos_permanentemente", {
+    description: "Exclusão irreversível em lote do projeto e seus artefatos temporários/arquivos/pacotes. Assets globais aprovados da Library são preservados. Exige confirmar=true.",
+    inputSchema: { projeto_ids:z.array(z.string()).min(1).max(100), confirmar:z.boolean() },
+  }, async (v) => output(await deleteProjectsPermanently(env,v.projeto_ids,v.confirmar)));
+
   server.registerTool("configurar_dominio_projeto", {
     description: "Atualiza domínio e prioridade operacional de um projeto automático.",
     inputSchema: { projeto_id:z.string().min(1), dominio:z.string().min(1), prioridade_fila:z.number().int().min(1).max(100).optional() },
@@ -883,7 +914,12 @@ function createServer(env: Env, request: Request) {
   server.registerTool("cancelar_plano", { description:"Cancela plano e branches ainda não concluídos, preservando histórico.", inputSchema:{ plano_id:z.string().min(1) } }, async(v)=>output((await setPlanStatus(env,v.plano_id,"CANCELLED"))||{error:"NOT_FOUND"}));
   server.registerTool("obter_plano_roteamento_fonte", { description:"Obtém o plano de roteamento mais recente por projeto/item/termo.", inputSchema:{ projeto_id:z.string().optional(), item_id:z.string().optional(), termo_coleta_id:z.string().optional() } }, async(v)=>output((await getSourceRoutingPlan(env,{projectId:v.projeto_id,itemId:v.item_id,collectionTermId:v.termo_coleta_id}))||{error:"NOT_FOUND"}));
 
-  server.registerTool("anexar_arquivo_projeto", { description:"Prepara upload direto para R2 de SCRIPT/REQUIREMENTS/anexo. O MCP não transporta o binário; confirme o ticket após PUT.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), nome_arquivo:z.string().min(1), mime_type:z.string().optional(), tamanho_max:z.number().int().positive().optional() } }, async(v)=>output(await prepareDirectUpload(request,env,{uploadType:"PROJECT_FILE",projectId:v.projeto_id,role:v.role,fileName:v.nome_arquivo,mimeType:v.mime_type,maxBytes:v.tamanho_max})));
+  server.registerTool("anexar_script_projeto", { description:"CAMINHO PREFERENCIAL E OBRIGATORIO PARA SCRIPT textual: grava o roteiro diretamente no R2 e D1 em uma unica chamada MCP, sem ticket, sem URL externa e sem PUT. Idempotente pelo conteudo.", inputSchema:{ projeto_id:z.string().min(1), conteudo:z.string().min(1).max(2000000), nome_arquivo:z.string().min(1).optional() } }, async(v)=>output(await attachProjectScriptInline(request,env,{projectId:v.projeto_id,content:v.conteudo,fileName:v.nome_arquivo})));
+
+  server.registerTool("anexar_arquivo_projeto", { description:"Prepara upload direto para R2 somente para arquivo binario/anexo. Para SCRIPT textual use obrigatoriamente anexar_script_projeto; SCRIPT nao gera ticket externo por esta ferramenta.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), nome_arquivo:z.string().min(1), mime_type:z.string().optional(), tamanho_max:z.number().int().positive().optional() } }, async(v)=>{
+    if(String(v.role||"").trim().toUpperCase()==="SCRIPT") return output({error:"SCRIPT_USE_INLINE_MCP",required_tool:"anexar_script_projeto",reason:"SCRIPT textual nao deve depender de uploadUrl/PUT externo"});
+    return output(await prepareDirectUpload(request,env,{uploadType:"PROJECT_FILE",projectId:v.projeto_id,role:v.role,fileName:v.nome_arquivo,mimeType:v.mime_type,maxBytes:v.tamanho_max}));
+  });
   server.registerTool("obter_conteudo_arquivo_projeto", { description:"Lê inline o arquivo textual mais recente de uma role do projeto.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), versao:z.number().int().positive().optional() } }, async(v)=>output((await readProjectFile(env,v.projeto_id,v.role,v.versao))||{error:"NOT_FOUND"}));
   server.registerTool("baixar_arquivo_projeto", { description:"Gera link temporário de arquivo de projeto já armazenado no R2.", inputSchema:{ arquivo_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output((await getProjectFileLink(request,env,v.arquivo_id,v.validade_minutos||15))||{error:"NOT_FOUND"}));
   server.registerTool("registrar_qa_projeto", { description:"Registra evento QA do projeto sem reescrever arquivos ou assets.", inputSchema:{ projeto_id:z.string().min(1), status:z.string().min(1), detalhe:z.unknown().optional(), evento:z.string().optional() } }, async(v)=>output(await addProjectQaEvent(env,v.projeto_id,{status:v.status,detail:v.detalhe,event:v.evento})));

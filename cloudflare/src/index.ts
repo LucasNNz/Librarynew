@@ -9,7 +9,8 @@ import { integritySample, r2Inventory, serveCandidateFile, serveFile, serveSuper
 import { exploreR2 } from "./core/r2-explorer";
 import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from "./core/pending-r2-reconcile";
 import { addAssetsToBatch, createBatch, createRequest, generateBatchManifest, getBatch, listBatches, listImports, listRequests, removeAssetsFromBatch, updateBatchStatus, updateRequest } from "./core/work-items";
-import { configureAutomaticProject, createAutomaticProject, getAutomaticProjectDetails, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
+import { configureAutomaticProject, createAutomaticProject, getAutomaticProjectDetails, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
+import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
 import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
@@ -69,7 +70,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.22", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.25", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -129,7 +130,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.22",
+        version:"0.20.25",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -188,6 +189,21 @@ export default {
     else if (url.pathname === "/projects" && request.method === "POST") {
       const body = await request.json() as Parameters<typeof createAutomaticProject>[1];
       if (!body.nome?.trim()) response = json({error:"INVALID_INPUT"},{status:400}); else response = json(await createAutomaticProject(env,body),{status:201});
+    }
+    else if (url.pathname === "/projects/bulk" && request.method === "POST") {
+      const body=await request.json() as {projectIds?:string[];action?:string;reason?:string;confirm?:boolean}; const action=String(body.action||"").toUpperCase();
+      if(action==="DELETE") response=json(await deleteProjectsPermanently(env,body.projectIds||[],Boolean(body.confirm)),{status:body.confirm?200:400});
+      else if(action==="COMPLETE"||action==="REJECT"||action==="REOPEN") response=json(await setProjectLifecycle(env,{projectIds:body.projectIds||[],action:action as "COMPLETE"|"REJECT"|"REOPEN",reason:body.reason}));
+      else response=json({error:"INVALID_ACTION"},{status:400});
+    }
+    else if (/^\/projects\/[^/]+\/slot$/.test(url.pathname) && request.method === "GET") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getProjectSlot(env,projectId); response=value?json(value):json({error:"NOT_FOUND"},{status:404});
+    }
+    else if (/^\/projects\/[^/]+\/workflow$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {activate?:string[];clear?:string[];ownerId?:string;executionId?:string;ttlSeconds?:number;metadata?:unknown}; const value=await updateProjectWorkflow(env,{projectId,...body}); response=!value?json({error:"NOT_FOUND"},{status:404}):("error" in value?json(value,{status:Number((value as any).status||409)}):json(value));
+    }
+    else if (/^\/projects\/[^/]+\/workflow\/heartbeat$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {tags?:string[];ownerId?:string;executionId?:string;ttlSeconds?:number}; if(!body.ownerId||!body.executionId)response=json({error:"OWNER_EXECUTION_REQUIRED"},{status:400});else response=json(await heartbeatProjectWorkflow(env,{projectId,tags:body.tags||[],ownerId:body.ownerId,executionId:body.executionId,ttlSeconds:body.ttlSeconds}));
     }
     else if (/^\/projects\/[^/]+$/.test(url.pathname) && request.method === "GET") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getAutomaticProjectDetails(env,projectId);

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
+import type { Asset, AutomaticProject, ProjectSlotSnapshot, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
 import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
 type SchemaContractState = {
@@ -71,8 +71,40 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.22";
+const EXPECTED_CORE_VERSION = "0.20.25";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
+
+
+type ProjectFilter = "24H"|"ACTIVE"|"COMPLETED"|"REJECTED"|"ALL";
+
+const PROJECT_TAG_LABELS: Record<string,string> = {
+  READ:"Roteiro pronto",
+  REFERENCE_ANALYSIS_WORKING:"Análise de referência",
+  REFERENCE_CHECKED:"Referência conferida",
+  COLLECTOR_WORKING:"Coletor trabalhando",
+  COLLECTOR_FINISHED:"Coletor finalizado",
+  VISUAL_ANALYST_WORKING:"Analista visual trabalhando",
+  VISUAL_ANALYST_FINISHED:"Analista finalizado",
+  DOWNLOADER_WORKING:"Baixador trabalhando",
+  DOWNLOADER_COMPLETED:"Baixador concluído",
+  THUMBS_WORKING:"Thumbs trabalhando",
+  TITLES_WORKING:"Títulos trabalhando",
+};
+
+function projectLifecycle(project:AutomaticProject){
+  const explicit=String(project.lifecycle_status||"").toUpperCase();
+  if(explicit)return explicit;
+  const status=String(project.status||project.pipeline_status||"").toUpperCase();
+  if(["COMPLETED","DONE","CONCLUIDO","CONCLUÍDO"].includes(status))return "COMPLETED";
+  if(["REJECTED","REJEITADO","CANCELLED","CANCELADO","FAILED"].includes(status))return "REJECTED";
+  return "ACTIVE";
+}
+
+function formatProjectMoment(value:number|undefined|null){
+  const ts=Number(value||0);
+  if(!ts)return "—";
+  return new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(ts));
+}
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
 
@@ -103,9 +135,51 @@ function Mark() {
 }
 
 function progressForProject(project: AutomaticProject) {
-  const total = Number(project.total_items || 0);
-  const approved = Number(project.approved_count || 0);
-  return total ? Math.min(100, Math.round((approved / total) * 100)) : 0;
+  const lifecycle=projectLifecycle(project);
+  if(lifecycle==="COMPLETED")return 100;
+  if(lifecycle==="REJECTED")return 0;
+  const tags=new Set((project.workflow_tags||[]).map(tag=>String(tag.tag||"").toUpperCase()));
+  if(tags.has("DOWNLOADER_COMPLETED"))return 100;
+  if(tags.has("DOWNLOADER_WORKING"))return 92;
+  if(tags.has("VISUAL_ANALYST_FINISHED"))return 84;
+  if(tags.has("VISUAL_ANALYST_WORKING"))return 72;
+  if(tags.has("COLLECTOR_FINISHED"))return 60;
+  if(tags.has("COLLECTOR_WORKING"))return 44;
+  if(tags.has("REFERENCE_CHECKED"))return 30;
+  if(tags.has("REFERENCE_ANALYSIS_WORKING"))return 20;
+  if(tags.has("READ"))return 12;
+  return 3;
+}
+
+function projectInitials(name:string){
+  const words=String(name||"Projeto").trim().split(/\s+/).filter(Boolean);
+  return words.slice(0,2).map(word=>word.slice(0,1).toUpperCase()).join("")||"PR";
+}
+
+type ProjectStageKey = "script"|"reference"|"collector"|"visual"|"downloader";
+type ProjectStageState = "done"|"working"|"waiting";
+
+function projectStageState(snapshot:ProjectSlotSnapshot,key:ProjectStageKey):ProjectStageState{
+  if(projectLifecycle(snapshot.project)==="COMPLETED")return "done";
+  const tags=new Set(snapshot.activeTags.map(tag=>String(tag.tag||"").toUpperCase()));
+  const slot=(slotKey:string)=>snapshot.slots.find(item=>item.key===slotKey);
+  if(key==="script")return String(slot("script")?.state||"").toUpperCase()==="READY"?"done":"waiting";
+  if(key==="reference")return tags.has("REFERENCE_CHECKED")?"done":tags.has("REFERENCE_ANALYSIS_WORKING")?"working":"waiting";
+  if(key==="collector")return tags.has("COLLECTOR_FINISHED")?"done":tags.has("COLLECTOR_WORKING")?"working":"waiting";
+  if(key==="visual")return tags.has("VISUAL_ANALYST_FINISHED")?"done":tags.has("VISUAL_ANALYST_WORKING")?"working":"waiting";
+  if(key==="downloader")return tags.has("DOWNLOADER_COMPLETED")||String(slot("zip")?.state||"").toUpperCase()==="READY"?"done":tags.has("DOWNLOADER_WORKING")?"working":"waiting";
+  return "waiting";
+}
+
+function projectWorkerIcon(tag:string):UiIconName{
+  const value=String(tag||"").toUpperCase();
+  if(value.includes("COLLECTOR"))return "search";
+  if(value.includes("VISUAL_ANALYST"))return "target";
+  if(value.includes("REFERENCE"))return "brain";
+  if(value.includes("DOWNLOADER"))return "download";
+  if(value.includes("THUMBS"))return "assets";
+  if(value.includes("TITLES"))return "spark";
+  return "activity";
 }
 
 function AgentProjectNetwork({projects, pending, queueBacklog, online}:{projects:AutomaticProject[]; pending:number; queueBacklog:number; online:boolean}) {
@@ -257,6 +331,14 @@ export default function Home() {
   const [batchProject, setBatchProject] = useState("");
   const [projects, setProjects] = useState<AutomaticProject[]>([]);
   const [projectName, setProjectName] = useState("");
+  const [projectSearch, setProjectSearch] = useState("");
+  const [projectFilter, setProjectFilter] = useState<ProjectFilter>("24H");
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [projectSlot, setProjectSlot] = useState<ProjectSlotSnapshot | null>(null);
+  const [projectSlotLoading, setProjectSlotLoading] = useState(false);
+  const [projectBulkBusy, setProjectBulkBusy] = useState(false);
+  const [projectMessage, setProjectMessage] = useState("");
   const [integrity, setIntegrity] = useState<{checked:number;present:number;missing:number;missingItems:Array<{id:string;r2Key:string;exists:boolean}>}|null>(null);
   const [dataHealth, setDataHealth] = useState<{ok:boolean;v2Orphans:number;activeHistoricalOrphans:number;catalog:{assetsMissingR2Key:number;duplicateAssetR2Keys:number};historical:Record<string,number>;activeHistoricalRisk:Record<string,number>;v2:Record<string,number>}|null>(null);
   const [r2Objects, setR2Objects] = useState<Array<{key:string;size:number;etag:string;uploaded:string}>>([]);
@@ -657,10 +739,58 @@ export default function Home() {
     } finally { setPendingR2RepairBusy(false); }
   },[pendingR2,scanPendingR2,fetchCatalog,refreshStats]);
 
-  const projectAction = useCallback(async (projectId:string, action:"process"|"reconcile") => {
-    await fetch(`/api/projects/${encodeURIComponent(projectId)}/${action}`,{method:"POST"});
-    await refreshRecords("Projetos");
-  },[refreshRecords]);
+  const refreshProjectSlot = useCallback(async (projectId:string) => {
+    setProjectSlotLoading(true);
+    try {
+      const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/slot`,{cache:"no-store"});
+      const text=await response.text();
+      const value=text?JSON.parse(text):null;
+      if(response.ok)setProjectSlot(value as ProjectSlotSnapshot);
+      else { setProjectSlot(null); setProjectMessage(String(value?.error||`HTTP_${response.status}`)); }
+    } catch(error) {
+      setProjectSlot(null);
+      setProjectMessage(error instanceof Error?error.message:"PROJECT_SLOT_FAILED");
+    } finally { setProjectSlotLoading(false); }
+  },[]);
+
+  const toggleProjectSelection = useCallback((projectId:string) => {
+    setSelectedProjectIds(current=>{
+      const next=new Set(current);
+      if(next.has(projectId))next.delete(projectId);else next.add(projectId);
+      return next;
+    });
+  },[]);
+
+  const bulkProjectAction = useCallback(async (action:"COMPLETE"|"REJECT"|"DELETE") => {
+    const ids=[...selectedProjectIds];
+    if(!ids.length)return;
+    if(action==="DELETE"&&!window.confirm(`Excluir permanentemente ${ids.length} projeto(s)? Arquivos temporários/pacotes do projeto serão removidos. Assets globais aprovados serão preservados.`))return;
+    setProjectBulkBusy(true);setProjectMessage("");
+    try {
+      const response=await fetch("/api/projects/bulk",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({projectIds:ids,action,confirm:action==="DELETE",reason:action==="COMPLETE"?"Concluído pela interface":action==="REJECT"?"Rejeitado pela interface":undefined})});
+      const value=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      setProjectMessage(action==="DELETE"?`${Number(value.deleted||0)} projeto(s) excluído(s) permanentemente.`:`${Number(value.updated||0)} projeto(s) atualizado(s).`);
+      setSelectedProjectIds(new Set());
+      if(action==="DELETE"&&selectedProjectId&&ids.includes(selectedProjectId)){setSelectedProjectId(null);setProjectSlot(null);}
+      await refreshRecords("Projetos");
+      if(selectedProjectId&&!(action==="DELETE"&&ids.includes(selectedProjectId)))await refreshProjectSlot(selectedProjectId);
+    } catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_BULK_ACTION_FAILED");}
+    finally{setProjectBulkBusy(false);}
+  },[selectedProjectIds,selectedProjectId,refreshRecords,refreshProjectSlot]);
+
+  const reopenProject = useCallback(async (projectId:string) => {
+    if(!window.confirm("Reabrir este projeto? Isso libera novamente as mutações MCP para os agentes."))return;
+    setProjectBulkBusy(true);setProjectMessage("");
+    try {
+      const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/reopen`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({reason:"Reabertura explícita pela interface"})});
+      const value=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      setProjectMessage("Projeto reaberto. MCP liberado novamente.");
+      await refreshRecords("Projetos"); await refreshProjectSlot(projectId);
+    } catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_REOPEN_FAILED");}
+    finally{setProjectBulkBusy(false);}
+  },[refreshRecords,refreshProjectSlot]);
 
   const refreshCandidates = useCallback(async () => {
     setCandidateLoading(true);
@@ -862,7 +992,54 @@ export default function Home() {
   const coreState = !health ? "VERIFICANDO" : health.core.ok ? "ONLINE" : health.coreConfigured ? "INDISPONÍVEL" : "AGUARDANDO CONFIGURAÇÃO";
   const dataReady = connectionResolved && Boolean(localConnection) && releaseGateState === "done";
   const selectedUniverse = useMemo(() => universes.find(item => item.name === universe), [universes, universe]);
-  const activeProjects = useMemo(() => projects.filter(project => !["COMPLETED","DONE","CANCELLED","FAILED"].includes(String(project.pipeline_status || project.status || "").toUpperCase())), [projects]);
+  const activeProjects = useMemo(() => projects.filter(project => projectLifecycle(project)==="ACTIVE"), [projects]);
+  const analysisProjectCount = useMemo(() => projects.filter(project=>{
+    if(projectLifecycle(project)!=="ACTIVE")return false;
+    const tags=new Set((project.workflow_tags||[]).map(tag=>String(tag.tag||"").toUpperCase()));
+    return tags.has("REFERENCE_ANALYSIS_WORKING")||tags.has("VISUAL_ANALYST_WORKING");
+  }).length,[projects]);
+  const projectFilterCounts = useMemo(() => {
+    const since=Date.now()-24*60*60*1000;
+    return {
+      "24H":projects.filter(project=>Number(project.updated_at||project.created_at||0)>=since).length,
+      ACTIVE:projects.filter(project=>projectLifecycle(project)==="ACTIVE").length,
+      COMPLETED:projects.filter(project=>projectLifecycle(project)==="COMPLETED").length,
+      REJECTED:projects.filter(project=>projectLifecycle(project)==="REJECTED").length,
+      ALL:projects.length,
+    } as Record<ProjectFilter,number>;
+  },[projects]);
+  const filteredProjects = useMemo(() => {
+    const since=Date.now()-24*60*60*1000;
+    const query=projectSearch.trim().toLowerCase();
+    return projects.filter(project=>{
+      const stageMatch=projectFilter==="24H"?Number(project.updated_at||project.created_at||0)>=since:projectFilter==="ALL"?true:projectLifecycle(project)===projectFilter;
+      if(!stageMatch)return false;
+      if(!query)return true;
+      return [project.name,project.id,project.project_domain,project.pipeline_status].some(value=>String(value||"").toLowerCase().includes(query));
+    });
+  },[projects,projectFilter,projectSearch]);
+
+  useEffect(() => {
+    if(currentView!=="Projetos")return;
+    const visibleIds=new Set(filteredProjects.map(project=>project.id));
+    if(selectedProjectId&&visibleIds.has(selectedProjectId))return;
+    const first=filteredProjects[0]?.id||null;
+    setSelectedProjectId(first);
+    if(!first)setProjectSlot(null);
+  },[currentView,filteredProjects,selectedProjectId]);
+
+  useEffect(() => {
+    if(currentView!=="Projetos"||!selectedProjectId)return;
+    void refreshProjectSlot(selectedProjectId);
+    const timer=setInterval(()=>void refreshProjectSlot(selectedProjectId),5000);
+    return()=>clearInterval(timer);
+  },[currentView,selectedProjectId,refreshProjectSlot]);
+
+  useEffect(() => {
+    if(currentView!=="Projetos")return;
+    const timer=setInterval(()=>void refreshRecords("Projetos"),8000);
+    return()=>clearInterval(timer);
+  },[currentView,refreshRecords]);
   const completedOps = useMemo(() => recentOperations.filter(item => ["COMPLETED","COMPLETED_WITH_ERRORS"].includes(String(item.status || "").toUpperCase())).length, [recentOperations]);
   const failedOps = useMemo(() => recentOperations.filter(item => String(item.status || "").toUpperCase() === "FAILED").length, [recentOperations]);
   const operationSuccessRate = completedOps + failedOps > 0 ? Math.round((completedOps / (completedOps + failedOps)) * 100) : 100;
@@ -911,7 +1088,12 @@ export default function Home() {
   async function createProject(event: FormEvent) {
     event.preventDefault(); if (!projectName.trim()) return;
     const response=await fetch("/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({nome:projectName})});
-    if(response.ok){setProjectName("");await refreshRecords("Projetos");}
+    const value=await response.json().catch(()=>({}));
+    if(response.ok){
+      const createdId=String(value?.project?.id||"");
+      setProjectName("");setProjectFilter("24H");await refreshRecords("Projetos");
+      if(createdId){setSelectedProjectId(createdId);void refreshProjectSlot(createdId);}
+    } else setProjectMessage(String(value?.error||`HTTP_${response.status}`));
   }
 
   async function createLibraryRequest(event: FormEvent) {
@@ -1332,9 +1514,98 @@ Tudo é configurado pela própria tela Configurações.
         {active === "Execuções" && <div className="moduleTabs">{["Coleta automática","Inbox candidatas","Operação"].map(item=><button key={item} className={executionView===item?"active":""} onClick={()=>setExecutionView(item)}><span>{item}</span></button>)}</div>}
         {active === "Análise" && <div className="moduleTabs">{["Estoque & giro","Políticas"].map(item=><button key={item} className={analysisView===item?"active":""} onClick={()=>setAnalysisView(item)}><span>{item}</span></button>)}</div>}
 
-        {currentView === "Projetos" && <section className="modulePanel twoCol">
-          <div><span className="eyebrow">PROJETOS V2</span><h2>Projetos novos e funcionais</h2><p>O histórico visual antigo foi removido. Daqui em diante só ficam projetos criados e operados pela V2.</p><form className="pushForm" onSubmit={createProject}><input value={projectName} onChange={(e: ChangeEvent<HTMLInputElement>)=>setProjectName(e.target.value)} placeholder="Nome do projeto"/><button className="primary">Criar projeto</button></form></div>
-          <div className="recordList">{recordLoading?<div className="quiet">Carregando…</div>:projects.length===0?<div className="quiet">Nenhum projeto.</div>:projects.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.pipeline_status || item.status} · {item.approved_count||0}/{item.total_items||0} aprovados</span></div><div className="inlineActions"><code>{item.id}</code><button onClick={()=>void projectAction(item.id,"reconcile")}>Reconciliar</button><button onClick={()=>void projectAction(item.id,"process")}>Processar</button></div></article>)}</div>
+        {currentView === "Projetos" && <section className="projectWorkspace projectStudio">
+          <header className="projectStudioHeader">
+            <div className="projectStudioTitle"><span className="eyebrow">PROJETOS V2 · OPERAÇÃO PARALELA</span><h2>Projetos</h2><p>Acompanhe os projetos e o progresso de cada frente. Os agentes MCP compartilham o mesmo slot sem bloquear trabalhos independentes.</p></div>
+            <div className="projectHeaderActions">
+              <label className="projectSearchBox"><UiIcon name="search" size={15}/><input value={projectSearch} onChange={(e:ChangeEvent<HTMLInputElement>)=>setProjectSearch(e.target.value)} placeholder="Buscar projeto…"/></label>
+              <button className="projectNewButton" onClick={()=>document.getElementById("project-create-name")?.focus()}><span>＋</span>Novo projeto</button>
+            </div>
+          </header>
+
+          <div className="projectKpiGrid">
+            <article className="projectKpi violet"><span className="projectKpiIcon"><UiIcon name="folder" size={19}/></span><div><strong>{projects.length}</strong><span>Projetos totais</span><small>{projectFilterCounts["24H"]} atualizados nas últimas 24h</small></div></article>
+            <article className="projectKpi blue"><span className="projectKpiIcon"><UiIcon name="play" size={19}/></span><div><strong>{projectFilterCounts.ACTIVE}</strong><span>Em execução</span><small>{activeProjects.filter(project=>(project.workflow_tags||[]).some(tag=>String(tag.tag).includes("WORKING"))).length} com agente ativo</small></div></article>
+            <article className="projectKpi amber"><span className="projectKpiIcon"><UiIcon name="target" size={19}/></span><div><strong>{analysisProjectCount}</strong><span>Em análise</span><small>referência ou QA visual em andamento</small></div></article>
+            <article className="projectKpi green"><span className="projectKpiIcon"><UiIcon name="download" size={19}/></span><div><strong>{projectFilterCounts.COMPLETED}</strong><span>Concluídos</span><small>MCP bloqueado até reabertura explícita</small></div></article>
+            <article className="projectKpi red"><span className="projectKpiIcon"><span className="projectKpiX">×</span></span><div><strong>{projectFilterCounts.REJECTED}</strong><span>Rejeitados</span><small>fora da fila operacional</small></div></article>
+          </div>
+
+          <form className="projectQuickCreate" onSubmit={createProject}>
+            <div><span className="projectQuickIcon"><UiIcon name="folder" size={15}/></span><input id="project-create-name" value={projectName} onChange={(e:ChangeEvent<HTMLInputElement>)=>setProjectName(e.target.value)} placeholder="Nome do novo projeto"/></div>
+            <button className="primary">Criar projeto</button>
+          </form>
+
+          {projectMessage&&<div className={/FAILED|ERROR|HTTP_|LOCKED/i.test(projectMessage)?"formError projectMessage":"notice compact projectMessage"}>{projectMessage}</div>}
+
+          <div className="projectStudioBody">
+            <aside className="projectRail">
+              <div className="projectRailTabs">
+                {([
+                  ["ALL","Todos"],["24H","24h"],["ACTIVE","Em execução"],["COMPLETED","Concluídos"],["REJECTED","Rejeitados"]
+                ] as Array<[ProjectFilter,string]>).map(([key,label])=><button key={key} className={projectFilter===key?"active":""} onClick={()=>setProjectFilter(key)}>{label}<b>{projectFilterCounts[key]}</b></button>)}
+              </div>
+              <div className="projectRailTools">
+                <span>{filteredProjects.length} projeto(s)</span>
+                <button disabled={!filteredProjects.length} onClick={()=>setSelectedProjectIds(new Set(filteredProjects.map(project=>project.id)))}>Selecionar visíveis</button>
+              </div>
+              {selectedProjectIds.size>0&&<div className="projectBulkBar projectBulkRail"><span>{selectedProjectIds.size} selecionado(s)</span><button disabled={projectBulkBusy} onClick={()=>void bulkProjectAction("COMPLETE")}>Concluir</button><button className="reject" disabled={projectBulkBusy} onClick={()=>void bulkProjectAction("REJECT")}>Rejeitar</button><button className="danger" disabled={projectBulkBusy} onClick={()=>void bulkProjectAction("DELETE")}>Excluir</button><button disabled={projectBulkBusy} onClick={()=>setSelectedProjectIds(new Set())}>Limpar</button></div>}
+              {recordLoading&&projects.length===0?<div className="projectEmpty">Carregando projetos…</div>:filteredProjects.length===0?<div className="projectEmpty">Nenhum projeto neste estágio.</div>:<div className="projectCardList">
+                {filteredProjects.map((item,index)=>{
+                  const lifecycle=projectLifecycle(item),activeTags=item.workflow_tags||[],selected=selectedProjectId===item.id,locked=Boolean(item.mcp_locked)||lifecycle!=="ACTIVE",progress=progressForProject(item);
+                  const working=activeTags.filter(tag=>String(tag.tag||"").includes("WORKING"));
+                  return <article key={item.id} className={`projectListCard ${selected?"selected":""} lifecycle-${lifecycle.toLowerCase()}`} onClick={()=>setSelectedProjectId(item.id)}>
+                    <label className="projectSelect projectListCheck" onClick={(event:{stopPropagation:()=>void})=>event.stopPropagation()}><input type="checkbox" checked={selectedProjectIds.has(item.id)} onChange={()=>toggleProjectSelection(item.id)}/><span>✓</span></label>
+                    <div className={`projectCover projectCover${index%6}`}><b>{projectInitials(item.name)}</b><i/></div>
+                    <div className="projectListContent">
+                      <div className="projectListName"><strong>{item.name}</strong>{locked&&<span title="MCP bloqueado">🔒</span>}</div>
+                      <small>{item.project_domain||"Projeto Corvo"} · {Number(item.total_items||0)} cena(s)</small>
+                      <div className="projectListState"><i className={lifecycle==="ACTIVE"?working.length?"live":"idle":lifecycle.toLowerCase()}/><span>{lifecycle==="ACTIVE"?(working[0]?PROJECT_TAG_LABELS[String(working[0].tag)]||"Em execução":"Aguardando agente"):lifecycle==="COMPLETED"?"Concluído":"Rejeitado"}</span></div>
+                      <div className="projectListProgress"><span><i style={{width:`${progress}%`}}/></span><b>{progress}%</b></div>
+                    </div>
+                  </article>;
+                })}
+              </div>}
+            </aside>
+
+            <main className="projectDetailCanvas">
+              {!selectedProjectId?<div className="projectEmpty projectDetailEmpty"><UiIcon name="folder" size={34}/><strong>Selecione um projeto</strong><span>O pipeline, os slots e os agentes ativos aparecerão aqui.</span></div>:projectSlotLoading&&!projectSlot?<div className="projectEmpty">Carregando projeto…</div>:projectSlot?(()=>{
+                const lifecycle=projectLifecycle(projectSlot.project);
+                const workingAgents=projectSlot.activeTags.filter(tag=>String(tag.tag||"").includes("WORKING"));
+                const pipeline:[ProjectStageKey,string,UiIconName][]=[["script","Roteiro","spark"],["reference","Referência","brain"],["collector","Coletor","search"],["visual","Analista visual","target"],["downloader","Baixador","download"]];
+                const itemsTotal=Number(projectSlot.items.total||0),target=Number(projectSlot.items.target||0),materialized=Number(projectSlot.items.materialized||0),approved=Math.max(Number(projectSlot.items.approved||0),Number(projectSlot.candidates.approved||0)),failed=Number(projectSlot.candidates.failed||0);
+                return <>
+                  <header className="projectDetailHeader">
+                    <div className="projectDetailIdentity"><div className="projectDetailCover"><span>{projectInitials(projectSlot.project.name)}</span></div><div><div className="projectDetailTitleLine"><h3>{projectSlot.project.name}</h3><span className={`projectStatusPill ${lifecycle.toLowerCase()}`}>{lifecycle==="ACTIVE"?"Em execução":lifecycle==="COMPLETED"?"Concluído":"Rejeitado"}</span></div><p>{projectSlot.project.project_domain||"Corvo Library"} · criado em {formatProjectMoment(projectSlot.project.created_at)} · <code>{projectSlot.project.id}</code></p>{Boolean(projectSlot.project.mcp_locked)&&<span className="projectLockedCallout">🔒 MCP bloqueado — reabertura somente por comando explícito</span>}</div></div>
+                    <div className="projectDetailProgress"><strong>{projectSlot.progress}%</strong><span>progresso geral</span></div>
+                  </header>
+
+                  <section className="projectPipelineTrack">
+                    {pipeline.map(([key,label,icon],index)=>{const state=projectStageState(projectSlot,key);return <div className={`projectPipelineStage ${state}`} key={key}><span className="pipelineStageIcon"><UiIcon name={icon} size={18}/></span><div><strong>{label}</strong><small>{state==="done"?"Concluído":state==="working"?"Em execução":"Aguardando"}</small></div>{index<pipeline.length-1&&<i className="pipelineConnector"/>}</div>})}
+                  </section>
+
+                  <section className="projectSlotSection">
+                    <header><div><span className="eyebrow">CONTEÚDO DO PROJETO</span><h4>Slots integrados</h4></div><span>{projectSlot.slots.filter(slot=>slot.state==="READY").length}/{projectSlot.slots.length} prontos</span></header>
+                    <div className="projectSlotCards">{projectSlot.slots.map(slot=><article className={`projectContentSlot state-${slot.state.toLowerCase()}`} key={slot.key}><div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><p>{slot.summary}</p><div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><small>{slot.progress}%</small></article>)}</div>
+                  </section>
+
+                  <div className="projectDetailLower">
+                    <section className="projectAgentsPanel">
+                      <header><div><h4>Agentes atuando</h4><span>{workingAgents.length} ativo(s)</span></div><small>leases independentes por frente</small></header>
+                      {workingAgents.length===0?<div className="projectAgentsEmpty"><UiIcon name="activity" size={20}/><span>Nenhum agente com lease ativo neste momento.</span></div>:<div className="projectAgentRows">{workingAgents.map(tag=><article className="projectAgentRow" key={`${tag.tag}-${tag.execution_id||tag.owner_id||"active"}`}><span className="projectAgentIcon"><UiIcon name={projectWorkerIcon(tag.tag)} size={17}/></span><div className="projectAgentIdentity"><strong>{tag.owner_id||PROJECT_TAG_LABELS[tag.tag]||tag.tag.replace(/_/g," ")}</strong><small>{PROJECT_TAG_LABELS[tag.tag]||tag.tag.replace(/_/g," ")}</small></div><div className="projectAgentExecution"><b><i/>Ativo</b><small>{tag.execution_id?String(tag.execution_id).slice(0,18):"execução MCP"}</small></div><div className="projectAgentHeartbeat"><span>Heartbeat</span><strong>{tag.last_seen_at?formatProjectMoment(Number(tag.last_seen_at)):"—"}</strong><small>{tag.lease_expires_at?`lease até ${formatProjectMoment(Number(tag.lease_expires_at))}`:"lease ativo"}</small></div></article>)}</div>}
+                    </section>
+
+                    <aside className="projectInfoColumn">
+                      <section className="projectSummaryCard"><header><h4>Resumo do projeto</h4></header><dl><div><dt>Total de cenas</dt><dd>{itemsTotal}</dd></div><div><dt>Assets alvo</dt><dd>{target}</dd></div><div><dt>MATERIALIZED</dt><dd>{materialized}</dd></div><div><dt>Aprovados</dt><dd>{approved}</dd></div><div><dt>Falhas</dt><dd>{failed}</dd></div><div><dt>Thumbs</dt><dd>{projectSlot.thumbs.count}/{projectSlot.thumbs.max}</dd></div><div><dt>Títulos</dt><dd>{projectSlot.titles.count}/{projectSlot.titles.max}</dd></div></dl></section>
+                      <section className="projectSignalsCard"><header><h4>Sinais recentes</h4><span>estado real</span></header><div>{projectSlot.activeTags.slice(0,4).map(tag=><article key={`signal-${tag.tag}`}><span className={`signalDot ${String(tag.tag).includes("WORKING")?"live":"stable"}`}/><div><strong>{PROJECT_TAG_LABELS[tag.tag]||tag.tag.replace(/_/g," ")}</strong><small>{tag.last_seen_at?`heartbeat ${formatProjectMoment(Number(tag.last_seen_at))}`:"marco estável"}</small></div></article>)}{projectSlot.activeTags.length===0&&projectSlot.slots.slice(0,3).map(slot=><article key={`signal-slot-${slot.key}`}><span className={`signalDot ${slot.state==="READY"?"stable":"idle"}`}/><div><strong>{slot.label}</strong><small>{slot.summary}</small></div></article>)}</div></section>
+                    </aside>
+                  </div>
+
+                  <footer className="projectDetailFooter"><span>Última atualização <b>{formatProjectMoment(projectSlot.project.workflow_updated_at||projectSlot.project.updated_at)}</b> · revisão {Number(projectSlot.project.state_version||1)}</span>{lifecycle!=="ACTIVE"?<button className="primary" disabled={projectBulkBusy} onClick={()=>void reopenProject(projectSlot.project.id)}>Reabrir projeto</button>:<span className="slotOpenHint">● MCP livre para coordenar o fluxo</span>}</footer>
+                </>;
+              })():<div className="projectEmpty">Não foi possível ler este projeto.</div>}
+            </main>
+          </div>
         </section>}
 
         {currentView === "Solicitações" && <section className="modulePanel twoCol">

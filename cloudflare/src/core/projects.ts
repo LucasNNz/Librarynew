@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { id, nowMs } from "./ids";
+import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
 
 function encodeCursor(updatedAt: number, projectId: string) {
   return btoa(JSON.stringify([updatedAt, projectId])).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
@@ -12,8 +13,15 @@ function decodeCursor(value?: string | null) {
 export async function listAutomaticProjects(env: Env, limit=50, cursorValue?: string | null) {
   const safe=Math.max(1,Math.min(limit,200)); const cursor=decodeCursor(cursorValue); const values:unknown[]=[]; let where="";
   if(cursor){where=" WHERE (updated_at < ? OR (updated_at = ? AND id < ?))"; values.push(cursor.updatedAt,cursor.updatedAt,cursor.projectId);}
-  const result=await env.DB.prepare(`SELECT id,name,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,pending_count,failed_count,created_at,updated_at,completed_at FROM automatic_projects${where} ORDER BY updated_at DESC,id DESC LIMIT ?`).bind(...values,safe+1).all<Record<string,unknown>>();
+  await expireProjectWorkflowTags(env).catch(()=>undefined);
+  const result=await env.DB.prepare(`SELECT id,name,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,pending_count,failed_count,created_at,updated_at,completed_at,lifecycle_status,mcp_locked,rejected_at,closed_reason,workflow_updated_at FROM automatic_projects${where} ORDER BY updated_at DESC,id DESC LIMIT ?`).bind(...values,safe+1).all<Record<string,unknown>>();
   const rows=result.results||[]; const hasMore=rows.length>safe; const items=rows.slice(0,safe); const last=items[items.length-1];
+  if(items.length){
+    const placeholders=items.map(()=>"?").join(",");
+    const tagRows=await env.DB.prepare(`SELECT project_id,tag,owner_id,execution_id,last_seen_at,lease_expires_at FROM v2_project_workflow_tags WHERE status='ACTIVE' AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...items.map(row=>row.id)).all<Record<string,unknown>>();
+    const byProject=new Map<string,Record<string,unknown>[]>(); for(const row of tagRows.results||[]){const key=String(row.project_id);byProject.set(key,[...(byProject.get(key)||[]),row]);}
+    for(const item of items)(item as any).workflow_tags=byProject.get(String(item.id))||[];
+  }
   return {items,nextCursor:hasMore&&last?encodeCursor(Number(last.updated_at),String(last.id)):null};
 }
 
@@ -69,6 +77,7 @@ function workerStageForItem(statusValue: unknown) {
 
 export async function configureAutomaticProject(env: Env, projectId: string, input: { automatico?:boolean; biblioteca_primeiro?:boolean; busca_externa?:boolean; zip_automatico?:boolean; excluir_zip_ao_concluir?:boolean; dominio?:string; prioridade_fila?:number; status?:string; pipeline_status?:string; next_action?:string|null }) {
   const project = await getAutomaticProject(env, projectId); if (!project) return null;
+  if(projectIsClosed(project)) return {error:"PROJECT_LOCKED",projectId,lifecycleStatus:project.lifecycle_status||project.status,explicitReopenRequired:true,statusCode:409};
   const next = {
     automatic: input.automatico === undefined ? Number(project.automatic || 0) : (input.automatico ? 1 : 0),
     libraryFirst: input.biblioteca_primeiro === undefined ? Number(project.library_first || 0) : (input.biblioteca_primeiro ? 1 : 0),
@@ -93,6 +102,7 @@ export async function configureAutomaticProject(env: Env, projectId: string, inp
 
 export async function reconcileAutomaticProject(env: Env, projectId: string) {
   const project = await getAutomaticProject(env, projectId); if (!project) return null;
+  if(projectIsClosed(project)) return {error:"PROJECT_LOCKED",projectId,lifecycleStatus:project.lifecycle_status||project.status,explicitReopenRequired:true};
   const itemsResult = await env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId).all<Record<string,unknown>>();
   const items = itemsResult.results || [];
   const counts = { total:items.length, approved:0, frozen:0, collecting:0, materializing:0, waitingQa:0, relink:0, technical:0, waitingSeed:0, failed:0, pending:0 };
@@ -139,6 +149,7 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
 
 export async function processAutomaticProject(env: Env, projectId: string) {
   const project = await getAutomaticProject(env,projectId); if(!project)return null;
+  if(projectIsClosed(project)) return {error:"PROJECT_LOCKED",projectId,lifecycleStatus:project.lifecycle_status||project.status,explicitReopenRequired:true};
   const ts=nowMs();
   await env.DB.prepare("UPDATE automatic_projects SET status='ACTIVE',pipeline_status='PROCESSANDO',started_at=COALESCE(started_at,?),next_action='DISPATCH',state_version=state_version+1,updated_at=? WHERE id=?")
     .bind(ts,ts,projectId).run();
@@ -163,21 +174,19 @@ export async function validateProjectConsistency(env: Env, projectId:string) {
 
 export async function reopenAutomaticProject(env: Env, projectId:string, reason?:string) {
   const project=await getAutomaticProject(env,projectId); if(!project)return null;
-  const ts=nowMs();
-  await env.DB.batch<Record<string, unknown>>([
-    env.DB.prepare("UPDATE automatic_projects SET status='ACTIVE',pipeline_status='PROCESSANDO',completed_at=NULL,next_action='RECONCILE',resume_reason=?,resumed_at=?,state_version=state_version+1,updated_at=? WHERE id=?").bind(reason||"REOPENED_V2",ts,ts,projectId),
-    env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"REOPENED","PROCESSANDO",reason||"REOPENED_V2",ts),
-  ]);
+  await setProjectLifecycle(env,{projectIds:[projectId],action:"REOPEN",reason:reason||"EXPLICIT_USER_REOPEN"});
   return getAutomaticProject(env,projectId);
 }
 
 export async function projectAvailability(env: Env, projectId:string) {
   const project=await getAutomaticProject(env,projectId); if(!project)return {available:false,error:"NOT_FOUND"};
   const activeLease=await env.DB.prepare("SELECT COUNT(*) AS count FROM worker_work_items WHERE project_id=? AND status='LEASED' AND lease_expires_at>? ").bind(projectId,nowMs()).first<{count:number}>();
-  return {available:true,projectId,status:project.status,pipelineStatus:project.pipeline_status,activeLeases:Number(activeLease?.count||0),stateVersion:Number(project.state_version||1),updatedAt:project.updated_at};
+  return {available:!projectIsClosed(project),projectId,status:project.status,pipelineStatus:project.pipeline_status,lifecycleStatus:project.lifecycle_status||"ACTIVE",mcpLocked:projectIsClosed(project),explicitReopenRequired:projectIsClosed(project),activeLeases:Number(activeLease?.count||0),stateVersion:Number(project.state_version||1),updatedAt:project.updated_at};
 }
 
 export async function projectLog(env: Env, projectId:string, limit=200) {
   const result=await env.DB.prepare("SELECT * FROM automatic_project_events WHERE project_id=? ORDER BY created_at DESC LIMIT ?").bind(projectId,Math.max(1,Math.min(limit,1000))).all<Record<string,unknown>>();
   return result.results||[];
 }
+
+export async function getProjectSlot(env:Env,projectId:string){ return projectSlotSnapshot(env,projectId); }

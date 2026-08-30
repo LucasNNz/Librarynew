@@ -15,13 +15,13 @@ EXPECTED = {
     "all_universes": 0,
     "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.18.0",
+    "schema_version": "2.19.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
 }
 SUBSTITUTED = {"obter_configuracao_cloudflare", "configurar_cloudflare"}
-EXPECTED_EXTRA_TOOLS = {"auditar_armazenamento_r2", "obter_status_upload_midia", "auditar_integridade_d1", "vasculhar_r2", "reparar_pendentes_r2", "explorar_r2_fisico", "excluir_assets_permanentemente_em_lote", "excluir_pendentes_nao_encontrados_r2", "definir_politica_supervisor_livre", "atualizar_manifesto_recuperacao_d1_r2", "obter_status_export_assets_zip", "obter_link_export_assets_zip", "heartbeat_worker", "heartbeat_supervisor", "heartbeat_operacao", "obter_status_heartbeats", "executar_watchdog_heartbeats", "fast_push_project_candidates", "get_collection_snapshot", "get_materialization_telemetry", "get_qa_work_packet", "submit_qa_decisions"}
+EXPECTED_EXTRA_TOOLS = {"auditar_armazenamento_r2", "obter_status_upload_midia", "auditar_integridade_d1", "vasculhar_r2", "reparar_pendentes_r2", "explorar_r2_fisico", "excluir_assets_permanentemente_em_lote", "excluir_pendentes_nao_encontrados_r2", "definir_politica_supervisor_livre", "atualizar_manifesto_recuperacao_d1_r2", "obter_status_export_assets_zip", "obter_link_export_assets_zip", "heartbeat_worker", "heartbeat_supervisor", "heartbeat_operacao", "obter_status_heartbeats", "executar_watchdog_heartbeats", "fast_push_project_candidates", "get_collection_snapshot", "get_materialization_telemetry", "get_qa_work_packet", "submit_qa_decisions", "anexar_script_projeto", "obter_slot_projeto", "atualizar_estados_projeto", "heartbeat_estados_projeto", "concluir_projetos", "rejeitar_projetos", "excluir_projetos_permanentemente"}
 FORBIDDEN = ["@libsql", "TURSO_", "production-recovery", "secret_cloudflare_connection"]
 SOURCE_EXTENSIONS = {".ts", ".tsx", ".js", ".mjs", ".cjs"}
 

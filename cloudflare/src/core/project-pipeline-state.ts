@@ -1,5 +1,6 @@
 import type { Env } from "../types";
-import { nowMs } from "./ids";
+import { nowMs, stableId } from "./ids";
+import { syncDerivedProjectWorkflow } from "./project-workflow";
 
 function pipelineClean(value: unknown) { return String(value ?? "").trim(); }
 function pipelineNumber(value: unknown) { return Number(value || 0); }
@@ -34,12 +35,29 @@ export async function resolveProjectItem(env: Env, projectId: string, itemRef: s
 }
 
 export async function configureProjectItemPipeline(env: Env, projectId: string, itemRef: string, input: { targetCandidates?: number; requiredApproved?: number }): Promise<Record<string, unknown> | null> {
-  const item = await resolveProjectItem(env, projectId, itemRef);
+  let item = await resolveProjectItem(env, projectId, itemRef);
+  const project = await env.DB.prepare("SELECT id,active_version FROM automatic_projects WHERE id=?").bind(projectId).first<{id:string;active_version:number}>();
+  if (!project) return null;
+  const ref = pipelineClean(itemRef);
+  if (!ref) return null;
+  if (!item) {
+    const ts=nowMs();
+    const itemId=await stableId("PITEM",`PROJECT_SCENE\n${projectId}\n${ref}`,12);
+    const target=Math.max(1,Math.min(Number(input.targetCandidates??8),100));
+    const required=Math.max(1,Math.min(Number(input.requiredApproved??1),target));
+    await env.DB.prepare(`INSERT OR IGNORE INTO automatic_project_items
+      (id,project_id,version,item_key,term,context,kind,status,priority,created_at,updated_at,target_candidates,required_approved,collection_status,qa_status,stage,strategy_state,composition_class)
+      VALUES (?,?,?,?,?,NULL,'contextual','COLLECTING',1,?,?,?,?,'EMPTY','WAITING_COLLECTION','DISCOVERY','{}','CONTEXTUAL')`)
+      .bind(itemId,projectId,Number(project.active_version||1),ref,ref,ts,ts,target,required).run();
+    item=await resolveProjectItem(env,projectId,ref);
+  }
   if (!item) return null;
   const target = Math.max(1, Math.min(Number(input.targetCandidates ?? item.target_candidates ?? 8), 100));
   const required = Math.max(1, Math.min(Number(input.requiredApproved ?? item.required_approved ?? 1), target));
-  await env.DB.prepare("UPDATE automatic_project_items SET target_candidates=?,required_approved=?,updated_at=? WHERE id=?")
+  await env.DB.prepare("UPDATE automatic_project_items SET target_candidates=?,required_approved=?,status=CASE WHEN upper(status) IN ('PARSING','PENDING') THEN 'COLLECTING' ELSE status END,updated_at=? WHERE id=?")
     .bind(target, required, nowMs(), item.id).run();
+  await env.DB.prepare("UPDATE automatic_projects SET total_items=(SELECT COUNT(*) FROM automatic_project_items WHERE project_id=?),state_version=state_version+1,updated_at=? WHERE id=?")
+    .bind(projectId,nowMs(),projectId).run();
   return { ...item, target_candidates: target, required_approved: required };
 }
 
@@ -97,6 +115,7 @@ export async function refreshProjectItemPipelineState(env: Env, projectId?: stri
       discovered_count=?,queued_count=?,downloading_count=?,materialized_count=?,failed_count=?,approved_count=?,rejected_count=?,
       collection_status=?,qa_status=?,qa_ready_at=?,qa_completed_at=?,updated_at=? WHERE id=?`)
     .bind(discovered, queued, downloading, materialized, failed, approved, rejected, collectionStatus, qaStatus, qaReadyAt, qaCompletedAt, ts, itemId).run();
+  await syncDerivedProjectWorkflow(env,project).catch(()=>undefined);
 
   return { projectId: project, itemId, itemKey, targetCandidates, requiredApproved, discovered, queued, downloading, reserve, materialized, failed, approved, rejected, missing, remainingApproved, collectionStatus, qaStatus, requirementStatus };
 }

@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.18.0";
+const CONTRACT_VERSION = "2.19.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -39,6 +39,30 @@ const REQUIRED: TableSpec[] = [
       { name:"qa_completed_at", ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_completed_at INTEGER" },
     ],
   },
+  {
+    table: "automatic_projects",
+    columns: [
+      { name:"lifecycle_status", ddl:"ALTER TABLE automatic_projects ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'ACTIVE'" },
+      { name:"mcp_locked", ddl:"ALTER TABLE automatic_projects ADD COLUMN mcp_locked INTEGER NOT NULL DEFAULT 0" },
+      { name:"rejected_at", ddl:"ALTER TABLE automatic_projects ADD COLUMN rejected_at INTEGER" },
+      { name:"closed_reason", ddl:"ALTER TABLE automatic_projects ADD COLUMN closed_reason TEXT" },
+      { name:"workflow_updated_at", ddl:"ALTER TABLE automatic_projects ADD COLUMN workflow_updated_at INTEGER" },
+    ],
+  },
+  {
+    table: "v2_project_media",
+    columns: [
+      { name:"slot_index", ddl:"ALTER TABLE v2_project_media ADD COLUMN slot_index INTEGER" },
+      { name:"orientation", ddl:"ALTER TABLE v2_project_media ADD COLUMN orientation TEXT" },
+    ],
+  },
+  {
+    table: "v2_project_titles",
+    columns: [
+      { name:"slot_index", ddl:"ALTER TABLE v2_project_titles ADD COLUMN slot_index INTEGER" },
+    ],
+  },
+
 ];
 
 async function tableColumns(env:Env, table:string) {
@@ -59,7 +83,7 @@ export async function inspectCriticalSchema(env:Env) {
     const columns = await tableColumns(env, spec.table);
     for (const column of spec.columns) if (!columns.has(column.name)) missingColumns.push({table:spec.table,column:column.name});
   }
-  for (const table of ["v2_ingest_operations","v2_ingest_events"]) if (!(await tableExists(env,table))) missingTables.push(table);
+  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags"]) if (!(await tableExists(env,table))) missingTables.push(table);
   return {
     ready: missingTables.length===0 && missingColumns.length===0,
     contractVersion: CONTRACT_VERSION,
@@ -69,10 +93,19 @@ export async function inspectCriticalSchema(env:Env) {
 }
 
 export async function reconcileCriticalSchema(env:Env) {
-  const before = await inspectCriticalSchema(env);
-  if (before.missingTables.length) return { ...before, repaired:[], error:"CRITICAL_TABLE_MISSING" };
-
+  let before = await inspectCriticalSchema(env);
   const repaired:string[]=[];
+  if(before.missingTables.includes("v2_project_workflow_tags")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_project_workflow_tags (
+      id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id),tag TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'ACTIVE',owner_id TEXT,execution_id TEXT,ttl_seconds INTEGER,last_seen_at INTEGER,lease_expires_at INTEGER,metadata_json TEXT NOT NULL DEFAULT '{}',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,ended_at INTEGER)`);
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_unique ON v2_project_workflow_tags(project_id,tag)");
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_workflow_active ON v2_project_workflow_tags(project_id,status,lease_expires_at,updated_at DESC)");
+    repaired.push("table:v2_project_workflow_tags");
+    before=await inspectCriticalSchema(env);
+  }
+  const hardMissing=before.missingTables.filter(table=>table!=="v2_project_workflow_tags");
+  if (hardMissing.length) return { ...before, repaired, error:"CRITICAL_TABLE_MISSING" };
+
   for (const spec of REQUIRED) {
     let columns = await tableColumns(env,spec.table);
     for (const column of spec.columns) {
@@ -96,6 +129,10 @@ export async function reconcileCriticalSchema(env:Env) {
         materialized_at=CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN COALESCE(materialized_at,updated_at) ELSE materialized_at END`).run();
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_automatic_projects_lifecycle_updated ON automatic_projects(lifecycle_status,updated_at DESC,id DESC)");
+  await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_media_slot ON v2_project_media(project_id,kind,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('THUMB_REJECTED','REJECTED')");
+  await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_titles_slot ON v2_project_titles(project_id,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('TITLE_REJECTED','REJECTED')");
+  await env.DB.prepare(`UPDATE automatic_projects SET lifecycle_status=CASE WHEN upper(COALESCE(status,'')) IN ('COMPLETED','DONE','CONCLUIDO','CONCLUÍDO') THEN 'COMPLETED' WHEN upper(COALESCE(status,'')) IN ('REJECTED','REJEITADO','CANCELLED','CANCELADO') THEN 'REJECTED' ELSE COALESCE(NULLIF(lifecycle_status,''),'ACTIVE') END,mcp_locked=CASE WHEN upper(COALESCE(status,'')) IN ('COMPLETED','DONE','CONCLUIDO','CONCLUÍDO','REJECTED','REJEITADO','CANCELLED','CANCELADO') THEN 1 ELSE COALESCE(mcp_locked,0) END,workflow_updated_at=COALESCE(workflow_updated_at,updated_at)`).run();
   await env.DB.exec("CREATE TABLE IF NOT EXISTS v2_schema_meta (key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL)");
   await env.DB.prepare("INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version',?,?)").bind(CONTRACT_VERSION,ts).run();
   await env.DB.prepare("INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('critical_schema_contract','READY',?)").bind(ts).run();

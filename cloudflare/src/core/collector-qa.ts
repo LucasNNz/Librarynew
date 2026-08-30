@@ -4,6 +4,7 @@ import { activateProjectItemCandidateReserve, approveCandidate, rejectCandidate 
 import { id, nowMs, stableId } from "./ids";
 import { safeRemoteUrl } from "./net";
 import { configureProjectItemPipeline, markProjectItemQaInProgress, refreshProjectItemPipelineState, resolveProjectItem, type ProjectPipelineItemState } from "./project-pipeline-state";
+import { projectWriteGuard, syncDerivedProjectWorkflow, updateProjectWorkflow } from "./project-workflow";
 
 function collectorClean(v: unknown) { return String(v ?? "").trim(); }
 function collectorSleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -21,10 +22,11 @@ export type ProjectCandidatePushItem = {
 
 export async function fastPushProjectCandidates(env: Env, input: { projectId: string; operationId?: string; items: ProjectCandidatePushItem[] }) {
   const projectId = collectorClean(input.projectId);
-  const project = await env.DB.prepare("SELECT id,name FROM automatic_projects WHERE id=?").bind(projectId).first<{id:string;name:string}>();
-  if (!project) return { error: "PROJECT_NOT_FOUND", status: 404 } as const;
-
+  const guard = await projectWriteGuard(env, projectId);
+  if (!guard.ok) return guard;
+  const project = guard.project as Record<string,unknown>;
   const operationId = collectorClean(input.operationId) || id("OP");
+  await updateProjectWorkflow(env,{projectId,activate:["COLLECTOR_WORKING"],ownerId:"MCP_COLLECTOR",executionId:operationId,ttlSeconds:300,metadata:{source:"fast_push_project_candidates"}}).catch(()=>undefined);
   const created = nowMs();
   await env.DB.prepare(`INSERT OR IGNORE INTO v2_ingest_operations
     (id,type,status,requested,succeeded,failed,payload_json,created_at,updated_at)
@@ -39,7 +41,7 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
     const requestedRef = collectorClean(raw.itemId);
     const item = await configureProjectItemPipeline(env, projectId, requestedRef, { targetCandidates: raw.targetCandidates, requiredApproved: raw.requiredApproved });
     if (!item) {
-      itemResults.set(requestedRef,{ item_id: requestedRef, accepted: 0, error: "ITEM_NOT_FOUND" });
+      itemResults.set(requestedRef,{ item_id: requestedRef, accepted: 0, error: "ITEM_UPSERT_FAILED" });
       continue;
     }
     const itemId = collectorClean(item.id), itemKey = collectorClean(item.item_key) || itemId;
@@ -93,8 +95,10 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
   }
   const activated = activations.reduce((sum,row)=>sum+Number(row.activated||0),0);
   const operation = await env.DB.prepare("SELECT requested,succeeded,failed,status FROM v2_ingest_operations WHERE id=?").bind(operationId).first<{requested:number;succeeded:number;failed:number;status:string}>();
-  if (operation && Number(operation.requested||0)===0) {
-    await env.DB.prepare("UPDATE v2_ingest_operations SET status='COMPLETED',updated_at=? WHERE id=?").bind(nowMs(),operationId).run();
+  const itemErrors=[...itemResults.values()].filter(item=>item.error);
+  if (operation && Number(operation.requested||0)===0 && inserted===0 && itemErrors.length>0) {
+    await env.DB.prepare("UPDATE v2_ingest_operations SET status='FAILED',error=?,updated_at=? WHERE id=?").bind(JSON.stringify(itemErrors),nowMs(),operationId).run();
+    return {error:"NO_PROJECT_ITEMS_ACCEPTED",projectId,operationId,items:itemErrors,status:409} as const;
   }
   const operationCandidates = await env.DB.prepare(`SELECT COUNT(*) AS total,
       SUM(CASE WHEN status='DISCOVERED' THEN 1 ELSE 0 END) AS standby,
@@ -102,6 +106,7 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
     FROM v2_ingest_candidates WHERE operation_id=?`).bind(operationId).first<Record<string,unknown>>();
 
   const states = await Promise.all([...itemResults.values()].filter(item => item.item_id && !item.error).map(item => refreshProjectItemPipelineState(env, projectId, collectorClean(item.item_id))));
+  await syncDerivedProjectWorkflow(env,projectId).catch(()=>undefined);
   return {
     accepted: true,
     projectId,
@@ -225,7 +230,9 @@ export async function getQaWorkPacket(request: Request, env: Env, input: { proje
   const limitItems = Math.max(1, Math.min(Number(input.limitItems || 10), 30));
   const candidatesPerItem = Math.max(1, Math.min(Number(input.candidatesPerItem || 20), 50));
   const projectId = collectorClean(input.projectId);
-  const where = projectId ? "WHERE i.project_id=? AND i.qa_status='READY_FOR_QA'" : "WHERE i.qa_status='READY_FOR_QA'";
+  const where = projectId
+    ? "WHERE i.project_id=? AND i.qa_status='READY_FOR_QA' AND COALESCE(p.mcp_locked,0)=0 AND COALESCE(p.lifecycle_status,'ACTIVE')='ACTIVE'"
+    : "WHERE i.qa_status='READY_FOR_QA' AND COALESCE(p.mcp_locked,0)=0 AND COALESCE(p.lifecycle_status,'ACTIVE')='ACTIVE'";
   const sql = `SELECT i.id,i.project_id,i.item_key,i.term,i.context,i.kind,i.universe,i.notes,i.target_file,i.composition_class,i.semantic_class,i.semantic_reference,i.search_plan,
       i.target_candidates,i.required_approved,i.materialized_count,i.approved_count,i.rejected_count,i.collection_status,i.qa_status,i.priority,
       p.name AS project_name
@@ -275,6 +282,8 @@ export async function getQaWorkPacket(request: Request, env: Env, input: { proje
       }))),
     });
   }
+  const qaProjects=collectorUniq(items.map(entry=>collectorClean((entry.project as Record<string,unknown>)?.project_id)).filter(Boolean));
+  for(const qaProjectId of qaProjects) await updateProjectWorkflow(env,{projectId:qaProjectId,activate:["VISUAL_ANALYST_WORKING"],ownerId:"MCP_VISUAL_ANALYST",executionId:`qa-${nowMs()}`,ttlSeconds:300,metadata:{source:"get_qa_work_packet"}}).catch(()=>undefined);
   return { mode: "READY_FOR_QA_ONLY", count: items.length, items };
 }
 

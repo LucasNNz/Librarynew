@@ -1,0 +1,12 @@
+{
+  "checkpoint": "0.20.25",
+  "project_ui": {
+    "filters_all_present": true,
+    "bulk_actions_present": true,
+    "slot_panel_present": true,
+    "mcp_lock_badge_present": true,
+    "explicit_reopen_present": true,
+    "old_process_button_absent": true
+  },
+  "pass": true
+}

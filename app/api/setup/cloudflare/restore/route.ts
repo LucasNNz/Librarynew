@@ -54,6 +54,20 @@ const CRITICAL_SCHEMA_COLUMNS: Record<string, Array<{name:string;ddl:string}>> =
     {name:"qa_started_at",ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_started_at INTEGER"},
     {name:"qa_completed_at",ddl:"ALTER TABLE automatic_project_items ADD COLUMN qa_completed_at INTEGER"},
   ],
+  automatic_projects: [
+    {name:"lifecycle_status",ddl:"ALTER TABLE automatic_projects ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'ACTIVE'"},
+    {name:"mcp_locked",ddl:"ALTER TABLE automatic_projects ADD COLUMN mcp_locked INTEGER NOT NULL DEFAULT 0"},
+    {name:"rejected_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN rejected_at INTEGER"},
+    {name:"closed_reason",ddl:"ALTER TABLE automatic_projects ADD COLUMN closed_reason TEXT"},
+    {name:"workflow_updated_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN workflow_updated_at INTEGER"},
+  ],
+  v2_project_media: [
+    {name:"slot_index",ddl:"ALTER TABLE v2_project_media ADD COLUMN slot_index INTEGER"},
+    {name:"orientation",ddl:"ALTER TABLE v2_project_media ADD COLUMN orientation TEXT"},
+  ],
+  v2_project_titles: [
+    {name:"slot_index",ddl:"ALTER TABLE v2_project_titles ADD COLUMN slot_index INTEGER"},
+  ],
 };
 
 async function tableColumns(token:string,accountId:string,databaseId:string,table:string) {
@@ -64,10 +78,15 @@ async function tableColumns(token:string,accountId:string,databaseId:string,tabl
 async function reconcileCriticalSchemaRemote(token:string,accountId:string,databaseId:string) {
   const repaired:string[]=[];
   const missingTables:string[]=[];
-  for(const table of ["v2_ingest_candidates","automatic_project_items","v2_ingest_operations","v2_ingest_events"]){
+  if(!(await tableExists(token,accountId,databaseId,"v2_project_workflow_tags"))){
+    await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_project_workflow_tags (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id),tag TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'ACTIVE',owner_id TEXT,execution_id TEXT,ttl_seconds INTEGER,last_seen_at INTEGER,lease_expires_at INTEGER,metadata_json TEXT NOT NULL DEFAULT '{}',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,ended_at INTEGER)`);
+    await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_unique ON v2_project_workflow_tags(project_id,tag)");
+    repaired.push("table:v2_project_workflow_tags");
+  }
+  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_ingest_operations","v2_ingest_events"]){
     if(!(await tableExists(token,accountId,databaseId,table))) missingTables.push(table);
   }
-  if(missingTables.length) return {ready:false,contractVersion:"2.18.0",missingTables,missingColumns:[],repaired};
+  if(missingTables.length) return {ready:false,contractVersion:"2.19.0",missingTables,missingColumns:[],repaired};
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     let columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs){
@@ -80,14 +99,17 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   await queryD1(token,accountId,databaseId,"UPDATE v2_ingest_candidates SET discovered_at=COALESCE(discovered_at,created_at), queued_at=COALESCE(queued_at,created_at), materialized_at=CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN COALESCE(materialized_at,updated_at) ELSE materialized_at END");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_automatic_projects_lifecycle_updated ON automatic_projects(lifecycle_status,updated_at DESC,id DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_media_slot ON v2_project_media(project_id,kind,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('THUMB_REJECTED','REJECTED')");
+  await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_titles_slot ON v2_project_titles(project_id,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('TITLE_REJECTED','REJECTED')");
   await queryD1(token,accountId,databaseId,"CREATE TABLE IF NOT EXISTS v2_schema_meta (key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL)");
-  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.18.0',?)",[Date.now()]);
+  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.19.0',?)",[Date.now()]);
   const missingColumns:Array<{table:string;column:string}>=[];
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     const columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs) if(!columns.has(spec.name)) missingColumns.push({table,column:spec.name});
   }
-  return {ready:missingColumns.length===0,contractVersion:"2.18.0",missingTables:[],missingColumns,repaired};
+  return {ready:missingColumns.length===0,contractVersion:"2.19.0",missingTables:[],missingColumns,repaired};
 }
 
 async function migrationFiles() {
@@ -139,7 +161,7 @@ async function importD1(token: string, accountId: string, databaseId: string, sq
 const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
-  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql",
+  "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql", "2.19.0":"9019_v2_project_slots_workflow.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {

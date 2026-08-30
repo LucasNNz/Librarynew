@@ -5,6 +5,7 @@ import { createSignedCandidateUrl } from "./auth";
 import { recordIngestEvent, updateHostHealth } from "./materialization";
 import { createProjectMediaFromCandidate } from "./production";
 import { refreshProjectItemPipelineState } from "./project-pipeline-state";
+import { projectWriteGuard } from "./project-workflow";
 import { refreshRecoveryAfterWrite, writeAssetRecoveryRecord, writeCandidateRecoveryRecord } from "./recovery-manifest";
 
 function normalizeTags(tags: unknown) {
@@ -197,6 +198,7 @@ async function deleteIncomingObject(env: Env, key: string) {
 export async function approveCandidate(candidateId: string, env: Env) {
   const candidate = await env.DB.prepare("SELECT * FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<Record<string, unknown>>();
   if (!candidate) return { error: "NOT_FOUND", status: 404 } as const;
+  if(candidate.project_id){const guard=await projectWriteGuard(env,String(candidate.project_id));if(!guard.ok)return guard;}
   if (candidate.status === "APPROVED" && candidate.asset_id) {
     const asset = await env.DB.prepare("SELECT id,r2_key FROM assets WHERE id=?").bind(candidate.asset_id).first<Record<string, unknown>>();
     if (asset) return { ok:true, assetId:String(asset.id), r2Key:String(asset.r2_key), incomingDeleted:true, idempotent:true, status:200 } as const;
@@ -251,6 +253,7 @@ export async function approveCandidate(candidateId: string, env: Env) {
 export async function rejectCandidate(candidateId: string, env: Env) {
   const candidate = await env.DB.prepare("SELECT status,r2_key,operation_id,project_id,item_id FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<{ status: string; r2_key: string | null; operation_id:string; project_id:string|null; item_id:string|null }>();
   if (!candidate) return { error: "NOT_FOUND", status: 404 } as const;
+  if(candidate.project_id){const guard=await projectWriteGuard(env,String(candidate.project_id));if(!guard.ok)return guard;}
   if (candidate.status === "APPROVED") return { error: "INVALID_STATE", currentStatus: candidate.status, status: 409 } as const;
   if (candidate.status === "REJECTED") return { ok:true, status:200, incomingDeleted:!candidate.r2_key, idempotent:true } as const;
   const incomingDeleted = candidate.r2_key ? await deleteIncomingObject(env, candidate.r2_key) : false;
@@ -267,6 +270,8 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
   const state = await env.DB.prepare("SELECT attempts,status,queued_at,created_at,project_id,item_id FROM v2_ingest_candidates WHERE id=?").bind(job.candidateId).first<{ attempts: number; status:string; queued_at:number|null; created_at:number; project_id:string|null; item_id:string|null }>();
   if (!state) { message.ack(); return; }
   if (["APPROVED","REJECTED","MATERIALIZED"].includes(String(state.status || "").toUpperCase())) { message.ack(); return; }
+  const materializeProjectId=String(job.projectId||state.project_id||"").trim();
+  if(materializeProjectId){const guard=await projectWriteGuard(env,materializeProjectId);if(!guard.ok){await env.DB.prepare("UPDATE v2_ingest_candidates SET status='FAILED',failure_reason='PROJECT_LOCKED',updated_at=? WHERE id=? AND status IN ('QUEUED','RETRYING')").bind(nowMs(),job.candidateId).run().catch(()=>undefined);message.ack();return;}}
   const attempt = Number(state.attempts || 0) + 1;
   const queuedAt = Number(state.queued_at || state.created_at || started);
   const queueWaitMs = Math.max(0, started - queuedAt);
@@ -364,7 +369,7 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
 }
 
 export async function linkCandidatesToProject(env:Env,candidateIds:string[],projectId:string,itemId?:string|null){
-  const project=await env.DB.prepare("SELECT id FROM automatic_projects WHERE id=?").bind(projectId).first(); if(!project)return {error:"PROJECT_NOT_FOUND",status:404} as const;
+  const guard=await projectWriteGuard(env,projectId); if(!guard.ok)return guard;
   const ids=[...new Set(candidateIds.map(String).filter(Boolean))].slice(0,200); if(!ids.length)return {updated:0};
   const ts=nowMs(); let updated=0;
   for(const candidateId of ids){ const result=await env.DB.prepare("UPDATE v2_ingest_candidates SET project_id=?,item_id=COALESCE(?,item_id),updated_at=? WHERE id=?").bind(projectId,itemId||null,ts,candidateId).run(); updated+=Number(result.meta?.changes||0); }

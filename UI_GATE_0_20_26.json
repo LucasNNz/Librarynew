@@ -1,0 +1,24 @@
+{
+  "checkpoint": "0.20.26",
+  "core": "0.20.25",
+  "schema": "2.19.0",
+  "scope": "UI_ONLY_PROJECTS_VISUAL_STUDIO",
+  "checks": {
+    "app_version_0_20_26": true,
+    "core_expected_0_20_25": true,
+    "projects_kpis": true,
+    "projects_search": true,
+    "project_list_rail": true,
+    "project_detail_canvas": true,
+    "pipeline_visual": true,
+    "slots_visible": true,
+    "agents_heartbeat": true,
+    "bulk_actions_preserved": true,
+    "reopen_preserved": true,
+    "no_process_reconcile_in_projects": true,
+    "responsive_css": true,
+    "reference_layout_css": true
+  },
+  "pass": true,
+  "errors": []
+}

@@ -140,6 +140,25 @@ export type AutomaticProject = {
   created_at: number;
   updated_at: number;
   completed_at?: number | null;
+  lifecycle_status?: "ACTIVE"|"COMPLETED"|"REJECTED"|string;
+  mcp_locked?: number|boolean;
+  rejected_at?: number | null;
+  closed_reason?: string | null;
+  workflow_updated_at?: number | null;
+  workflow_tags?: Array<{tag:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
+};
+
+export type ProjectSlotSnapshot = {
+  project: AutomaticProject;
+  activeTags: Array<{tag:string;status:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
+  slots: Array<{key:string;label:string;state:string;summary:string;progress:number}>;
+  progress: number;
+  script?: Record<string,unknown>|null;
+  thumbs: {count:number;selected:number;max:number};
+  titles: {count:number;selected:number;max:number};
+  items: Record<string,unknown>;
+  candidates: Record<string,unknown>;
+  package?: Record<string,unknown>|null;
 };
 
 export type StorageAudit = {

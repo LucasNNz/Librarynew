@@ -1,0 +1,31 @@
+{
+  "checkpoint": "0.20.25",
+  "scene_upsert": {
+    "project_id": "PROJ-BEHAVIOR-2025",
+    "item_key": "CENA-001",
+    "item_rows_after_two_upserts": 1,
+    "project_total_items": 1,
+    "target_candidates": 3,
+    "required_approved": 1,
+    "queued": 3,
+    "standby_discovered": 1,
+    "total_candidates": 4,
+    "pass": true
+  },
+  "lifecycle_lock": {
+    "completed_row": {
+      "lifecycle_status": "COMPLETED",
+      "mcp_locked": 1,
+      "status": "COMPLETED"
+    },
+    "project_write_guard_would_block": true,
+    "reopened_row": {
+      "lifecycle_status": "ACTIVE",
+      "mcp_locked": 0,
+      "status": "ACTIVE",
+      "resume_reason": "EXPLICIT_REOPEN"
+    },
+    "project_write_guard_would_block_after_reopen": false,
+    "pass": true
+  }
+}
