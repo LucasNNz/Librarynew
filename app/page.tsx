@@ -5,11 +5,35 @@ import type { ChangeEvent, FormEvent } from "react";
 import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
 import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
+type SchemaContractState = {
+  ready?: boolean;
+  contractVersion?: string;
+  missingTables?: string[];
+  missingColumns?: Array<{table:string;column:string}>;
+  repaired?: string[];
+  error?: string;
+};
+
+type CoreHealthState = {
+  ok: boolean;
+  version?: string;
+  d1?: string;
+  r2?: string;
+  schema?: string;
+  schemaContract?: SchemaContractState | null;
+  queue?: string;
+  signing?: string;
+  appAuth?: string;
+  control?: string;
+  queueBacklog?: number | null;
+  error?: string;
+};
+
 type Health = {
   app: "ok";
   architecture: "CLOUDFLARE_CORE";
   coreConfigured: boolean;
-  core: { ok: boolean; version?: string; d1?: string; r2?: string; schema?: string; queue?: string; signing?: string; appAuth?: string; control?: string; queueBacklog?: number | null; error?: string };
+  core: CoreHealthState;
 };
 
 type InfrastructureProfile = {
@@ -47,7 +71,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.19";
+const EXPECTED_CORE_VERSION = "0.20.21";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -144,6 +168,27 @@ function sleep(ms:number) { return new Promise(resolve=>setTimeout(resolve,ms));
 
 function isTransientFetchError(error:unknown) {
   return error instanceof TypeError || (error instanceof Error && /failed to fetch|networkerror|load failed|fetch failed/i.test(error.message));
+}
+
+// /api/* is proxied directly to the Worker once the browser connection is
+// active. During setup it may still return the same-origin BFF wrapper.
+// Normalize both shapes so boot/update gates never mistake a healthy Core for
+// an empty object.
+function unwrapCoreHealth(value:any): CoreHealthState {
+  const core = value?.app === "ok" && value?.core ? value.core : value;
+  return { ...(core || {}), ok:Boolean(core?.ok) } as CoreHealthState;
+}
+
+function schemaGateDetail(value:any, httpStatus?:number) {
+  const core = unwrapCoreHealth(value);
+  return {
+    httpStatus: httpStatus || null,
+    coreVersion: core.version || null,
+    d1: core.d1 || null,
+    schema: core.schema || null,
+    schemaContract: core.schemaContract || null,
+    coreError: core.error || null,
+  };
 }
 
 async function fetchWithNetworkRetry(input:RequestInfo|URL, init:RequestInit={}, options:{attempts?:number;baseDelayMs?:number;onRetry?:(attempt:number,error:unknown)=>void}={}) {
@@ -271,7 +316,7 @@ export default function Home() {
         return;
       }
       const connected = Boolean(readBrowserConnection());
-      setHealth({ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:connected, core:{ ...value, ok:Boolean(value?.ok) } });
+      setHealth({ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:connected, core:unwrapCoreHealth(value) });
     } catch(error) {
       const connected=Boolean(readBrowserConnection());
       setHealth({app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:connected,core:{ok:false,error:isTransientFetchError(error)?"CORE_TEMPORARILY_UNREACHABLE":(error instanceof Error?error.message:"CORE_HEALTH_FAILED")}});
@@ -644,7 +689,7 @@ export default function Home() {
       try {
         const currentResponse = await fetch("/api/health", { cache:"no-store" });
         const current = await currentResponse.json().catch(()=>({})) as any;
-        const version = current?.app === "ok" ? current?.core?.version : current?.version;
+        const version = unwrapCoreHealth(current).version;
         coreReady = version === EXPECTED_CORE_VERSION;
       } catch { coreReady = false; }
 
@@ -664,7 +709,7 @@ export default function Home() {
             const probe = await fetch("/api/health", { cache:"no-store" });
             if (!probe.ok) continue;
             const raw = await probe.json() as any;
-            const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+            const version = unwrapCoreHealth(raw).version;
             if (version === EXPECTED_CORE_VERSION) { coreReady=true; break; }
           } catch { /* Worker is restarting; keep polling. */ }
         }
@@ -686,9 +731,23 @@ export default function Home() {
 
       const schemaProbeResponse = await fetch("/api/health", { cache:"no-store" });
       const schemaProbe = await schemaProbeResponse.json().catch(()=>({})) as any;
-      if (!schemaProbeResponse.ok || schemaProbe?.core?.schemaContract?.ready !== true) {
-        throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaProbe?.core?.schemaContract || schemaProbe?.core || {})}`);
+      const schemaCore = unwrapCoreHealth(schemaProbe);
+      if (!schemaProbeResponse.ok || schemaCore.schemaContract?.ready !== true) {
+        throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaGateDetail(schemaProbe,schemaProbeResponse.status))}`);
       }
+
+      // Queue configuration lives in the Cloudflare control plane and is not
+      // changed by merely redeploying a Worker script. Reconcile the consumer
+      // once per policy version so old queues do not keep the default/stale
+      // batch wait after a Core update.
+      setReleaseGateMessage("Aplicando perfil de Queue de baixa latência…");
+      try {
+        const queueResponse=await fetchWithNetworkRetry("/api/control/reconcile-queue-consumer",{method:"POST",headers:{"content-type":"application/json"},body:"{}",cache:"no-store"},{attempts:3,baseDelayMs:500});
+        if(!queueResponse.ok){
+          const queueError=await queueResponse.json().catch(()=>({})) as any;
+          console.warn("QUEUE_POLICY_RECONCILE_FAILED",queueError?.detail||queueError?.error||queueResponse.status);
+        }
+      } catch(error) { console.warn("QUEUE_POLICY_RECONCILE_FAILED",error); }
 
       // Production data is authoritative now. The old one-shot cleanup endpoint
       // remains available for explicit maintenance, but is never called during
@@ -1037,7 +1096,7 @@ export default function Home() {
           const probe = await fetch("/api/health", { cache:"no-store" });
           if (!probe.ok) continue;
           const raw = await probe.json();
-          const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+          const version = unwrapCoreHealth(raw).version;
           if (version === EXPECTED_CORE_VERSION) {
             const migrationResponse=await fetchWithNetworkRetry("/api/control/apply-migrations",{method:"POST"},{attempts:6,baseDelayMs:700});
             const migration=await migrationResponse.json().catch(()=>({})) as any;
@@ -1045,8 +1104,16 @@ export default function Home() {
             if(migration?.schemaContract?.ready!==true)throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(migration?.schemaContract||{})}`);
             const schemaProbe=await fetch("/api/health",{cache:"no-store"});
             const schemaHealth=await schemaProbe.json().catch(()=>({})) as any;
-            if(!schemaProbe.ok||schemaHealth?.core?.schemaContract?.ready!==true)throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaHealth?.core?.schemaContract||{})}`);
-            setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; schema ${migration.schemaContract.contractVersion} READY; migrations aplicadas: ${(migration.executed||[]).length}.`);
+            const schemaCore=unwrapCoreHealth(schemaHealth);
+            if(!schemaProbe.ok||schemaCore.schemaContract?.ready!==true)throw new Error(`SCHEMA_GATE_FAILED:${JSON.stringify(schemaGateDetail(schemaHealth,schemaProbe.status))}`);
+            let queuePolicy="não verificada";
+            try {
+              const queueResponse=await fetchWithNetworkRetry("/api/control/reconcile-queue-consumer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({force:true})},{attempts:3,baseDelayMs:500});
+              const queueValue=await queueResponse.json().catch(()=>({})) as any;
+              if(queueResponse.ok) queuePolicy=`${queueValue.policyVersion||"LOW_LATENCY"} · wait ${Number(queueValue.consumer?.settings?.max_wait_time_ms??queueValue.desiredSettings?.max_wait_time_ms??0)} ms`;
+              else queuePolicy=`falhou: ${queueValue.detail||queueValue.error||queueResponse.status}`;
+            } catch(error) { queuePolicy=`falhou: ${error instanceof Error?error.message:"QUEUE_POLICY_FAILED"}`; }
+            setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}; schema ${migration.schemaContract.contractVersion} READY; Queue ${queuePolicy}; migrations aplicadas: ${(migration.executed||[]).length}.`);
             ready=true;
             break;
           }

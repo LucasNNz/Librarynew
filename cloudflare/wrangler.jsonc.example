@@ -27,8 +27,8 @@
       {
         "queue": "corvo-materialize-v2",
         "max_batch_size": 10,
-        "max_batch_timeout": 1,
-        "max_retries": 5,
+        "max_batch_timeout": 0,
+        "max_retries": 4,
         "dead_letter_queue": "corvo-materialize-v2-dlq",
         "retry_delay": 5
       }

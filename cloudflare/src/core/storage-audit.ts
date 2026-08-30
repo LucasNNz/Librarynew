@@ -17,17 +17,34 @@ async function allR2Objects(env: Env, maxObjects = 10000) {
 }
 
 async function allReferences(env: Env) {
-  const result = await env.DB.prepare(`
-    SELECT 'assets' AS source_table,id AS source_id,r2_key FROM assets WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
-    UNION ALL SELECT 'automatic_project_files',id,r2_key FROM automatic_project_files WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
-    UNION ALL SELECT 'automatic_projects',id,zip_r2_key FROM automatic_projects WHERE zip_r2_key IS NOT NULL AND TRIM(zip_r2_key)<>''
-    UNION ALL SELECT 'export_jobs',id,r2_key FROM export_jobs WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
-    UNION ALL SELECT 'imports',id,r2_key FROM imports WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
-    UNION ALL SELECT 'materialization_files',id,r2_key FROM materialization_files WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
-    UNION ALL SELECT 'v2_ingest_candidates',id,r2_key FROM v2_ingest_candidates WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
-    UNION ALL SELECT 'v2_recovery_events',MIN(id) AS id,r2_key FROM v2_recovery_events WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>'' GROUP BY r2_key
-  `).all<ReferenceRow>();
-  return result.results || [];
+  // Never use DB.batch() or a compound UNION for this inventory. The live D1
+  // may contain legacy views whose expansion can exceed SQLite's compound
+  // SELECT term limit. Each reference source is queried independently and the
+  // Worker merges the rows in memory.
+  const sources = [
+    { source: "assets", sql: "SELECT id AS source_id,r2_key FROM assets WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''" },
+    { source: "automatic_project_files", sql: "SELECT id AS source_id,r2_key FROM automatic_project_files WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''" },
+    { source: "automatic_projects", sql: "SELECT id AS source_id,zip_r2_key AS r2_key FROM automatic_projects WHERE zip_r2_key IS NOT NULL AND TRIM(zip_r2_key)<>''" },
+    { source: "export_jobs", sql: "SELECT id AS source_id,r2_key FROM export_jobs WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''" },
+    { source: "imports", sql: "SELECT id AS source_id,r2_key FROM imports WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''" },
+    { source: "materialization_files", sql: "SELECT id AS source_id,r2_key FROM materialization_files WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''" },
+    { source: "v2_ingest_candidates", sql: "SELECT id AS source_id,r2_key FROM v2_ingest_candidates WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''" },
+    { source: "v2_recovery_events", sql: "SELECT MIN(id) AS source_id,r2_key FROM v2_recovery_events WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>'' GROUP BY r2_key" },
+  ] as const;
+  const settled = await Promise.allSettled(sources.map(item => env.DB.prepare(item.sql).all<{source_id:string;r2_key:string}>()));
+  const rows: ReferenceRow[] = [];
+  for (let index = 0; index < sources.length; index += 1) {
+    const result = settled[index];
+    if (result.status !== "fulfilled") {
+      console.warn("R2_REFERENCE_SOURCE_SKIPPED", sources[index].source, result.reason instanceof Error ? result.reason.message : String(result.reason));
+      continue;
+    }
+    for (const row of result.value.results || []) {
+      const r2Key = String(row.r2_key || "").trim();
+      if (r2Key) rows.push({ source_table:sources[index].source, source_id:String(row.source_id || ""), r2_key:r2Key });
+    }
+  }
+  return rows;
 }
 
 function bySource(rows: ReferenceRow[], present: Set<string>) {

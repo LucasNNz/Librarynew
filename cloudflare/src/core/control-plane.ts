@@ -99,6 +99,84 @@ export async function selfUpdateCore(env: Env) {
   return { ok: true, targetVersion: version, source: `${appOrigin}/api/setup/core-bundle` };
 }
 
+
+const QUEUE_POLICY_VERSION = "LOW_LATENCY_V2";
+const DESIRED_QUEUE_CONSUMER_SETTINGS = {
+  batch_size: 10,
+  max_concurrency: null as number | null,
+  max_retries: 4,
+  max_wait_time_ms: 0,
+  retry_delay: 5,
+};
+
+type CfEnvelope<T> = { success?:boolean; result?:T; errors?:Array<{message?:string}> };
+type QueueControlInfo = { queue_id?:string; queue_name?:string; settings?:Record<string,unknown> };
+type QueueConsumerControlInfo = { consumer_id?:string; script_name?:string; type?:string; dead_letter_queue?:string; settings?:Record<string,unknown> };
+
+async function cfControlResult<T>(env:Env,path:string,init:RequestInit={}) {
+  const token=required(env.CLOUDFLARE_CONTROL_TOKEN,"CLOUDFLARE_CONTROL_TOKEN");
+  const response=await fetch(`${CF_API}${path}`,{
+    ...init,
+    headers:{authorization:`Bearer ${token}`,...(init.body?{"content-type":"application/json"}:{}),...(init.headers||{})},
+  });
+  const text=await response.text();
+  let payload:CfEnvelope<T>|null=null;
+  try{payload=text?JSON.parse(text) as CfEnvelope<T>:null;}catch{payload=null;}
+  if(!response.ok||payload?.success===false){
+    const detail=payload?.errors?.map(item=>item.message).filter(Boolean).join(" · ")||text.slice(0,300)||`HTTP_${response.status}`;
+    throw new Error(`QUEUE_CONTROL_HTTP_${response.status}:${detail}`);
+  }
+  return payload?.result as T;
+}
+
+export async function reconcileQueueConsumerPolicy(env:Env,input:{force?:boolean}={}) {
+  const accountId=required(env.CLOUDFLARE_ACCOUNT_ID,"CLOUDFLARE_ACCOUNT_ID");
+  const queueName=required(env.CORVO_QUEUE_NAME,"CORVO_QUEUE_NAME");
+  const workerName=required(env.CORVO_WORKER_NAME,"CORVO_WORKER_NAME");
+  const dlqName=required(env.CORVO_DLQ_NAME,"CORVO_DLQ_NAME");
+
+  if(!input.force){
+    const marker=await env.DB.prepare("SELECT value FROM v2_schema_meta WHERE key='queue_consumer_policy'").first<{value:string}>().catch(()=>null);
+    if(marker?.value===QUEUE_POLICY_VERSION){
+      return {ok:true,policyVersion:QUEUE_POLICY_VERSION,cached:true,desiredSettings:DESIRED_QUEUE_CONSUMER_SETTINGS};
+    }
+  }
+
+  const queues=await cfControlResult<QueueControlInfo[]>(env,`/accounts/${encodeURIComponent(accountId)}/queues?per_page=100`);
+  const queue=(queues||[]).find(item=>String(item.queue_name||"")===queueName);
+  if(!queue?.queue_id) throw new Error(`QUEUE_NOT_FOUND:${queueName}`);
+  const queueId=String(queue.queue_id);
+
+  const beforeQueueSettings={...(queue.settings||{})};
+  if(Number(beforeQueueSettings.delivery_delay||0)!==0||beforeQueueSettings.delivery_paused===true){
+    await cfControlResult<QueueControlInfo>(env,`/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}`,{
+      method:"PATCH",
+      body:JSON.stringify({queue_name:queueName,settings:{delivery_delay:0,delivery_paused:false}}),
+    });
+  }
+
+  const consumers=await cfControlResult<QueueConsumerControlInfo[]>(env,`/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers`);
+  const existing=(consumers||[]).find(item=>item.script_name===workerName&&item.consumer_id)
+    ||(consumers||[]).find(item=>item.consumer_id&&item.type!=="http_pull");
+  if((consumers||[]).some(item=>item.type==="http_pull")&&!existing) throw new Error("QUEUE_HAS_HTTP_PULL_CONSUMER");
+
+  const desired={type:"worker",script_name:workerName,dead_letter_queue:dlqName,settings:DESIRED_QUEUE_CONSUMER_SETTINGS};
+  const beforeConsumerSettings={...(existing?.settings||{})};
+  const consumer=existing?.consumer_id
+    ? await cfControlResult<QueueConsumerControlInfo>(env,`/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers/${encodeURIComponent(String(existing.consumer_id))}`,{method:"PUT",body:JSON.stringify(desired)})
+    : await cfControlResult<QueueConsumerControlInfo>(env,`/accounts/${encodeURIComponent(accountId)}/queues/${encodeURIComponent(queueId)}/consumers`,{method:"POST",body:JSON.stringify(desired)});
+
+  const now=Date.now();
+  await env.DB.prepare("INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('queue_consumer_policy',?,?)").bind(QUEUE_POLICY_VERSION,now).run();
+  return {
+    ok:true,
+    policyVersion:QUEUE_POLICY_VERSION,
+    cached:false,
+    queue:{name:queueName,id:queueId,before:beforeQueueSettings,deliveryDelay:0,deliveryPaused:false},
+    consumer:{id:consumer?.consumer_id||existing?.consumer_id||null,scriptName:workerName,before:beforeConsumerSettings,settings:consumer?.settings||DESIRED_QUEUE_CONSUMER_SETTINGS},
+  };
+}
+
 type MigrationPayload = { version?:string; schemaVersion?:string; items?:Array<{name:string;sql:string;checksum?:string}> };
 
 const LEGACY_DESTRUCTIVE_MIGRATIONS = new Set([

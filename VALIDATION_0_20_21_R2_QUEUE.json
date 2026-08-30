@@ -1,0 +1,19 @@
+{
+  "checkpoint": "0.20.21",
+  "validation": "PASS",
+  "checks": {
+    "bundle_version_export": true,
+    "core_version": true,
+    "audit_no_compound_union": true,
+    "audit_no_reference_db_batch": true,
+    "audit_independent_sources": true,
+    "audit_isolated_failure": true,
+    "queue_policy_v2": true,
+    "queue_zero_wait": true,
+    "queue_autoscaling": true,
+    "queue_reconcile_route": true,
+    "parallel_consumer": true,
+    "http_400_not_transient": true
+  },
+  "failed": []
+}

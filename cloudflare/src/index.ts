@@ -30,7 +30,7 @@ import { reconcileR2Catalog } from "./core/r2-catalog-sync";
 import { addCandidatesToMaterializationItem, addMaterializationItems, assetsForQa, cancelMaterializationBatch, cleanMaterializationTemporaries, createContinuousMaterializationQueue, getMaterializationBatchStatus, getMaterializationItemStatus, materializeBatchCompat, registerMaterializationQa } from "./core/materialization-compat";
 import { getAssetExportLink, processAssetExportJob, queueAssetExport, serveAssetExport } from "./core/asset-exports";
 import { dataHealth } from "./core/data-health";
-import { applyMigrationsFromApp, rotateAppKey, selfUpdateCore } from "./core/control-plane";
+import { applyMigrationsFromApp, reconcileQueueConsumerPolicy, rotateAppKey, selfUpdateCore } from "./core/control-plane";
 import { executeFactoryZero, factoryZeroStatus } from "./core/factory-zero";
 import { maintenanceStatus, runPendingMaintenance } from "./core/maintenance";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
@@ -69,7 +69,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.19", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.21", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -129,7 +129,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.19",
+        version:"0.20.21",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -138,6 +138,7 @@ export default {
     else if (url.pathname === "/health" && request.method === "GET") { ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined)); response = json(await health(env)); }
     else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
     else if (url.pathname === "/control/apply-migrations" && request.method === "POST") response = json(await applyMigrationsFromApp(env));
+    else if (url.pathname === "/control/reconcile-queue-consumer" && request.method === "POST") { const body=await request.json().catch(()=>({})) as {force?:boolean}; response = json(await reconcileQueueConsumerPolicy(env,{force:Boolean(body.force)})); }
     else if (url.pathname === "/control/operational-clean-once" && request.method === "POST") response = json(await operationalCleanOnce(env));
     else if (url.pathname === "/control/rotate-app-key" && request.method === "POST") response = json(await rotateAppKey(env));
     else if (url.pathname === "/control/factory-zero/status" && request.method === "GET") response = json(await factoryZeroStatus(env));
