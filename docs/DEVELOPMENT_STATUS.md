@@ -1,4 +1,4 @@
-# Development Status — Corvo Library V2 0.20.2
+# Development Status — Corvo Library V2 0.20.3
 
 ## Factory Zero
 
@@ -9,10 +9,10 @@
 - importações/candidatas/históricos: 0;
 - settings/fontes/perfis/políticas/capacidades recuperadas: 0;
 - infraestrutura persistente D1/R2/Worker: preservada;
-- schema: 2.12.0;
+- schema: 2.13.0;
 - foreign-key violations: 0.
 
-A migration `9012_v2_factory_zero_assets.sql` roda também sobre uma instalação 0.20/0.20.1 já publicada, portanto remove registros que tenham permanecido no D1 vivo mesmo quando migrações de limpeza anteriores já estavam marcadas como aplicadas.
+A 0.20.3 não depende mais apenas de uma migration antiga: o boot executa um gate de release e chama o reset Factory Zero direto do Worker uma única vez, marcado por `factory_zero_release_0_20_3=DONE`. Isso remove registros residuais mesmo que uma limpeza anterior tenha sido marcada como aplicada sem produzir efeito no D1 vivo.
 
 ## R2
 

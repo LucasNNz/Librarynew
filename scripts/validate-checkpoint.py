@@ -15,7 +15,7 @@ EXPECTED = {
     "all_universes": 0,
     "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.12.0",
+    "schema_version": "2.13.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
@@ -340,7 +340,7 @@ def main():
             "v2_download_packages": int(q1(conn, "SELECT COUNT(*) FROM v2_download_packages") or 0),
             "operational_policies": int(q1(conn, "SELECT COUNT(*) FROM operational_policies") or 0),
             "factory_zero_marker": int(q1(conn, "SELECT COUNT(*) FROM v2_schema_meta WHERE key='data_baseline' AND value='FACTORY_ZERO'") or 0),
-            "factory_zero_r2_purge": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key='PURGE_FACTORY_ZERO_R2_0_20_2' AND status IN ('PENDING','RUNNING','FAILED','DONE')") or 0),
+            "factory_zero_r2_purge": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key='PURGE_FACTORY_ZERO_R2_0_20_3' AND status IN ('PENDING','RUNNING','FAILED','DONE')") or 0),
             "r2_purge_jobs": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key LIKE 'PURGE_%' AND status IN ('PENDING','RUNNING','FAILED')") or 0),
         }
         for key in ["automatic_projects","automatic_project_items","automatic_project_files","supervisor_plans","worker_project_items","v2_download_packages"]:

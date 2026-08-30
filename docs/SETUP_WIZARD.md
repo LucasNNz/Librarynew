@@ -1,4 +1,4 @@
-# Assistente de infraestrutura — Corvo Library V2 0.20.2
+# Assistente de infraestrutura — Corvo Library V2 0.20.3
 
 ## Objetivo
 
@@ -13,9 +13,9 @@ A configuração normal acontece **inteiramente pela interface web**. O usuário
 5. Aguarde D1, R2, Queue e Controle ficarem `ok`.
 6. O manifesto é salvo como `LOCKED` automaticamente.
 
-## Estado 0.20.2
+## Estado 0.20.3
 
-A atualização 0.20.2 aplica uma única migration **FACTORY_ZERO** para remover qualquer catálogo/histórico recuperado que ainda exista no D1. Ela preserva o perfil de infraestrutura e o bucket R2; depois desse reset, novos assets entram somente por importação/coleta real.
+A atualização 0.20.3 aplica uma única migration **FACTORY_ZERO** para remover qualquer catálogo/histórico recuperado que ainda exista no D1. Ela preserva o perfil de infraestrutura e o bucket R2; depois desse reset, novos assets entram somente por importação/coleta real.
 
 ## O que o app faz
 

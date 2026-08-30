@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.2";
+const EXPECTED_CORE_VERSION = "0.20.3";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -234,6 +234,8 @@ export default function Home() {
   const [mcpCopied, setMcpCopied] = useState<""|"url"|"key"|"bundle">("");
   const [mcpRotateBusy, setMcpRotateBusy] = useState(false);
   const [mcpMessage, setMcpMessage] = useState("");
+  const [releaseGateState, setReleaseGateState] = useState<"idle"|"running"|"done"|"error">("idle");
+  const [releaseGateMessage, setReleaseGateMessage] = useState("");
 
   const currentView = active === "Assets" ? assetView
     : active === "Projetos" ? projectView
@@ -534,6 +536,62 @@ export default function Home() {
     }
   }, [candidateState]);
 
+  const enforceFactoryZeroRelease = useCallback(async () => {
+    if (!readBrowserConnection() || releaseGateState === "running") return;
+    setReleaseGateState("running");
+    setReleaseGateMessage("Preparando Factory Zero 0.20.3…");
+    setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]);
+    setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
+    try {
+      let probe = await fetch("/api/health", { cache:"no-store" });
+      if (!probe.ok) throw new Error(`HEALTH_HTTP_${probe.status}`);
+      let raw = await probe.json();
+      let version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+      if (version !== EXPECTED_CORE_VERSION) {
+        setReleaseGateMessage(`Atualizando Core ${version || "antigo"} → ${EXPECTED_CORE_VERSION}…`);
+        const update = await fetch("/api/control/update-core", { method:"POST" });
+        const updateValue = await update.json().catch(()=>({}));
+        if (!update.ok) throw new Error(updateValue?.error || `CORE_UPDATE_HTTP_${update.status}`);
+        let ready = false;
+        for (let attempt=0; attempt<30; attempt+=1) {
+          await new Promise(resolve=>setTimeout(resolve, attempt===0 ? 900 : 1300));
+          probe = await fetch("/api/health", { cache:"no-store" });
+          if (!probe.ok) continue;
+          raw = await probe.json();
+          version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+          if (version === EXPECTED_CORE_VERSION) { ready = true; break; }
+        }
+        if (!ready) throw new Error(`CORE_UPDATE_TIMEOUT:${version || "unknown"}`);
+      }
+
+      setReleaseGateMessage("Aplicando schema e reset de release…");
+      const migrationResponse = await fetch("/api/control/apply-migrations", { method:"POST" });
+      const migration = await migrationResponse.json().catch(()=>({}));
+      if (!migrationResponse.ok) throw new Error(migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
+
+      const statusResponse = await fetch("/api/control/factory-zero/status", { cache:"no-store" });
+      const statusValue = await statusResponse.json().catch(()=>({}));
+      if (!statusResponse.ok) throw new Error(statusValue?.error || `FACTORY_ZERO_STATUS_HTTP_${statusResponse.status}`);
+      if (statusValue?.required) {
+        setReleaseGateMessage("Limpando dados antigos do D1 e resíduos Corvo do R2…");
+        const resetResponse = await fetch("/api/control/factory-zero", {
+          method:"POST", headers:{"content-type":"application/json"},
+          body:JSON.stringify({confirm:"FACTORY_ZERO_0_20_3"}),
+        });
+        const reset = await resetResponse.json().catch(()=>({}));
+        if (!resetResponse.ok) throw new Error(reset?.error || `FACTORY_ZERO_HTTP_${resetResponse.status}`);
+        if (Number(reset?.after?.counts?.assets || 0) !== 0 || Number(reset?.after?.counts?.projects || 0) !== 0) throw new Error("FACTORY_ZERO_VERIFICATION_FAILED");
+      }
+
+      setReleaseGateMessage("Factory Zero confirmado: 0 assets · 0 projetos.");
+      setReleaseGateState("done");
+      await Promise.all([refreshHealth(), refreshStats(), fetchCatalog(null,false), refreshRecords("Projetos")]);
+    } catch (error) {
+      setReleaseGateState("error");
+      setReleaseGateMessage(error instanceof Error ? error.message : "FACTORY_ZERO_RELEASE_GATE_FAILED");
+    }
+  }, [releaseGateState, refreshHealth, refreshStats, fetchCatalog, refreshRecords]);
+
   useEffect(() => {
     const dispose = installCorvoFetchBridge();
     setLocalConnection(readBrowserConnection());
@@ -543,6 +601,11 @@ export default function Home() {
   useEffect(() => {
     void Promise.all([refreshHealth(), refreshStats()]);
   }, [refreshHealth, refreshStats]);
+
+  useEffect(() => {
+    if (!localConnection || !health?.core.ok || releaseGateState !== "idle") return;
+    void enforceFactoryZeroRelease();
+  }, [localConnection, health?.core.ok, releaseGateState, enforceFactoryZeroRelease]);
 
   useEffect(() => {
     if (active !== "Assets" || assetView === "Importar & R2") return;
@@ -895,10 +958,11 @@ Tudo é configurado pela própria tela Configurações.
     <section className="workspace">
       <header className="topbar topbarV18">
         <div />
-        <div className="topActions"><button className="roundAction" aria-label="Notificações"><UiIcon name="bell" size={16}/></button><span className={`systemPill ${health?.core.ok ? "live" : "warn"}`}><i />Sistema operacional <b>{health?.core.ok ? "Saudável" : coreState}</b></span></div>
+        <div className="topActions"><button className="topMcpButton" onClick={openMcpConnection}>↗ MCP</button><button className="roundAction" aria-label="Notificações"><UiIcon name="bell" size={16}/></button><span className={`systemPill ${health?.core.ok ? "live" : "warn"}`}><i />Sistema operacional <b>{health?.core.ok ? "Saudável" : coreState}</b></span></div>
       </header>
 
       <div className="content contentV18">
+        {localConnection && releaseGateState !== "done" && <div className={`releaseGateBanner ${releaseGateState}`}><div><strong>{releaseGateState === "error" ? "Factory Zero precisa de atenção" : "Preparando biblioteca limpa"}</strong><span>{releaseGateMessage || "Verificando Core, D1 e estado da release…"}</span></div>{releaseGateState === "error" && <button className="primary" onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button>}</div>}
         {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <div className="titleActions"><button className="setupButton mcpConnectButton" onClick={openMcpConnection}>↗ Conectar MCP</button><button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button></div>}</div>}
 
         {active === "Visão geral" && <div className="overviewDashboard">

@@ -1,0 +1,24 @@
+{
+  "test": "0.20.3 live dirty-state factory-zero simulation",
+  "before": {
+    "assets": 1,
+    "automatic_projects": 1,
+    "v2_infrastructure_profiles": 1
+  },
+  "after": {
+    "assets": 0,
+    "automatic_projects": 0,
+    "v2_infrastructure_profiles": 1
+  },
+  "marker": "DONE",
+  "infra_preserved": true,
+  "infra": [
+    "LIVE-GATE-TEST",
+    5,
+    "LOCKED",
+    "corvoquiz-prod"
+  ],
+  "foreign_key_violations": 0,
+  "tables_deleted": 60,
+  "pass": true
+}

@@ -23,5 +23,5 @@ await build({
 });
 const source = await readFile(out, "utf8");
 const target = path.join(root, "lib", "generated-core-bundle.ts");
-await writeFile(target, `// AUTO-GENERATED. DO NOT EDIT.\nexport const CORE_WORKER_BUNDLE_VERSION: string = \"0.20.2\";\nexport const CORE_WORKER_BUNDLE: string = ${JSON.stringify(source)};\n`, "utf8");
+await writeFile(target, `// AUTO-GENERATED. DO NOT EDIT.\nexport const CORE_WORKER_BUNDLE_VERSION: string = \"0.20.3\";\nexport const CORE_WORKER_BUNDLE: string = ${JSON.stringify(source)};\n`, "utf8");
 console.log(`Core Worker bundle embedded: ${source.length} bytes`);

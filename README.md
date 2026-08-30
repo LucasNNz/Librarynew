@@ -1,8 +1,8 @@
-# Corvo Library V2 — Checkpoint 0.20.2
+# Corvo Library V2 — Checkpoint 0.20.3
 
 ## Factory Zero real
 
-Este checkpoint foi preparado para uma nova Library. A migration `9012_v2_factory_zero_assets.sql` elimina qualquer conteúdo residual do D1 vivo mesmo quando as migrations de limpeza anteriores já foram executadas.
+Este checkpoint foi preparado para uma nova Library. A 0.20.3 adiciona um **gate de release ao boot**: atualiza o Core quando necessário, aplica as migrations e executa um reset Factory Zero direto/idempotente no D1 uma única vez. Isso cobre inclusive o caso em que uma migration antiga já estava marcada como aplicada, mas os registros `PROJ-RECOVER-*`/assets continuavam no D1 vivo.
 
 Estado esperado após a atualização:
 
@@ -33,7 +33,7 @@ Depois do reset, a primeira mídia real entra pela Library. O fluxo 0.20 continu
 
 ## Conectar MCP
 
-Em **Configurações → Conectar MCP** existe um centro próprio para o GPT/cliente MCP:
+O botão **↗ MCP** fica visível no topo da aplicação em qualquer aba; o mesmo centro também permanece em **Configurações → Conectar MCP**:
 
 - URL `https://<worker>.workers.dev/mcp` pronta para copiar;
 - chave `CORVO_APP_KEY` pronta para copiar como Bearer;
@@ -45,8 +45,8 @@ A rotação troca o secret no Worker através da API oficial de Workers Secrets;
 
 ## Gates
 
-- Checkpoint: 0.20.2;
-- Schema: 2.12.0;
+- Checkpoint: 0.20.3;
+- Schema: 2.13.0;
 - Validation: PASS;
 - TypeScript frontend: PASS;
 - TypeScript Worker: PASS;

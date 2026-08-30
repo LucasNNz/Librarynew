@@ -31,6 +31,7 @@ import { addCandidatesToMaterializationItem, addMaterializationItems, assetsForQ
 import { getAssetExportLink, processAssetExportJob, queueAssetExport, serveAssetExport } from "./core/asset-exports";
 import { dataHealth } from "./core/data-health";
 import { applyMigrationsFromApp, rotateAppKey, selfUpdateCore } from "./core/control-plane";
+import { executeFactoryZero, factoryZeroStatus } from "./core/factory-zero";
 import { maintenanceStatus, runPendingMaintenance } from "./core/maintenance";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
@@ -63,7 +64,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.2", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.3", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -100,6 +101,8 @@ export default {
     else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
     else if (url.pathname === "/control/apply-migrations" && request.method === "POST") response = json(await applyMigrationsFromApp(env));
     else if (url.pathname === "/control/rotate-app-key" && request.method === "POST") response = json(await rotateAppKey(env));
+    else if (url.pathname === "/control/factory-zero/status" && request.method === "GET") response = json(await factoryZeroStatus(env));
+    else if (url.pathname === "/control/factory-zero" && request.method === "POST") { const body=await request.json() as {confirm?:string}; response = json(await executeFactoryZero(env,String(body.confirm||""))); }
     else if (url.pathname === "/data-health" && request.method === "GET") response = json(await dataHealth(env));
     else if (url.pathname === "/maintenance" && request.method === "GET") response = json(await maintenanceStatus(env));
     else if (url.pathname === "/recovery/d1-structure" && request.method === "POST") response = json(await writeD1StructureManifest(env,"MANUAL_REFRESH",null));
