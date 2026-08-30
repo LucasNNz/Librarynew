@@ -25,6 +25,7 @@ async function allReferences(env: Env) {
     UNION ALL SELECT 'imports',id,r2_key FROM imports WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
     UNION ALL SELECT 'materialization_files',id,r2_key FROM materialization_files WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
     UNION ALL SELECT 'v2_ingest_candidates',id,r2_key FROM v2_ingest_candidates WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>''
+    UNION ALL SELECT 'v2_recovery_events',MIN(id) AS id,r2_key FROM v2_recovery_events WHERE r2_key IS NOT NULL AND TRIM(r2_key)<>'' GROUP BY r2_key
   `).all<ReferenceRow>();
   return result.results || [];
 }

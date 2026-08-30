@@ -1,45 +1,54 @@
-# Development Status — Corvo Library V2 0.19.0
+# Development Status — Corvo Library V2 0.20.0
 
-## Clean Zero 0.19
+## Clean Zero
 
-- catálogo recuperado removido do bootstrap: concluído;
-- migration de limpeza do D1 existente: concluída;
-- assets/usos/projetos/candidatas/execuções/logs antigos: 0;
-- estados V2 transitórios antigos: 0;
-- configurações persistentes: preservadas;
-- manifesto de infraestrutura: preservado e não mutado pela migration;
-- R2: **nenhuma ação de purge programada**; bucket já foi limpo externamente;
-- marker: `CLEAN_ZERO_BASELINE/DONE`, `r2_action=NONE`;
-- bootstrap novo: `CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql.gz`;
+- baseline de dados recuperados: 0;
+- configuração persistente e infraestrutura: preservadas;
+- R2 purge: nenhum agendamento;
 - schema: 2.10.0;
 - foreign-key violations: 0.
 
-## UI 0.18 mantida
+## Importação / R2
 
-- dashboard Visão geral com rede SVG React entre agentes e projetos;
-- ícones vetoriais e marca Corvo em SVG inline;
-- sidebar reduzida a seis módulos;
-- Assets consolidado com Catálogo/Pendentes/Rejeitados;
-- responsividade revisada.
+- múltiplos lotes ZIP pela UI: concluído;
+- upload direto navegador → Worker/R2: concluído;
+- teto de lote: 48 MiB;
+- ID estável por SHA-256: concluído;
+- deduplicação de reimportação: concluída;
+- política CONFIRMADO/GENERICO → Catálogo: concluída;
+- política CONFIRMADO_MEDIO/REVISAR_UNIVERSO → Pendentes: concluída;
+- SHA manifesto × conteúdo real: conferido pelo importador;
+- metadata de recuperação no R2: concluída;
+- remoção do ZIP de transporte: concluída;
+- reconciliação paginada R2 × D1: concluída;
+- reconstrução D1 a partir de metadata R2: concluída;
+- arquivo ausente no R2: apenas sinalizado, sem substituição silenciosa.
 
-## Núcleo
+## Pacote inicial preparado
 
-- D1 + R2 + Queue: mantidos;
-- setup web autossuficiente: mantido;
-- persistência de configuração entre deploys: protegida;
-- MCP: 244 tools registradas, sem regressão;
-- heartbeats Worker/Supervisor/Operação: mantidos;
-- recovery manifests: passam a ser recriados a partir das novas importações.
+- 792 mídias importáveis;
+- 22 lotes;
+- maior lote: ~19,98 MiB;
+- 672 Catálogo;
+- 120 Pendentes;
+- 9 Quarentena fora da carga;
+- SHA-256 de todas as 792 mídias conferido contra o manifesto.
+
+## UI
+
+- Assets: Catálogo / Pendentes / Rejeitados / Importar & R2;
+- progresso lote a lote;
+- histórico de importações;
+- estado R2/D1 e contadores de inconsistência;
+- catálogo segue separado da manutenção física do storage.
 
 ## Gates
 
-- Clean-zero data gate: PASS;
-- D1 integrity: PASS;
-- FK violations: 0;
-- configuração preservada: PASS;
-- R2 purge scheduled: 0;
-- V2 logical orphans: 0;
+- Validation checkpoint: PASS;
 - Structural TypeScript — Core: PASS;
 - Structural TypeScript — Frontend: PASS;
-- MCP compatibility: PASS;
-- gates vivos de Vercel/Cloudflare continuam dependentes do ambiente implantado.
+- MCP unique tools: 244;
+- clean-zero: PASS;
+- erros: 0;
+- `next build`: gate externo sem dependências instaladas no pacote original;
+- Wrangler/live Cloudflare: gate externo do ambiente implantado.

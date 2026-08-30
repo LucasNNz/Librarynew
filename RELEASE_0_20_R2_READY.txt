@@ -1,0 +1,26 @@
+CORVO LIBRARY V2 — CHECKPOINT 0.20.0 R2 READY
+
+Este checkpoint parte do CLEAN ZERO do 0.19 e adiciona a carga inicial segura do acervo.
+
+PRINCIPAIS GARANTIAS
+- Importação multi-lote pela UI em Assets > Importar & R2.
+- 48 MiB máximo por ZIP; pacote inicial preparado em 22 lotes de até ~19,98 MiB.
+- SHA-256 real calculado pelo Worker; Asset ID estável derivado do hash.
+- Reimportação do mesmo binário não cria outro asset.
+- Metadata de recuperação persistida junto de cada objeto em assets/ no R2.
+- Reconciliação paginada R2 x D1, com reparo R2 -> D1 quando há evidência.
+- Referência D1 sem arquivo físico é sinalizada; conteúdo nunca é inventado.
+- ZIP temporário removido do R2 após materialização.
+- CONFIRMADO/GENERICO -> Catálogo; CONFIRMADO_MEDIO/REVISAR_UNIVERSO -> Pendentes.
+- 9 itens de QUARENTENA ficam fora da carga principal.
+
+GATES
+- validate-checkpoint: PASS
+- frontend structural TypeScript: PASS
+- worker structural TypeScript: PASS
+- MCP unique tools: 244
+- validation errors: 0
+- Next real build: EXTERNAL_GATE (dependências não vieram no ZIP e acesso ao registry expirou nesta execução)
+- Wrangler/live R2-D1: EXTERNAL_GATE do ambiente implantado
+
+Consulte docs/IMPORT_R2_SYNC_0_20.md e docs/VALIDATION_REPORT_0_20.json.

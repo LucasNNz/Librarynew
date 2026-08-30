@@ -26,6 +26,7 @@ import { addProjectQaEvent, getProjectFileLink, listProjectFiles, readProjectFil
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources, processCollectionJob } from "./core/collection";
 import { importZipByUrl, prepareZipUpload, processZipImport, syncR2Uncataloged } from "./core/imports-v2";
+import { reconcileR2Catalog } from "./core/r2-catalog-sync";
 import { addCandidatesToMaterializationItem, addMaterializationItems, assetsForQa, cancelMaterializationBatch, cleanMaterializationTemporaries, createContinuousMaterializationQueue, getMaterializationBatchStatus, getMaterializationItemStatus, materializeBatchCompat, registerMaterializationQa } from "./core/materialization-compat";
 import { getAssetExportLink, processAssetExportJob, queueAssetExport, serveAssetExport } from "./core/asset-exports";
 import { dataHealth } from "./core/data-health";
@@ -62,7 +63,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.19.0", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.0", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -336,6 +337,7 @@ export default {
     else if (url.pathname === "/imports/zip/url" && request.method === "POST") { const body=await request.json() as {url:string;fileName:string;manifestText?:string}; const value=await importZipByUrl(env,body); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:201}); }
     else if (/^\/imports\/[^/]+\/process$/.test(url.pathname) && request.method === "POST") { const importId=decodeURIComponent(url.pathname.split("/")[2]); const value=await processZipImport(env,importId); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:500}):json(value); }
     else if (url.pathname === "/storage/sync-r2" && request.method === "GET") response=json(await syncR2Uncataloged(env,{prefix:url.searchParams.get("prefix")||undefined,limit:Number(url.searchParams.get("limit")||1000)}));
+    else if (url.pathname === "/storage/sync-r2" && request.method === "POST") { const body=await request.json() as {repair?:boolean;maxObjects?:number;maxRepairs?:number}; response=json(await reconcileR2Catalog(env,body)); }
     else if (url.pathname === "/asset-exports" && request.method === "POST") { const body=await request.json() as {assetIds?:string[];name?:string;operationId?:string}; const value=await queueAssetExport(env,{assetIds:body.assetIds||[],name:body.name,operationId:body.operationId}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:202}); }
     else if (/^\/asset-exports\/[^/]+\/link$/.test(url.pathname) && request.method === "GET") { const exportId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getAssetExportLink(request,env,exportId,Number(url.searchParams.get("ttlMinutes")||30)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/materialization/batches" && request.method === "POST") { const body=await request.json() as {batchId?:string;project:string;items?:Parameters<typeof materializeBatchCompat>[1]["items"]}; response=json(body.items?.length?await materializeBatchCompat(env,{batchId:body.batchId,project:body.project,items:body.items}):await createContinuousMaterializationQueue(env,{batchId:body.batchId,project:body.project}),{status:202}); }

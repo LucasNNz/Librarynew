@@ -127,7 +127,7 @@ export async function catalogStats(env: Env) {
       COALESCE(SUM(use_count),0) AS uses,
       SUM(CASE WHEN use_count > 1 THEN 1 ELSE 0 END) AS reused
       FROM assets`),
-    env.DB.prepare("SELECT COUNT(DISTINCT universe) AS n, COUNT(DISTINCT CASE WHEN status='Aprovado' THEN universe END) AS approved_n FROM assets WHERE TRIM(universe) <> ''"),
+    env.DB.prepare("SELECT COUNT(DISTINCT universe) AS n, COUNT(DISTINCT CASE WHEN status='Aprovado' THEN universe END) AS approved_n FROM assets WHERE TRIM(universe) <> '' AND LOWER(TRIM(universe)) <> 'sem universo'"),
   ]);
   const row = (totals.results?.[0] || {}) as Record<string, unknown>;
   const uni = (universes.results?.[0] || {}) as Record<string, unknown>;

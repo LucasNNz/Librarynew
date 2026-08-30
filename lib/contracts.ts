@@ -222,3 +222,21 @@ export type MaterializationStats = {
   operationStates: Array<Record<string,unknown>>;
   hostHealth: Record<string,unknown>;
 };
+
+export type R2CatalogSync = {
+  ok: boolean;
+  prefix: string;
+  scannedR2: number;
+  d1Assets: number;
+  referencedR2: number;
+  uncatalogedBefore: number;
+  repaired: number;
+  uncatalogedAfter: number;
+  missingInR2: number;
+  inventoryTruncated: boolean;
+  repairLimitReached: boolean;
+  repairedItems: Array<{assetId:string;key:string;mode:string}>;
+  uncataloged: Array<{key:string;size:number}>;
+  missing: Array<{id:string;r2_key:string;sha256:string|null}>;
+  warnings: string[];
+};

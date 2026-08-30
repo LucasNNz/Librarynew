@@ -1,9 +1,9 @@
 {
-  "checkpoint": "0.19.0",
+  "checkpoint": "0.20.0",
   "validation": "PASS",
-  "duration_seconds": 2.639,
+  "duration_seconds": 2.634,
   "restore": {
-    "path": "/mnt/data/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql",
+    "path": "/mnt/data/corvo_work/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql",
     "sha256": "0e509963f4c63fa2d28d4833b116595b1f542c9bbe06bc4446ab7ef0ac0f89fc",
     "migrations": [
       "9000_v2_core.sql",
@@ -261,8 +261,8 @@
     ]
   },
   "source": {
-    "files_checked": 95,
-    "relative_imports_checked": 210,
+    "files_checked": 99,
+    "relative_imports_checked": 217,
     "missing_relative_imports": [],
     "forbidden_legacy_hits": {
       "@libsql": [],

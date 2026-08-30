@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, UniverseFacet } from "../lib/contracts";
+import type { Asset, AutomaticProject, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
 import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
 type Health = {
@@ -47,7 +47,8 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.19.0";
+const EXPECTED_CORE_VERSION = "0.20.0";
+const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
 
@@ -176,6 +177,13 @@ export default function Home() {
   const [requests, setRequests] = useState<LibraryRequest[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [imports, setImports] = useState<ImportRecord[]>([]);
+  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const [importProgress, setImportProgress] = useState<Array<{name:string;state:string;detail:string}>>([]);
+  const [r2CatalogSync, setR2CatalogSync] = useState<R2CatalogSync | null>(null);
+  const [r2SyncBusy, setR2SyncBusy] = useState(false);
+  const [r2SyncMessage, setR2SyncMessage] = useState("");
   const [recordLoading, setRecordLoading] = useState(false);
   const [requestProject, setRequestProject] = useState("");
   const [requestItems, setRequestItems] = useState("");
@@ -335,6 +343,77 @@ export default function Home() {
     } finally { setRecordLoading(false); }
   }, []);
 
+  async function runR2CatalogSync(repair = true) {
+    setR2SyncBusy(true);
+    setR2SyncMessage(repair ? "Sincronizando catálogo com o R2…" : "Verificando R2…");
+    try {
+      const response = await fetch("/api/storage/sync-r2", {
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({repair,maxObjects:20000,maxRepairs:1000}),
+      });
+      const value = await response.json() as R2CatalogSync & {error?:string};
+      if (!response.ok) throw new Error(value.error || `HTTP_${response.status}`);
+      setR2CatalogSync(value);
+      const state = value.missingInR2 === 0 && value.uncatalogedAfter === 0 ? "R2 e D1 sincronizados" : "Sincronização requer atenção";
+      setR2SyncMessage(`${state}: ${value.repaired} reconstruído(s), ${value.uncatalogedAfter} sem catálogo, ${value.missingInR2} ausente(s) no R2.`);
+      await refreshStats();
+      return value;
+    } catch (error) {
+      setR2SyncMessage(error instanceof Error ? error.message : "R2_SYNC_FAILED");
+      return null;
+    } finally {
+      setR2SyncBusy(false);
+    }
+  }
+
+  async function importSelectedBatches() {
+    if (!importFiles.length) { setImportMessage("Selecione um ou mais lotes ZIP."); return; }
+    const oversized = importFiles.filter(file => file.size > MAX_IMPORT_ZIP_BYTES);
+    if (oversized.length) {
+      setImportMessage(`Lote acima de 48 MB: ${oversized.map(file=>file.name).join(", ")}. Use os lotes preparados para a V2.`);
+      return;
+    }
+    setImportBusy(true);
+    setImportMessage("");
+    setImportProgress(importFiles.map(file => ({name:file.name,state:"AGUARDANDO",detail:formatBytes(file.size)})));
+    let completed = 0;
+    let failures = 0;
+    for (let index = 0; index < importFiles.length; index++) {
+      const file = importFiles[index];
+      const update = (state:string, detail:string) => setImportProgress(current => current.map((item,position)=>position===index?{...item,state,detail}:item));
+      try {
+        update("PREPARANDO", "Criando upload direto para o R2");
+        const prepare = await fetch("/api/imports/zip/prepare", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({fileName:file.name}) });
+        const ticket = await prepare.json();
+        if (!prepare.ok) throw new Error(ticket.error || `PREPARE_${prepare.status}`);
+        update("ENVIANDO", `${formatBytes(file.size)} → R2`);
+        const upload = await fetch(String(ticket.uploadUrl), { method:"PUT", headers:{"content-type":"application/zip"}, body:file });
+        if (!upload.ok) throw new Error(`UPLOAD_${upload.status}`);
+        update("CONFIRMANDO", "Registrando lote no D1");
+        const confirm = await fetch(`/api/uploads/${encodeURIComponent(String(ticket.uploadId))}/confirm`, { method:"POST" });
+        const confirmed = await confirm.json();
+        if (!confirm.ok) throw new Error(confirmed.error || `CONFIRM_${confirm.status}`);
+        const importId = String(confirmed.importId || "");
+        if (!importId) throw new Error("IMPORT_ID_MISSING");
+        update("PROCESSANDO", `${importId} · extraindo e catalogando`);
+        const process = await fetch(`/api/imports/${encodeURIComponent(importId)}/process`, { method:"POST" });
+        const result = await process.json();
+        if (!process.ok) throw new Error(result.error || `PROCESS_${process.status}`);
+        completed++;
+        update("CONCLUÍDO", `${Number(result.assets_catalogados||0)} novos · ${Number(result.assets_atualizados||0)} atualizados · ${Number(result.aprovados||0)} catálogo · ${Number(result.pendentes||0)} pendentes`);
+      } catch (error) {
+        failures++;
+        update("ERRO", error instanceof Error ? error.message : "IMPORT_FAILED");
+      }
+    }
+    await Promise.all([refreshRecords("Importações"), refreshStats()]);
+    const sync = await runR2CatalogSync(true);
+    setImportMessage(`${completed}/${importFiles.length} lote(s) concluído(s)${failures?` · ${failures} falha(s)`:""}${sync?.ok?" · R2/D1 verificados":""}.`);
+    if (!failures) setImportFiles([]);
+    setImportBusy(false);
+  }
+
   const refreshPolicies = useCallback(async () => {
     const [workspaceResponse,telemetryResponse]=await Promise.all([fetch("/api/policies/workspace",{cache:"no-store"}),fetch("/api/policies/telemetry",{cache:"no-store"})]);
     if(workspaceResponse.ok)setPolicyWorkspace(await workspaceResponse.json());
@@ -461,15 +540,16 @@ export default function Home() {
   }, [refreshHealth, refreshStats]);
 
   useEffect(() => {
-    if (active !== "Assets") return;
+    if (active !== "Assets" || assetView === "Importar & R2") return;
     const desired = assetView === "Catálogo" ? "APPROVED" : assetView === "Pendentes" ? "PENDING" : "REJECTED";
     if (status !== desired) setStatus(desired);
   }, [active, assetView, status]);
 
   useEffect(() => {
+    if (active === "Assets" && assetView === "Importar & R2") return;
     const timer = setTimeout(() => void fetchCatalog(null, false), 280);
     return () => clearTimeout(timer);
-  }, [fetchCatalog]);
+  }, [active, assetView, fetchCatalog]);
 
   useEffect(() => {
     if (currentView === "Visão geral") {
@@ -477,6 +557,7 @@ export default function Home() {
     }
     if (currentView === "Inbox candidatas") void refreshCandidates();
     if (["Projetos","Solicitações","Lotes","Importações"].includes(currentView)) void refreshRecords(currentView);
+    if (currentView === "Importar & R2") void refreshRecords("Importações");
     if (currentView === "Operação") void refreshOperations();
     if (currentView === "Políticas") void refreshPolicies();
     if (currentView === "Estoque & giro") void refreshStock();
@@ -500,7 +581,7 @@ export default function Home() {
   const operationSuccessRate = completedOps + failedOps > 0 ? Math.round((completedOps / (completedOps + failedOps)) * 100) : 100;
   const activeWorkerCount = dispatcherHealth?.sessions?.length || 0;
   const pageDescription = active === "Visão geral" ? "A fábrica Corvo em um único painel: agentes, projetos, fila, assets e atividade recente."
-    : active === "Assets" ? "Biblioteca visual organizada em Catálogo, Pendentes e Rejeitados, com ações reais em lote."
+    : active === "Assets" ? "Biblioteca visual com catálogo, revisão, importação em lotes e sincronização verificável com o R2."
     : active === "Projetos" ? "Projetos, solicitações, lotes e importações reunidos no mesmo fluxo de produção."
     : active === "Execuções" ? "Coleta, materialização, Inbox e operação em tempo real com heartbeat e Queue."
     : active === "Análise" ? "Estoque, giro, políticas e inteligência operacional da Library."
@@ -809,7 +890,7 @@ Tudo é configurado pela própria tela Configurações.
         </div>}
 
         {active === "Assets" && <>
-          <div className="moduleTabs assetTabs">{["Catálogo","Pendentes","Rejeitados"].map(item=><button key={item} className={assetView===item?"active":""} onClick={()=>{setAssetView(item);clearAssetSelection();}}><span>{item}</span><b>{item==="Catálogo"?stats.approved:item==="Pendentes"?stats.pending:stats.rejected}</b></button>)}</div>
+          <div className="moduleTabs assetTabs">{["Catálogo","Pendentes","Rejeitados","Importar & R2"].map(item=><button key={item} className={assetView===item?"active":""} onClick={()=>{setAssetView(item);clearAssetSelection();}}><span>{item}</span>{item!=="Importar & R2"&&<b>{item==="Catálogo"?stats.approved:item==="Pendentes"?stats.pending:stats.rejected}</b>}</button>)}</div>
           <section className="metricStrip">
             <div><strong>{stats.total.toLocaleString("pt-BR")}</strong><span>Total</span></div>
             <div><strong>{stats.approved.toLocaleString("pt-BR")}</strong><span>Aprovados</span></div>
@@ -819,7 +900,30 @@ Tudo é configurado pela própria tela Configurações.
             <div><strong>{formatBytes(stats.bytes)}</strong><span>Mídia catalogada</span></div>
           </section>
 
-          <section className="catalogTools">
+          {assetView === "Importar & R2" && <section className="importHub">
+            <div className="importHero">
+              <div><span className="eyebrow">ENTRADA CONTROLADA</span><h2>Importar mídia e sincronizar com R2</h2><p>Envie vários lotes ZIP de até 48 MB. Cada lote vai direto ao R2, é catalogado no D1 por SHA-256 e o arquivo ZIP de transporte é removido depois da materialização.</p></div>
+              <div className="syncStatusPill"><i className={r2CatalogSync?.ok?"live":""}/><span>{r2CatalogSync?.ok?"R2 / D1 sincronizados":r2CatalogSync?"Revisão necessária":"Ainda não verificado"}</span></div>
+            </div>
+            <div className="importGrid">
+              <div className="importDropCard">
+                <label className="zipDrop"><input type="file" multiple accept=".zip,application/zip" onChange={(event:ChangeEvent<HTMLInputElement>)=>setImportFiles(Array.from(event.target.files||[]))}/><span className="zipIcon">ZIP</span><strong>Selecionar lotes de importação</strong><small>Use os lotes CORVO_IMPORT_LOTE_*.zip · máximo 48 MB por arquivo</small></label>
+                {importFiles.length>0&&<div className="selectedImportFiles">{importFiles.map(file=><div key={`${file.name}-${file.size}`}><span><b>{file.name}</b><small>{formatBytes(file.size)}</small></span><em className={file.size>MAX_IMPORT_ZIP_BYTES?"bad":"ok"}>{file.size>MAX_IMPORT_ZIP_BYTES?"ACIMA DO LIMITE":"PRONTO"}</em></div>)}</div>}
+                <div className="importActions"><button className="primary" disabled={importBusy||!importFiles.length} onClick={()=>void importSelectedBatches()}>{importBusy?"Importando lotes…":`Importar ${importFiles.length||""} lote(s)`}</button><button disabled={importBusy||!importFiles.length} onClick={()=>{setImportFiles([]);setImportProgress([]);setImportMessage("");}}>Limpar</button></div>
+                {importMessage&&<div className={importMessage.includes("falha")||importMessage.includes("ERRO")||importMessage.includes("acima")?"formError":"setupMessage"}>{importMessage}</div>}
+              </div>
+              <div className="r2SyncCard">
+                <span className="eyebrow">RECONCILIAÇÃO CRUZADA</span><h3>R2 físico × catálogo D1</h3><p>Cruza todos os objetos em <code>assets/</code> com o catálogo D1. Se o D1 perder um registro, a Library reconstrói a referência usando os metadados persistidos junto da mídia; se um arquivo físico faltar, ela sinaliza sem inventar conteúdo.</p>
+                <div className="syncNumbers"><span><b>{r2CatalogSync?.scannedR2??"—"}</b>R2</span><span><b>{r2CatalogSync?.d1Assets??stats.total}</b>D1</span><span><b>{r2CatalogSync?.uncatalogedAfter??"—"}</b>sem catálogo</span><span><b>{r2CatalogSync?.missingInR2??"—"}</b>sem arquivo</span></div>
+                <button className="primary" disabled={r2SyncBusy||importBusy} onClick={()=>void runR2CatalogSync(true)}>{r2SyncBusy?"Sincronizando…":"Verificar e sincronizar agora"}</button>
+                {r2SyncMessage&&<div className={r2CatalogSync&&!r2CatalogSync.ok?"formError":"setupMessage"}>{r2SyncMessage}</div>}
+              </div>
+            </div>
+            {importProgress.length>0&&<div className="importProgressList"><header><strong>Progresso da carga</strong><span>{importProgress.filter(item=>item.state==="CONCLUÍDO").length}/{importProgress.length} concluídos</span></header>{importProgress.map(item=><div key={item.name}><span><b>{item.name}</b><small>{item.detail}</small></span><em className={item.state==="ERRO"?"error":item.state==="CONCLUÍDO"?"done":"working"}>{item.state}</em></div>)}</div>}
+            <div className="recentImports"><span className="eyebrow">HISTÓRICO RECENTE</span>{recordLoading?<div className="quiet">Carregando…</div>:imports.length===0?<div className="quiet">Nenhuma importação ainda.</div>:imports.slice(0,10).map(item=><article key={item.id}><div><strong>{item.file_name}</strong><span>{formatBytes(item.size_bytes)} · {item.status}</span></div><code>{item.id}</code></article>)}</div>
+          </section>}
+
+          {assetView !== "Importar & R2" && <><section className="catalogTools">
             <label className="searchBox"><span>⌕</span><input value={query} onChange={(e: ChangeEvent<HTMLInputElement>)=>setQuery(e.target.value)} placeholder="Buscar nome, universo, personagem ou tag..." /></label>
             <select value={universe} onChange={(e: ChangeEvent<HTMLSelectElement>)=>setUniverse(e.target.value)}><option value="">Todos os universos</option>{universes.map(item => <option key={item.name} value={item.name}>{item.name} ({item.total})</option>)}</select>
             <div className={`assetViewBadge ${assetView.toLowerCase()}`}><span>VISÃO</span><strong>{assetView}</strong></div>
@@ -842,10 +946,11 @@ Tudo é configurado pela própria tela Configurações.
           {loading ? <div className="empty">Carregando catálogo…</div> : assets.length === 0 ? <div className="empty"><Mark /><strong>Nenhum asset para estes filtros</strong><span>O catálogo será lido diretamente do D1 restaurado, sem seed de produção ou snapshot intermediário.</span></div> : <>
             <div className="resultMeta"><span>{total.toLocaleString("pt-BR")} resultados</span><span>{assets.length.toLocaleString("pt-BR")} carregados</span></div>
             <div className="grid">{assets.map(asset => <article className={`card ${selectedAssets.has(asset.id)?"selected":""}`} key={asset.id}>
-              <div className="preview"><label className="assetCheck"><input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={()=>toggleAssetSelection(asset.id)} aria-label={`Selecionar ${asset.name}`}/><span>✓</span></label><span className="previewFallback">◇</span>{asset.previewUrl && <img src={asset.previewUrl} alt="" loading="lazy" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
-              <div className="cardBody"><strong>{asset.name}</strong><span>{asset.universe || "Sem universo"}{asset.subject ? ` · ${asset.subject}` : ""}</span><div>{asset.tags.slice(0,3).map(tag => <small key={tag}>{tag}</small>)}</div><footer><code>{asset.id}</code><b>{asset.uses} usos</b></footer></div>
+              <div className="preview"><label className="assetCheck"><input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={()=>toggleAssetSelection(asset.id)} aria-label={`Selecionar ${asset.name}`}/><span>✓</span></label><span className="previewFallback">◇</span>{asset.previewUrl && <img src={asset.previewUrl} alt={asset.name} loading="lazy" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
+              <div className="cardBody"><strong>{asset.name}</strong><span className="universeLine">{asset.universe || "Sem universo"}{asset.subject ? ` · ${asset.subject}` : ""}</span><div className="assetMetaLine"><i>{asset.kind}</i><i>{formatBytes(Number(asset.sizeBytes||0))}</i>{asset.qaStatus&&<i>{asset.qaStatus.replace(/_/g," ")}</i>}</div><div>{asset.tags.slice(0,3).map(tag => <small key={tag}>{tag}</small>)}</div><footer><code>{asset.id}</code><b>{asset.uses} usos</b></footer></div>
             </article>)}</div>
             {nextCursor && <div className="loadMore"><button disabled={loadingMore} onClick={() => void fetchCatalog(nextCursor, true)}>{loadingMore ? "Carregando…" : "Carregar mais"}</button></div>}
+          </>}
           </>}
         </>}
 

@@ -19,6 +19,10 @@ export type CatalogAssetInput = {
   fonte_url?: string;
   nota_operacional?: string;
   status_qa?: string;
+  /** Internal bulk-write optimization: sidecar may be written by caller and master recovery refreshed once at batch end. */
+  defer_recovery?: boolean;
+  /** Internal bulk-write optimization: avoid reading/signing the full asset response when caller only needs success. */
+  compact_response?: boolean;
 };
 
 export type UpdateAssetInput = {
@@ -105,8 +109,11 @@ export async function catalogAsset(request: Request, input: CatalogAssetInput, e
       nullable(input.nota_operacional),
       qaStatus,
     ).run();
-  await writeAssetRecoveryRecord(env, assetId, "ASSET_CATALOGED").catch(() => undefined);
-  await refreshRecoveryAfterWrite(env, "ASSET_CATALOGED", assetId);
+  if (!input.defer_recovery) {
+    await writeAssetRecoveryRecord(env, assetId, "ASSET_CATALOGED").catch(() => undefined);
+    await refreshRecoveryAfterWrite(env, "ASSET_CATALOGED", assetId);
+  }
+  if (input.compact_response) return { asset: { id:assetId } };
   return { asset: await getAsset(request, assetId, env) };
 }
 

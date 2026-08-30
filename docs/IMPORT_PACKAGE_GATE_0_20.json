@@ -1,0 +1,341 @@
+{
+  "gate": "CORVO_LIBRARY_IMPORT_R2_READY_V2_20",
+  "validation": "PASS",
+  "worker_zip_constraints": {
+    "max_zip_bytes": 50331648,
+    "max_entry_bytes": 67108864,
+    "max_uncompressed_bytes": 268435456,
+    "allowed_methods": [
+      0,
+      8
+    ]
+  },
+  "expected": {
+    "media": 792,
+    "unique_sha256": 792,
+    "approved": 672,
+    "pending": 120,
+    "batches": 22,
+    "all_universes_excluding_sem_universo": 92,
+    "approved_universes_excluding_sem_universo": 81
+  },
+  "actual": {
+    "media": 792,
+    "unique_sha256": 792,
+    "approved": 672,
+    "pending": 120,
+    "batches": 22,
+    "all_universes_excluding_sem_universo": 92,
+    "approved_universes_excluding_sem_universo": 81
+  },
+  "classification_counts": {
+    "CONFIRMADO": 597,
+    "REVISAR_UNIVERSO": 105,
+    "GENERICO": 75,
+    "CONFIRMADO_MEDIO": 15
+  },
+  "sem_universo_assets": 180,
+  "largest_batch_bytes": 20946667,
+  "all_batches_under_limit": true,
+  "sha256_all_media_verified": true,
+  "stable_ids_unique": true,
+  "batches": [
+    {
+      "file": "CORVO_IMPORT_LOTE_001.zip",
+      "zip_bytes": 14357797,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 14353205,
+      "classification_counts": {
+        "CONFIRMADO": 31,
+        "REVISAR_UNIVERSO": 5,
+        "GENERICO": 3,
+        "CONFIRMADO_MEDIO": 1
+      },
+      "sha256_zip": "8c0eba4e46c756974ff6f5dc3549a2ad24352075d7658fe3f49f25009a7edc8c"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_002.zip",
+      "zip_bytes": 17134868,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 17130262,
+      "classification_counts": {
+        "CONFIRMADO": 28,
+        "GENERICO": 3,
+        "CONFIRMADO_MEDIO": 1,
+        "REVISAR_UNIVERSO": 8
+      },
+      "sha256_zip": "b7b005f6feb3982e11a5dd4c5583f2961c6159b62f8402104c48a67534f9c1cd"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_003.zip",
+      "zip_bytes": 20860220,
+      "entries": 35,
+      "media": 34,
+      "uncompressed_bytes": 20856256,
+      "classification_counts": {
+        "CONFIRMADO": 27,
+        "GENERICO": 2,
+        "REVISAR_UNIVERSO": 5
+      },
+      "sha256_zip": "1beadd05b460baf32f68e74015d5cf7e891fbb1dc4238883ba843fb419b25696"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_004.zip",
+      "zip_bytes": 18305716,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 18301084,
+      "classification_counts": {
+        "CONFIRMADO": 32,
+        "GENERICO": 3,
+        "REVISAR_UNIVERSO": 5
+      },
+      "sha256_zip": "0cf17df8952659fe55d25604dbc793a468cdf29f601f3ca191d6fbe0a4dccc87"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_005.zip",
+      "zip_bytes": 11929729,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 11925155,
+      "classification_counts": {
+        "CONFIRMADO": 35,
+        "GENERICO": 2,
+        "REVISAR_UNIVERSO": 1,
+        "CONFIRMADO_MEDIO": 2
+      },
+      "sha256_zip": "286962acbc38c8b2d2bb9635847f987b0fb2b1ed0876dc64dd0f6fa003870f6b"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_006.zip",
+      "zip_bytes": 17768885,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 17764327,
+      "classification_counts": {
+        "CONFIRMADO": 28,
+        "GENERICO": 6,
+        "CONFIRMADO_MEDIO": 1,
+        "REVISAR_UNIVERSO": 5
+      },
+      "sha256_zip": "bb1de68e47cb2cf31f3f79b4f73eb24864e30c6a3557f0028bbda1d2cf11d74d"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_007.zip",
+      "zip_bytes": 19739275,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 19734683,
+      "classification_counts": {
+        "CONFIRMADO": 30,
+        "REVISAR_UNIVERSO": 6,
+        "CONFIRMADO_MEDIO": 3,
+        "GENERICO": 1
+      },
+      "sha256_zip": "47e2dfa6d2802277577c99e4bf6346739bd2af77b2d0a5a478d75434ede934ba"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_008.zip",
+      "zip_bytes": 15418237,
+      "entries": 26,
+      "media": 25,
+      "uncompressed_bytes": 15415239,
+      "classification_counts": {
+        "CONFIRMADO": 18,
+        "REVISAR_UNIVERSO": 7
+      },
+      "sha256_zip": "305f3432e2609d5de7e652ac2498c4b27e4aee29df2db59b6cf0ee838eeba322"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_009.zip",
+      "zip_bytes": 20847743,
+      "entries": 23,
+      "media": 22,
+      "uncompressed_bytes": 20845221,
+      "classification_counts": {
+        "REVISAR_UNIVERSO": 1,
+        "GENERICO": 2,
+        "CONFIRMADO": 18,
+        "CONFIRMADO_MEDIO": 1
+      },
+      "sha256_zip": "7a91dbad770735d0a2560d0116c9936fff668dc46ae1d196493ae98c4c98a9ba"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_010.zip",
+      "zip_bytes": 12148827,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 12144287,
+      "classification_counts": {
+        "REVISAR_UNIVERSO": 7,
+        "CONFIRMADO": 28,
+        "GENERICO": 4,
+        "CONFIRMADO_MEDIO": 1
+      },
+      "sha256_zip": "7e52fde355e64e643b1fbf9718bf51a81618aafa1fec303c49af9e2c817b667f"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_011.zip",
+      "zip_bytes": 11286884,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 11282294,
+      "classification_counts": {
+        "CONFIRMADO": 28,
+        "GENERICO": 5,
+        "REVISAR_UNIVERSO": 7
+      },
+      "sha256_zip": "a8342dc5ff0b31081ac4337755ce800a3928a742681833b24a1ce7f69f9e4743"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_012.zip",
+      "zip_bytes": 20946667,
+      "entries": 34,
+      "media": 33,
+      "uncompressed_bytes": 20942909,
+      "classification_counts": {
+        "CONFIRMADO": 19,
+        "REVISAR_UNIVERSO": 9,
+        "GENERICO": 3,
+        "CONFIRMADO_MEDIO": 2
+      },
+      "sha256_zip": "bb66281c84204ce6e8a25a2f65932f6be0d0da0010f9b111d3c844b84570971c"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_013.zip",
+      "zip_bytes": 17332227,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 17327709,
+      "classification_counts": {
+        "CONFIRMADO": 31,
+        "REVISAR_UNIVERSO": 7,
+        "GENERICO": 2
+      },
+      "sha256_zip": "63d86cdb1b6c96cb431950f0db219b2112d66316a94d3cc026d4e7f0558e7f48"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_014.zip",
+      "zip_bytes": 20863444,
+      "entries": 33,
+      "media": 32,
+      "uncompressed_bytes": 20859738,
+      "classification_counts": {
+        "CONFIRMADO": 26,
+        "GENERICO": 4,
+        "REVISAR_UNIVERSO": 2
+      },
+      "sha256_zip": "4be9e0912256841e9407ffd44e9145ca03f54d69d0313e17e8ea2e203ed669ad"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_015.zip",
+      "zip_bytes": 12583530,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 12578884,
+      "classification_counts": {
+        "CONFIRMADO": 34,
+        "REVISAR_UNIVERSO": 1,
+        "GENERICO": 5
+      },
+      "sha256_zip": "7d53be2fac13e0bc82ab2f1b231e2908e10c868070c590a2fb6e3d416124db6a"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_016.zip",
+      "zip_bytes": 20675817,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 20671231,
+      "classification_counts": {
+        "REVISAR_UNIVERSO": 6,
+        "CONFIRMADO": 31,
+        "GENERICO": 3
+      },
+      "sha256_zip": "6e440dad7acb0cfd35bdc39f1ddd77a04f9637d214bf93c0783bd04d0ff9940e"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_017.zip",
+      "zip_bytes": 16059496,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 16054934,
+      "classification_counts": {
+        "CONFIRMADO": 31,
+        "GENERICO": 4,
+        "REVISAR_UNIVERSO": 5
+      },
+      "sha256_zip": "596d91fc6d9e9c9a6a81b6d12071024fd428d50346808b142281d7b0aaf006ac"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_018.zip",
+      "zip_bytes": 20863839,
+      "entries": 33,
+      "media": 32,
+      "uncompressed_bytes": 20860197,
+      "classification_counts": {
+        "CONFIRMADO": 25,
+        "GENERICO": 6,
+        "REVISAR_UNIVERSO": 1
+      },
+      "sha256_zip": "0d31cb99b2ddbeba31df5ed5280aff3d10a7f75af3b1583c77f3113a45bc122c"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_019.zip",
+      "zip_bytes": 20723017,
+      "entries": 39,
+      "media": 38,
+      "uncompressed_bytes": 20718581,
+      "classification_counts": {
+        "CONFIRMADO": 31,
+        "GENERICO": 4,
+        "REVISAR_UNIVERSO": 3
+      },
+      "sha256_zip": "2332f852ea87942a8fb874fd7eddfb607c72f84786a3ed037b0a9620c117fecc"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_020.zip",
+      "zip_bytes": 20901313,
+      "entries": 37,
+      "media": 36,
+      "uncompressed_bytes": 20897017,
+      "classification_counts": {
+        "GENERICO": 3,
+        "CONFIRMADO": 25,
+        "REVISAR_UNIVERSO": 6,
+        "CONFIRMADO_MEDIO": 2
+      },
+      "sha256_zip": "9b57ec66033a25f0802d0259e624d87aab49f510c5ea8cf2c9177a14db1e4287"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_021.zip",
+      "zip_bytes": 15934370,
+      "entries": 41,
+      "media": 40,
+      "uncompressed_bytes": 15929862,
+      "classification_counts": {
+        "REVISAR_UNIVERSO": 5,
+        "CONFIRMADO": 27,
+        "GENERICO": 7,
+        "CONFIRMADO_MEDIO": 1
+      },
+      "sha256_zip": "21a1e2d1faf29df23dcb73dbc176f44d5b00bc04c02ef6c71560c2917dd53c9e"
+    },
+    {
+      "file": "CORVO_IMPORT_LOTE_022.zip",
+      "zip_bytes": 6839746,
+      "entries": 21,
+      "media": 20,
+      "uncompressed_bytes": 6837368,
+      "classification_counts": {
+        "CONFIRMADO": 14,
+        "REVISAR_UNIVERSO": 3,
+        "GENERICO": 3
+      },
+      "sha256_zip": "a8f50244c33887b8cb29c25cfab7494fda6816a164609188c89c98d20260b189"
+    }
+  ],
+  "warnings": [],
+  "errors": []
+}

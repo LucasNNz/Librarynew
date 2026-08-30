@@ -1,0 +1,32 @@
+{
+  "before_counts": {
+    "assets": 929,
+    "asset_usage": 1176,
+    "automatic_projects": 0,
+    "collection_candidates": 7540,
+    "worker_sessions": 10,
+    "mcp_audit": 3040
+  },
+  "after_counts": {
+    "assets": 0,
+    "asset_usage": 0,
+    "automatic_projects": 0,
+    "collection_candidates": 0,
+    "worker_sessions": 0,
+    "mcp_audit": 0
+  },
+  "checks": {
+    "settings_exact": true,
+    "worker_capacity_limits_exact": true,
+    "infrastructure_profiles_exact": true,
+    "infrastructure_events_exact": true,
+    "collection_sources_definition_exact": true,
+    "source_profiles_definition_exact": true,
+    "operational_policies_definition_exact": true,
+    "assets_zero": true,
+    "uses_zero": true,
+    "fk_zero": true,
+    "r2_action_none": true
+  },
+  "all_pass": true
+}

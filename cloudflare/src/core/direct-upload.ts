@@ -54,7 +54,13 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
   const ts=nowMs();
   let row=await env.DB.prepare("SELECT * FROM v2_direct_uploads WHERE id=?").bind(uploadId).first<Record<string,unknown>>();
   if(!row)return {error:"NOT_FOUND",status:404} as const;
-  if(String(row.status)==="CONFIRMED")return {ok:true,idempotent:true,candidateId:row.candidate_id||null,projectFileId:row.project_file_id||null,status:200} as const;
+  if(String(row.status)==="CONFIRMED") {
+    if(String(row.upload_type)==="IMPORT_ZIP") {
+      const imported=await env.DB.prepare("SELECT id,status FROM imports WHERE r2_key=? ORDER BY created_at DESC LIMIT 1").bind(row.r2_key).first<{id:string;status:string}>();
+      return {ok:true,idempotent:true,importId:imported?.id||null,importStatus:imported?.status||null,status:200} as const;
+    }
+    return {ok:true,idempotent:true,candidateId:row.candidate_id||null,projectFileId:row.project_file_id||null,status:200} as const;
+  }
   if(String(row.status)==="CONFIRMING"&&Number(row.updated_at||0)<ts-5*60_000){
     await env.DB.prepare("UPDATE v2_direct_uploads SET status='STORED',failure_reason='STALE_CONFIRM_RECOVERED',updated_at=? WHERE id=? AND status='CONFIRMING' AND updated_at<?").bind(ts,uploadId,ts-5*60_000).run();
     row=await env.DB.prepare("SELECT * FROM v2_direct_uploads WHERE id=?").bind(uploadId).first<Record<string,unknown>>();
