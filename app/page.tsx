@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.0";
+const EXPECTED_CORE_VERSION = "0.20.2";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -229,6 +229,11 @@ export default function Home() {
   const [autoSetupStage, setAutoSetupStage] = useState("");
   const [autoSetupBusy, setAutoSetupBusy] = useState(false);
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
+  const [mcpShowKey, setMcpShowKey] = useState(false);
+  const [mcpCopied, setMcpCopied] = useState<""|"url"|"key"|"bundle">("");
+  const [mcpRotateBusy, setMcpRotateBusy] = useState(false);
+  const [mcpMessage, setMcpMessage] = useState("");
 
   const currentView = active === "Assets" ? assetView
     : active === "Projetos" ? projectView
@@ -774,6 +779,39 @@ export default function Home() {
     setInfraMessage("Conexão local removida deste navegador. Os recursos Cloudflare não foram apagados.");
   }
 
+  function openMcpConnection() {
+    setMcpCopied("");
+    setMcpMessage("");
+    setMcpShowKey(false);
+    setMcpOpen(true);
+  }
+
+  async function copyMcpValue(kind:"url"|"key"|"bundle") {
+    if (!localConnection) return;
+    const endpoint=`${localConnection.coreUrl.replace(/\/$/,"")}/mcp`;
+    const value=kind==="url"?endpoint:kind==="key"?localConnection.appKey:`MCP URL: ${endpoint}\nAuthorization: Bearer ${localConnection.appKey}`;
+    await navigator.clipboard.writeText(value);
+    setMcpCopied(kind);
+    window.setTimeout(()=>setMcpCopied(""),1800);
+  }
+
+  async function rotateMcpKey() {
+    if (!localConnection || mcpRotateBusy) return;
+    setMcpRotateBusy(true); setMcpMessage("");
+    try {
+      const response=await fetch("/api/control/rotate-app-key",{method:"POST"});
+      const value=await response.json();
+      if(!response.ok || !value?.appKey) throw new Error(value?.error||`ROTATE_HTTP_${response.status}`);
+      const next={...localConnection,appKey:String(value.appKey),savedAt:Date.now()};
+      saveBrowserConnection(next);
+      setLocalConnection(next);
+      setMcpShowKey(true);
+      setMcpMessage("Chave anterior revogada. A nova chave já foi salva neste navegador e está pronta para copiar.");
+    } catch(error) {
+      setMcpMessage(error instanceof Error?error.message:"MCP_KEY_ROTATION_FAILED");
+    } finally { setMcpRotateBusy(false); }
+  }
+
   async function updateCoreFromApp() {
     setCoreUpdateBusy(true); setInfraMessage("");
     try {
@@ -861,7 +899,7 @@ Tudo é configurado pela própria tela Configurações.
       </header>
 
       <div className="content contentV18">
-        {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button>}</div>}
+        {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <div className="titleActions"><button className="setupButton mcpConnectButton" onClick={openMcpConnection}>↗ Conectar MCP</button><button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button></div>}</div>}
 
         {active === "Visão geral" && <div className="overviewDashboard">
           <section className="overviewKpis">
@@ -964,7 +1002,7 @@ Tudo é configurado pela própria tela Configurações.
         </section>}
 
         {currentView === "Solicitações" && <section className="modulePanel twoCol">
-          <div><span className="eyebrow">SOLICITAÇÕES</span><h2>Fila estrutural preservada</h2><p>Cria e lê diretamente a tabela histórica <code>requests</code>.</p>
+          <div><span className="eyebrow">SOLICITAÇÕES</span><h2>Fila de solicitações</h2><p>Cria e lê diretamente a tabela histórica <code>requests</code>.</p>
             <form className="pushForm" onSubmit={createLibraryRequest}><input value={requestProject} onChange={(e: ChangeEvent<HTMLInputElement>)=>setRequestProject(e.target.value)} placeholder="Projeto"/><textarea rows={8} value={requestItems} onChange={(e: ChangeEvent<HTMLTextAreaElement>)=>setRequestItems(e.target.value)} placeholder="Um item por linha"/><button className="primary">Criar solicitação</button></form>
           </div>
           <div className="recordList">{recordLoading ? <div className="quiet">Carregando…</div> : requests.length===0 ? <div className="quiet">Nenhuma solicitação.</div> : requests.map(item=><article key={item.id}><div><strong>{item.project}</strong><span>{item.item_count} itens · {item.status}</span></div><code>{item.id}</code></article>)}</div>
@@ -977,7 +1015,7 @@ Tudo é configurado pela própria tela Configurações.
           <div className="recordList">{recordLoading ? <div className="quiet">Carregando…</div> : batches.length===0 ? <div className="quiet">Nenhum lote.</div> : batches.map(item=><article key={item.id}><div><strong>{item.name}</strong><span>{item.project || "Sem projeto"} · {item.status}</span></div><div className="inlineActions"><code>{item.id}</code><button onClick={()=>void generateManifest(item.id)}>Manifesto</button></div></article>)}</div>
         </section>}
 
-        {currentView === "Importações" && <section className="modulePanel"><span className="eyebrow">HISTÓRICO</span><h2>Importações preservadas</h2><p>Nesta fase a V2 lê a tabela histórica sem reinterpretar os registros.</p><div className="recordList wide">{recordLoading ? <div className="quiet">Carregando…</div> : imports.length===0 ? <div className="quiet">Nenhuma importação.</div> : imports.map(item=><article key={item.id}><div><strong>{item.file_name}</strong><span>{formatBytes(item.size_bytes)} · {item.status}</span></div><code>{item.id}</code></article>)}</div></section>}
+        {currentView === "Importações" && <section className="modulePanel"><span className="eyebrow">HISTÓRICO</span><h2>Histórico de importações</h2><p>Nesta fase a V2 lê a tabela histórica sem reinterpretar os registros.</p><div className="recordList wide">{recordLoading ? <div className="quiet">Carregando…</div> : imports.length===0 ? <div className="quiet">Nenhuma importação.</div> : imports.map(item=><article key={item.id}><div><strong>{item.file_name}</strong><span>{formatBytes(item.size_bytes)} · {item.status}</span></div><code>{item.id}</code></article>)}</div></section>}
 
         {currentView === "Coleta automática" && <section className="modulePanel twoCol">
           <div>
@@ -1016,7 +1054,7 @@ Tudo é configurado pela própria tela Configurações.
         {currentView === "Operação" && <section className="modulePanel operationGrid">
           <div><span className="eyebrow">INTEGRIDADE RÁPIDA</span><h2>D1 ↔ R2</h2><p>A amostra valida os <code>r2_key</code> mais recentes sem alterar qualquer registro.</p><div className="opNumbers"><span><b>{integrity?.checked ?? 0}</b>checados</span><span><b>{integrity?.present ?? 0}</b>presentes</span><span><b>{integrity?.missing ?? 0}</b>faltantes</span></div>{integrity?.missing ? <div className="formError">{integrity.missing} referências sem objeto na amostra.</div> : <div className="notice compact"><strong>Amostra limpa</strong><span>Nenhum objeto faltante na checagem rápida.</span></div>}</div>
           <div><span className="eyebrow">AUDITORIA COMPLETA</span><h2>Todas as referências conhecidas</h2><p>Compara assets, arquivos de projeto, imports, exports e materializações com o inventário físico do R2.</p><div className="opNumbers"><span><b>{storageAudit?.r2Objects ?? 0}</b>objetos R2</span><span><b>{storageAudit?.missingReferences ?? 0}</b>faltantes</span><span><b>{storageAudit?.orphanObjects ?? 0}</b>órfãos</span><span><b>{storageAudit?.sharedKeys ?? 0}</b>chaves compartilhadas</span></div><button className="primary" disabled={auditBusy} onClick={()=>void runStorageAudit()}>{auditBusy?"Auditando…":"Executar auditoria completa"}</button></div>
-          <div><span className="eyebrow">INTEGRIDADE LÓGICA D1</span><h2>Histórico separado da V2</h2><p>Orfandades antigas permanecem auditáveis, mas o dispatcher novo não as assume. Regressões <code>v2_*</code> são tratadas separadamente.</p><div className="opNumbers"><span><b>{dataHealth?.v2Orphans ?? 0}</b>órfãos V2</span><span><b>{dataHealth?.activeHistoricalOrphans ?? 0}</b>históricos ativos</span><span><b>{dataHealth?.catalog.assetsMissingR2Key ?? 0}</b>assets sem r2_key</span><span><b>{dataHealth?.catalog.duplicateAssetR2Keys ?? 0}</b>r2_key compartilhadas</span></div><div className={(dataHealth?.v2Orphans||0)>0?"formError":"notice compact"}><strong>{(dataHealth?.v2Orphans||0)>0?"Regressão V2 detectada":"Camada V2 consistente"}</strong><span>{dataHealth?.activeHistoricalOrphans ? "Há filas históricas órfãs preservadas; elas são ignoradas pelo dispatcher V2." : "Nenhuma inconsistência ativa detectada."}</span></div></div>
+          <div><span className="eyebrow">INTEGRIDADE LÓGICA D1</span><h2>Integridade da V2</h2><p>A Library inicia sem histórico recuperado. Qualquer inconsistência nova em <code>v2_*</code> aparece aqui para diagnóstico.</p><div className="opNumbers"><span><b>{dataHealth?.v2Orphans ?? 0}</b>órfãos V2</span><span><b>{dataHealth?.activeHistoricalOrphans ?? 0}</b>históricos ativos</span><span><b>{dataHealth?.catalog.assetsMissingR2Key ?? 0}</b>assets sem r2_key</span><span><b>{dataHealth?.catalog.duplicateAssetR2Keys ?? 0}</b>r2_key compartilhadas</span></div><div className={(dataHealth?.v2Orphans||0)>0?"formError":"notice compact"}><strong>{(dataHealth?.v2Orphans||0)>0?"Regressão V2 detectada":"Camada V2 consistente"}</strong><span>{dataHealth?.activeHistoricalOrphans ? "Há registros inconsistentes que precisam de revisão." : "Nenhuma inconsistência ativa detectada."}</span></div></div>
           <div><span className="eyebrow">DISPATCHER</span><h2>Workers e leases</h2><div className="opNumbers"><span><b>{dispatcherHealth?.expiredLeases ?? 0}</b>leases expirados</span><span><b>{dispatcherHealth?.queue?.length ?? 0}</b>grupos de fila</span><span><b>{dispatcherHealth?.sessions?.length ?? 0}</b>grupos de sessões</span></div><div className={dispatcherHealth?.ok===false?"formError":"notice compact"}><strong>{dispatcherHealth?.ok===false?"Atenção":"Dispatcher saudável"}</strong><span>Leases expirados voltam para READY pelo watchdog, sem perder o item.</span></div></div>
           <div><span className="eyebrow">MATERIALIZAÇÃO</span><h2>FAST PUSH</h2><div className="recordList">{(materializationStats?.candidateStates||[]).length===0?<div className="quiet">Sem estatísticas.</div>:(materializationStats?.candidateStates||[]).map((item,index)=><article key={`${String(item.status)}-${index}`}><div><strong>{String(item.status)}</strong><span>{Number(item.bytes||0)>0?formatBytes(Number(item.bytes)):""}</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
           <div><span className="eyebrow">OPERAÇÕES RECENTES</span><h2>Fila assíncrona</h2><div className="recordList">{recentOperations.length===0?<div className="quiet">Nenhuma operação.</div>:recentOperations.map(item=><article key={String(item.id)}><div><strong>{String(item.type||"OP")}</strong><span>{String(item.status||"")} · {String(item.succeeded||0)}/{String(item.requested||0)}</span></div><code>{String(item.id)}</code></article>)}</div></div>
@@ -1051,6 +1089,18 @@ Tudo é configurado pela própria tela Configurações.
         </section>}
 
         {!["Visão geral","Assets","Projetos","Execuções","Análise","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo será ligado ao núcleo V2 sem duplicar navegação ou estado visual.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
+
+        {mcpOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Conectar MCP">
+          <div className="setupModal mcpModal">
+            <div className="setupModalHead"><div><span className="eyebrow">CONEXÃO MCP</span><h2>Conectar ao GPT</h2><p>Use o endpoint abaixo no plugin/cliente MCP do GPT. A chave é o segredo de acesso ao Core e pode ser revogada a qualquer momento.</p></div><button className="iconClose" onClick={()=>{setMcpOpen(false);setMcpMessage("");setMcpShowKey(false);}} aria-label="Fechar">×</button></div>
+            {localConnection ? <>
+              <div className="mcpConnectionHero"><span className="eyebrow">ENDPOINT PRONTO</span><code>{`${localConnection.coreUrl.replace(/\/$/,"")}/mcp`}</code><div className="inlineActions"><button className="primary" onClick={()=>void copyMcpValue("url")}>{mcpCopied==="url"?"✓ Link copiado":"Copiar link MCP"}</button><button className="secondary" onClick={()=>void copyMcpValue("bundle")}>{mcpCopied==="bundle"?"✓ Conexão copiada":"Copiar conexão para GPT"}</button></div></div>
+              <div className="mcpKeyCard"><div><span className="eyebrow">CHAVE DE ACESSO</span><strong>{mcpShowKey?localConnection.appKey:`${localConnection.appKey.slice(0,8)}••••••••••••••••••••${localConnection.appKey.slice(-6)}`}</strong><small>Use como <b>Authorization: Bearer</b> quando o cliente solicitar autenticação.</small></div><div className="mcpKeyActions"><button className="secondary" onClick={()=>setMcpShowKey(value=>!value)}>{mcpShowKey?"Ocultar":"Mostrar"}</button><button className="secondary" onClick={()=>void copyMcpValue("key")}>{mcpCopied==="key"?"✓ Copiada":"Copiar chave"}</button></div></div>
+              <div className="mcpSecurityBox"><div><strong>Rotação de segurança</strong><span>Ao gerar outra chave, a atual é substituída no Worker. A antiga deixa de autenticar novas chamadas MCP.</span></div><button className="dangerGhost" disabled={mcpRotateBusy} onClick={()=>void rotateMcpKey()}>{mcpRotateBusy?"Gerando…":"Revogar e gerar nova"}</button></div>
+              {mcpMessage&&<div className={mcpMessage.startsWith("Chave anterior")?"notice compact":"formError"}>{mcpMessage}</div>}
+            </> : <div className="mcpDisconnected"><strong>Conexão local não encontrada</strong><p>A chave MCP nunca é salva no D1. Para recuperar o acesso com segurança, reconecte a infraestrutura usando seu API Token Cloudflare; uma nova chave será criada automaticamente.</p><button className="primary" onClick={()=>{setMcpOpen(false);openInfrastructureSetup(Boolean(infraProfile));}}>Reconectar infraestrutura</button></div>}
+          </div>
+        </div>}
 
         {setupOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Configurar infraestrutura">
           <div className="setupModal">

@@ -55,6 +55,38 @@ async function cloudflarePut(env: Env, bundle: string) {
   if (payload?.success === false) throw new Error(payload.errors?.map((item: { message?: string }) => item.message).filter(Boolean).join(" · ") || "CORE_SELF_UPDATE_REJECTED");
 }
 
+
+function randomSecret(bytes = 32) {
+  const raw = new Uint8Array(bytes);
+  crypto.getRandomValues(raw);
+  let binary = "";
+  for (const value of raw) binary += String.fromCharCode(value);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function putWorkerSecret(env: Env, name: string, text: string) {
+  const token = required(env.CLOUDFLARE_CONTROL_TOKEN, "CLOUDFLARE_CONTROL_TOKEN");
+  const accountId = required(env.CLOUDFLARE_ACCOUNT_ID, "CLOUDFLARE_ACCOUNT_ID");
+  const workerName = required(env.CORVO_WORKER_NAME, "CORVO_WORKER_NAME");
+  const response = await fetch(`${CF_API}/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(workerName)}/secrets`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ name, text, type: "secret_text" }),
+  });
+  const body = await response.text();
+  if (!response.ok) throw new Error(`WORKER_SECRET_ROTATE_HTTP_${response.status}:${body.slice(0,300)}`);
+  type SecretEnvelope = { success?: boolean; errors?: Array<{message?:string}> };
+  let payload: SecretEnvelope | null = null;
+  try { payload = body ? JSON.parse(body) as SecretEnvelope : null; } catch { payload = null; }
+  if (payload?.success === false) throw new Error(payload.errors?.map((item:{message?:string})=>item.message).filter(Boolean).join(" · ") || "WORKER_SECRET_ROTATE_REJECTED");
+}
+
+export async function rotateAppKey(env: Env) {
+  const appKey = randomSecret(32);
+  await putWorkerSecret(env, "CORVO_APP_KEY", appKey);
+  return { ok:true, appKey, rotatedAt:Date.now() };
+}
+
 export async function selfUpdateCore(env: Env) {
   const appOrigin = required(env.CORVO_APP_ORIGIN, "CORVO_APP_ORIGIN").replace(/\/$/, "");
   const source = await fetch(`${appOrigin}/api/setup/core-bundle`, { headers: { accept: "application/javascript" } });

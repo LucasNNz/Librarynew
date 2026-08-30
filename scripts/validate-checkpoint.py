@@ -15,7 +15,7 @@ EXPECTED = {
     "all_universes": 0,
     "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.10.0",
+    "schema_version": "2.12.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
@@ -323,9 +323,10 @@ def main():
             "worker_capacity_limits": int(q1(conn,"SELECT COUNT(*) FROM worker_capacity_limits") or 0),
             "operational_policies": int(q1(conn,"SELECT COUNT(*) FROM operational_policies") or 0),
         }
-        for table,minimum in {"settings":39,"collection_sources":22,"source_profiles":4,"worker_capacity_limits":11,"operational_policies":2}.items():
-            if configuration_rows[table] < minimum: errors.append(f"configuration table {table} lost rows: {configuration_rows[table]} < {minimum}")
-        if q1(conn,"SELECT value FROM v2_schema_meta WHERE key='data_baseline'") != 'CLEAN_ZERO': errors.append("data_baseline is not CLEAN_ZERO")
+        for table in ["settings","collection_sources","source_profiles","worker_capacity_limits","operational_policies"]:
+            if configuration_rows[table] != 0: errors.append(f"factory-zero table {table} must be empty, got {configuration_rows[table]}")
+        if int(q1(conn,"SELECT COUNT(*) FROM semantic_stock_policies") or 0) != 0: errors.append("semantic_stock_policies must be empty at factory zero")
+        if q1(conn,"SELECT value FROM v2_schema_meta WHERE key='data_baseline'") != 'FACTORY_ZERO': errors.append("data_baseline is not FACTORY_ZERO")
 
         heartbeat_smoke = heartbeat_sql_smoke(conn)
         if not all(heartbeat_smoke.values()): errors.append(f"heartbeat SQL smoke failed: {heartbeat_smoke}")
@@ -337,17 +338,17 @@ def main():
             "supervisor_plans": int(q1(conn, "SELECT COUNT(*) FROM supervisor_plans") or 0),
             "worker_project_items": int(q1(conn, "SELECT COUNT(*) FROM worker_work_items WHERE project_id IS NOT NULL") or 0),
             "v2_download_packages": int(q1(conn, "SELECT COUNT(*) FROM v2_download_packages") or 0),
-            "missing_r2_recapture_policy": int(q1(conn, "SELECT COUNT(*) FROM operational_policies WHERE policy_key='missing-r2-recapture' AND status='ACTIVE'") or 0),
-            "supervisor_autonomy_policy": int(q1(conn, "SELECT COUNT(*) FROM operational_policies WHERE policy_key='supervisor-policy-autonomy' AND status='ACTIVE'") or 0),
-            "clean_zero_marker": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key='CLEAN_ZERO_BASELINE' AND status='DONE'") or 0),
+            "operational_policies": int(q1(conn, "SELECT COUNT(*) FROM operational_policies") or 0),
+            "factory_zero_marker": int(q1(conn, "SELECT COUNT(*) FROM v2_schema_meta WHERE key='data_baseline' AND value='FACTORY_ZERO'") or 0),
+            "factory_zero_r2_purge": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key='PURGE_FACTORY_ZERO_R2_0_20_2' AND status IN ('PENDING','RUNNING','FAILED','DONE')") or 0),
             "r2_purge_jobs": int(q1(conn, "SELECT COUNT(*) FROM v2_maintenance_state WHERE key LIKE 'PURGE_%' AND status IN ('PENDING','RUNNING','FAILED')") or 0),
         }
         for key in ["automatic_projects","automatic_project_items","automatic_project_files","supervisor_plans","worker_project_items","v2_download_packages"]:
             if operational_cleanup[key] != 0: errors.append(f"operational_cleanup.{key}: expected 0, got {operational_cleanup[key]}")
-        if operational_cleanup["missing_r2_recapture_policy"] != 1: errors.append("missing-r2-recapture policy is not active")
-        if operational_cleanup["supervisor_autonomy_policy"] != 1: errors.append("supervisor-policy-autonomy policy is not active")
-        if operational_cleanup["clean_zero_marker"] != 1: errors.append("clean-zero maintenance marker is missing")
-        if operational_cleanup["r2_purge_jobs"] != 0: errors.append("R2 purge job must not be scheduled because the bucket was already emptied")
+        if operational_cleanup["operational_policies"] != 0: errors.append("operational policies must be empty at factory zero")
+        if operational_cleanup["factory_zero_marker"] != 1: errors.append("factory-zero schema marker is missing")
+        if operational_cleanup["factory_zero_r2_purge"] != 1: errors.append("factory-zero R2 cleanup task is missing")
+        if operational_cleanup["r2_purge_jobs"] != 1: errors.append("exactly one factory-zero R2 purge job must be scheduled before first health maintenance run")
 
         fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
         fk_groups = collections.Counter(f"{r[0]}->{r[2]}" for r in fk_rows)

@@ -1,0 +1,36 @@
+CORVO LIBRARY V2 — CHECKPOINT 0.20.2 FACTORY ZERO + MCP
+
+Goal
+- Start the Library with absolutely no inherited catalog/project/operational content.
+- Preserve the existing Cloudflare infrastructure profile and D1/R2 bindings.
+- Make MCP connection visible and self-service from Configurações.
+
+Database migration
+- 9012_v2_factory_zero_assets.sql
+- assets = 0
+- universes derived from assets = 0
+- usages/projects/imports/candidates/history = 0
+- recovered settings/sources/profiles/policies/capacity presets = 0
+- v2_infrastructure_profiles and v2_infrastructure_config_events are preserved
+- schema = 2.12.0 / data_baseline = FACTORY_ZERO
+
+R2
+- Bucket is preserved.
+- Corvo-managed residues are purged only under known prefixes.
+- Factory-zero cleanup does not recreate a recovery manifest.
+
+MCP UI
+- Configurações → Conectar MCP
+- Shows the ready /mcp URL
+- Copy URL / Bearer key / full GPT connection block
+- Show/hide key
+- Revoke + generate new key automatically
+- Rotation updates CORVO_APP_KEY through Cloudflare Workers Secrets API.
+
+Gate
+- structural frontend TypeScript: PASS
+- structural Worker TypeScript: PASS
+- checkpoint validation: PASS
+- factory-zero dirty-live migration smoke: PASS
+- MCP tools: 244 unique
+- errors: 0

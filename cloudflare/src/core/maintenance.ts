@@ -12,6 +12,8 @@ type PurgeDetail = {
   bytes?: number;
   lastPrefix?: string;
   lastBatchDeleted?: number;
+  refreshRecovery?: boolean;
+  preserveBucket?: boolean;
 };
 
 function clean(value: unknown) { return String(value ?? "").trim(); }
@@ -80,8 +82,8 @@ async function runPrefixPurge(env: Env, row: MaintenanceRow) {
   await env.DB.prepare(`UPDATE v2_maintenance_state
     SET status='DONE',detail_json=?,updated_at=?,completed_at=? WHERE key=?`)
     .bind(JSON.stringify(finalDetail), ts, ts, key).run();
-  await refreshRecoveryAfterWrite(env, "LEGACY_PROJECTS_PURGED", prefixes.join(","));
-  return { ran:true, status:"DONE", key, deleted, bytes, prefixes };
+  if (detail.refreshRecovery !== false) await refreshRecoveryAfterWrite(env, "R2_PREFIX_PURGE_COMPLETED", prefixes.join(","));
+  return { ran:true, status:"DONE", key, deleted, bytes, prefixes, bucketPreserved:true };
 }
 
 export async function runPendingMaintenance(env: Env) {
@@ -93,7 +95,9 @@ export async function runPendingMaintenance(env: Env) {
   const key = clean(row.key);
   if (!await claim(env,key)) return { ran:false, status:"CLAIMED_ELSEWHERE", key };
   try {
-    if (key === "PURGE_LEGACY_PROJECT_R2") return await runPrefixPurge(env,row);
+    const detail = parseDetail(row.detail_json);
+    if (key.startsWith("PURGE_") && Array.isArray(detail.prefixes) && detail.prefixes.length) return await runPrefixPurge(env,row);
+    if (key === "PURGE_LEGACY_PROJECT_R2" || key === "PURGE_PROJECTS_R2_0_21") return await runPrefixPurge(env,row);
     throw new Error(`UNKNOWN_MAINTENANCE_TASK:${key}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

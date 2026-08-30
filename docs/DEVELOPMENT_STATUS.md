@@ -1,46 +1,45 @@
-# Development Status — Corvo Library V2 0.20.0
+# Development Status — Corvo Library V2 0.20.2
 
-## Clean Zero
+## Factory Zero
 
-- baseline de dados recuperados: 0;
-- configuração persistente e infraestrutura: preservadas;
-- R2 purge: nenhum agendamento;
-- schema: 2.10.0;
+- assets: 0;
+- universos derivados: 0;
+- usos: 0;
+- projetos e execuções: 0;
+- importações/candidatas/históricos: 0;
+- settings/fontes/perfis/políticas/capacidades recuperadas: 0;
+- infraestrutura persistente D1/R2/Worker: preservada;
+- schema: 2.12.0;
 - foreign-key violations: 0.
 
-## Importação / R2
+A migration `9012_v2_factory_zero_assets.sql` roda também sobre uma instalação 0.20/0.20.1 já publicada, portanto remove registros que tenham permanecido no D1 vivo mesmo quando migrações de limpeza anteriores já estavam marcadas como aplicadas.
+
+## R2
+
+- o bucket/binding é preservado;
+- apenas prefixes gerenciados pela Corvo são elegíveis para limpeza: `assets/`, `imports/`, `projects/`, `incoming/`, `batches/`, `exports/`, `corvo-core/recovery/`;
+- a limpeza factory-zero não recria recovery manifest ao terminar;
+- depois da primeira carga real, importação e reconciliação R2 ↔ D1 permanecem ativas.
+
+## Importação
 
 - múltiplos lotes ZIP pela UI: concluído;
 - upload direto navegador → Worker/R2: concluído;
 - teto de lote: 48 MiB;
 - ID estável por SHA-256: concluído;
 - deduplicação de reimportação: concluída;
-- política CONFIRMADO/GENERICO → Catálogo: concluída;
-- política CONFIRMADO_MEDIO/REVISAR_UNIVERSO → Pendentes: concluída;
-- SHA manifesto × conteúdo real: conferido pelo importador;
-- metadata de recuperação no R2: concluída;
-- remoção do ZIP de transporte: concluída;
-- reconciliação paginada R2 × D1: concluída;
-- reconstrução D1 a partir de metadata R2: concluída;
-- arquivo ausente no R2: apenas sinalizado, sem substituição silenciosa.
+- reconciliação R2 × D1: concluída.
 
-## Pacote inicial preparado
+## MCP
 
-- 792 mídias importáveis;
-- 22 lotes;
-- maior lote: ~19,98 MiB;
-- 672 Catálogo;
-- 120 Pendentes;
-- 9 Quarentena fora da carga;
-- SHA-256 de todas as 792 mídias conferido contra o manifesto.
-
-## UI
-
-- Assets: Catálogo / Pendentes / Rejeitados / Importar & R2;
-- progresso lote a lote;
-- histórico de importações;
-- estado R2/D1 e contadores de inconsistência;
-- catálogo segue separado da manutenção física do storage.
+- botão visível `Configurações → Conectar MCP`;
+- endpoint pronto `${coreUrl}/mcp`;
+- copiar link MCP;
+- copiar chave Bearer;
+- copiar bloco completo para GPT;
+- mostrar/ocultar chave;
+- `Revogar e gerar nova`: substitui `CORVO_APP_KEY` no Worker e salva a nova chave no navegador;
+- chave MCP nunca é persistida no D1.
 
 ## Gates
 
@@ -48,7 +47,7 @@
 - Structural TypeScript — Core: PASS;
 - Structural TypeScript — Frontend: PASS;
 - MCP unique tools: 244;
-- clean-zero: PASS;
+- factory-zero migration smoke: PASS;
 - erros: 0;
-- `next build`: gate externo sem dependências instaladas no pacote original;
+- `next build`: gate externo; registry npm expirou nesta execução;
 - Wrangler/live Cloudflare: gate externo do ambiente implantado.

@@ -1,0 +1,58 @@
+{
+  "checkpoint": "0.20.2",
+  "schema": "2.12.0",
+  "validation": "PASS",
+  "factory_zero": {
+    "assets": 0,
+    "approved": 0,
+    "pending": 0,
+    "rejected": 0,
+    "universes": 0,
+    "asset_usage": 0,
+    "projects": 0,
+    "imports": 0,
+    "settings": 0,
+    "collection_sources": 0,
+    "source_profiles": 0,
+    "worker_capacity_limits": 0,
+    "operational_policies": 0,
+    "semantic_stock_policies": 0
+  },
+  "preserved": [
+    "v2_infrastructure_profiles",
+    "v2_infrastructure_config_events",
+    "v2_schema_meta",
+    "v2_migrations_applied",
+    "D1 database/binding",
+    "R2 bucket/binding",
+    "Worker/Queue infrastructure bindings"
+  ],
+  "r2_factory_zero_prefixes": [
+    "assets/",
+    "imports/",
+    "projects/",
+    "incoming/",
+    "batches/",
+    "exports/",
+    "corvo-core/recovery/"
+  ],
+  "mcp": {
+    "registered_unique_tools": 244,
+    "visible_connect_button": true,
+    "ready_endpoint": true,
+    "copy_endpoint": true,
+    "copy_bearer_key": true,
+    "copy_gpt_connection_block": true,
+    "revoke_and_generate_new_key": true,
+    "d1_stores_app_key": false
+  },
+  "typecheck": {
+    "frontend_structural": "PASS",
+    "worker_structural": "PASS"
+  },
+  "external_gates": {
+    "next_build": "npm registry timed out before dependencies installed",
+    "live_cloudflare": "requires deployed account"
+  },
+  "errors": []
+}

@@ -1,0 +1,21 @@
+CORVO LIBRARY V2 — CHECKPOINT 0.20.1 PROJECTS CLEAN
+
+Goal
+- Remove every project currently present after deployment.
+- Preserve assets, universes, R2 asset objects, import data, settings and infrastructure configuration.
+
+Migration
+- 9011_v2_purge_all_projects.sql
+- Deletes project rows and all project-scoped runtime/control state.
+- Clears assets.project_origin without deleting assets.
+- Schedules a narrowly-scoped R2 purge for prefix projects/ only.
+- Never purges assets/, imports/ or recovery/.
+
+Expected post-deploy state
+- automatic_projects = 0
+- automatic_project_items = 0
+- automatic_project_files = 0
+- supervisor/project worker state = 0
+- v2 project media/titles/packages = 0
+- projects_baseline = CLEAN_ZERO
+- R2 projects/ cleanup runs via maintenance; asset library remains intact.

@@ -1,73 +1,57 @@
-# Corvo Library V2 — Checkpoint 0.20.0
+# Corvo Library V2 — Checkpoint 0.20.2
 
-Corvo Library V2 com **baseline CLEAN ZERO + importação R2-ready**. O 0.20 preserva a limpeza do 0.19 e adiciona um caminho seguro para iniciar o catálogo do zero a partir das imagens já organizadas.
+## Factory Zero real
 
-## O que muda no 0.20
+Este checkpoint foi preparado para uma nova Library. A migration `9012_v2_factory_zero_assets.sql` elimina qualquer conteúdo residual do D1 vivo mesmo quando as migrations de limpeza anteriores já foram executadas.
 
-- nova área **Assets → Importar & R2**;
-- importação de múltiplos ZIPs com progresso por lote;
-- limite seguro de **48 MiB por ZIP**, evitando processar arquivos gigantes inteiros no Worker;
-- ID de asset **estável por SHA-256**, tornando reimportação idempotente;
-- classificação do manifesto aplicada automaticamente ao Catálogo/Pendentes;
-- metadata de recuperação gravada junto do objeto em R2;
-- reconciliação paginada `R2 assets/ × D1`, com reparo R2→D1 quando há evidência;
-- D1→R2 é validado: arquivo físico ausente é sinalizado, nunca inventado;
-- ZIP de transporte apagado depois da materialização, evitando duplicar centenas de MB no bucket;
-- auditoria/explorador reconhecem recovery sidecars como referências físicas válidas;
-- `Sem universo` não infla o KPI de universos aprovados.
+Estado esperado após a atualização:
 
-Detalhes: `docs/IMPORT_R2_SYNC_0_20.md`.
+- assets: 0;
+- universos derivados: 0;
+- usos: 0;
+- projetos: 0;
+- importações/candidatas/execuções/históricos: 0;
+- settings/fontes/perfis/políticas recuperados: 0.
 
-## Clean Zero preservado
+São preservados somente os componentes estruturais necessários para a infraestrutura existente: perfil/revisões de infraestrutura, schema e registry de migrations. O D1 e o bucket R2 não são recriados nem desconectados.
 
-Ao aplicar `9010_v2_clean_zero_baseline.sql` no D1 existente:
+## R2
 
-- assets, usos, lotes, projetos, candidatas, execuções, materializações, auditorias, logs e estados recuperados ficam zerados;
-- `settings`, fontes, perfis, limites de workers, políticas e manifesto de infraestrutura permanecem;
-- nenhuma credencial é restaurada ou gravada no D1;
-- nenhuma rotina de purge do R2 é criada.
+O bucket configurado continua o mesmo. A tarefa factory-zero remove somente prefixes gerenciados pela Corvo caso algum resíduo exista (`assets/`, `imports/`, `projects/`, `incoming/`, `batches/`, `exports/` e `corvo-core/recovery/`). O bucket em si e seu binding permanecem intactos.
 
-O bucket `corvoquiz-prod` continua sendo o mesmo bucket configurado e parte vazio neste baseline.
+## Importação e sincronização
 
-## Bootstrap
+Depois do reset, a primeira mídia real entra pela Library. O fluxo 0.20 continua disponível:
 
-Instalações novas usam `bootstrap/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql.gz`: schema histórico compatível + configurações seguras, sem assets recuperados.
+- ZIPs em lotes de até 48 MiB;
+- upload navegador → Worker → R2;
+- ID estável por SHA-256;
+- deduplicação;
+- manifesto/classificação;
+- reconciliação R2 ↔ D1;
+- catálogo, pendentes e rejeitados separados.
 
-Baseline validado após migrations:
+## Conectar MCP
 
-- Assets: 0
-- Aprovados: 0
-- Pendentes: 0
-- Rejeitados: 0
-- Usos: 0
-- Projetos: 0
-- Candidatas: 0
-- Foreign-key violations: 0
-- Schema: 2.10.0
-- Data baseline: `CLEAN_ZERO`
+Em **Configurações → Conectar MCP** existe um centro próprio para o GPT/cliente MCP:
 
-## MCP / Heartbeats
+- URL `https://<worker>.workers.dev/mcp` pronta para copiar;
+- chave `CORVO_APP_KEY` pronta para copiar como Bearer;
+- bloco completo de conexão;
+- mostrar/ocultar chave;
+- **Revogar e gerar nova**.
 
-Compatibilidade preservada: **244 tools MCP únicas** (229 da matriz histórica + 17 extras V2, considerando 2 substituições históricas), com heartbeats de Worker, Supervisor e Operação intactos.
-
-## UI
-
-A base visual minimalista permanece:
-
-- Visão geral com rede de agentes e projetos;
-- sidebar curta;
-- Assets com **Catálogo · Pendentes · Rejeitados · Importar & R2**;
-- cards de catálogo focados em imagem, nome, universo, QA e uso;
-- importação e integridade de storage ficam em uma tela operacional própria, sem poluir o catálogo.
+A rotação troca o secret no Worker através da API oficial de Workers Secrets; a chave anterior deixa de autenticar e a nova é salva somente no navegador atual. A chave não é persistida no D1.
 
 ## Gates
 
-O checkpoint acompanha `docs/VALIDATION_REPORT_0_20.json`.
+- Checkpoint: 0.20.2;
+- Schema: 2.12.0;
+- Validation: PASS;
+- TypeScript frontend: PASS;
+- TypeScript Worker: PASS;
+- MCP: 244 tools únicas;
+- FK violations: 0;
+- erros: 0.
 
-- Clean-zero data gate: PASS
-- D1 integrity / FK: PASS
-- Structural TypeScript — Core: PASS
-- Structural TypeScript — Frontend: PASS
-- MCP compatibility: PASS
-- 0 erros no validador do checkpoint
-- `next build` e Wrangler reais permanecem gates externos quando as dependências do registry/ambiente Cloudflare não estão instaladas.
+O `next build` real permanece um gate externo nesta execução porque o registry npm expirou antes de instalar dependências. O deploy normal executa `prebuild` e gera o bundle do Worker a partir das fontes deste checkpoint.

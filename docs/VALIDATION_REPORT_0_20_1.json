@@ -1,10 +1,10 @@
 {
-  "checkpoint": "0.20.2",
+  "checkpoint": "0.20.1",
   "validation": "PASS",
-  "duration_seconds": 2.954,
+  "duration_seconds": 2.713,
   "restore": {
-    "path": "/mnt/data/corvo_021_work/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql",
-    "sha256": "2ad1a201d382cd9b805240d04b6342e563e58c477461b1fd5e5a16c8735d8003",
+    "path": "/mnt/data/corvo_work/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE.sql",
+    "sha256": "0e509963f4c63fa2d28d4833b116595b1f542c9bbe06bc4446ab7ef0ac0f89fc",
     "migrations": [
       "9000_v2_core.sql",
       "9001_v2_observability.sql",
@@ -17,8 +17,7 @@
       "9008_v2_operational_cleanup_recovery.sql",
       "9009_v2_runtime_heartbeats.sql",
       "9010_v2_clean_zero_baseline.sql",
-      "9011_v2_purge_all_projects.sql",
-      "9012_v2_factory_zero_assets.sql"
+      "9011_v2_purge_all_projects.sql"
     ]
   },
   "database": {
@@ -53,7 +52,7 @@
       "v2_schema_meta",
       "v2_storage_audits"
     ],
-    "schema_version": "2.12.0",
+    "schema_version": "2.11.0",
     "sensitive_settings_rows": 0
   },
   "clean_zero_counts": {
@@ -113,11 +112,11 @@
     "v2_runtime_heartbeats": 0
   },
   "preserved_configuration_rows": {
-    "settings": 0,
-    "collection_sources": 0,
-    "source_profiles": 0,
-    "worker_capacity_limits": 0,
-    "operational_policies": 0
+    "settings": 39,
+    "collection_sources": 22,
+    "source_profiles": 4,
+    "worker_capacity_limits": 11,
+    "operational_policies": 7
   },
   "historical_integrity": {
     "total": 0,
@@ -159,9 +158,9 @@
     "supervisor_plans": 0,
     "worker_project_items": 0,
     "v2_download_packages": 0,
-    "operational_policies": 0,
-    "factory_zero_marker": 1,
-    "factory_zero_r2_purge": 1,
+    "missing_r2_recapture_policy": 1,
+    "supervisor_autonomy_policy": 1,
+    "clean_zero_marker": 1,
     "r2_purge_jobs": 1
   },
   "recovery_contract": {
@@ -215,7 +214,7 @@
   "self_sufficient_setup": {
     "embedded_restore_exists": true,
     "embedded_restore_matches_input": true,
-    "embedded_restore_sha256": "2ad1a201d382cd9b805240d04b6342e563e58c477461b1fd5e5a16c8735d8003",
+    "embedded_restore_sha256": "0e509963f4c63fa2d28d4833b116595b1f542c9bbe06bc4446ab7ef0ac0f89fc",
     "manual_setup_ui_hits": [],
     "manual_setup_package_script": false,
     "hosting_env_dependency": false,

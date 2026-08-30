@@ -1,4 +1,4 @@
-# Assistente de infraestrutura — Corvo Library V2 0.12
+# Assistente de infraestrutura — Corvo Library V2 0.20.2
 
 ## Objetivo
 
@@ -7,11 +7,15 @@ A configuração normal acontece **inteiramente pela interface web**. O usuário
 ## Fluxo rápido
 
 1. Abra **Configurações → Configurar agora**.
-2. Crie/cole um **Cloudflare API Token** com permissões de conta suficientes para Workers Scripts, D1, R2 e Queues.
-3. Se houver mais de uma conta Cloudflare, escolha a conta mostrada pelo próprio app.
+2. Crie/cole um **Cloudflare API Token** com permissões para Workers Scripts, D1, R2 e Queues.
+3. Se necessário, informe o Account ID.
 4. Clique **Configurar tudo automaticamente**.
-5. Aguarde os estados D1, R2, Queue e Controle ficarem `ok`.
+5. Aguarde D1, R2, Queue e Controle ficarem `ok`.
 6. O manifesto é salvo como `LOCKED` automaticamente.
+
+## Estado 0.20.2
+
+A atualização 0.20.2 aplica uma única migration **FACTORY_ZERO** para remover qualquer catálogo/histórico recuperado que ainda exista no D1. Ela preserva o perfil de infraestrutura e o bucket R2; depois desse reset, novos assets entram somente por importação/coleta real.
 
 ## O que o app faz
 
@@ -20,16 +24,27 @@ A configuração normal acontece **inteiramente pela interface web**. O usuário
 - Queue: encontra ou cria `corvo-materialize-v2`.
 - DLQ: encontra ou cria `corvo-materialize-v2-dlq`.
 - Worker: publica `corvo-core-v2` com bindings nativos.
-- banco: se estiver vazio, usa o dump histórico embutido no pacote e aplica migrations V2; se já estiver inicializado, preserva os dados.
+- banco: aplica migrations registradas sem restaurar conteúdo histórico.
 - secrets: gera chaves internas e move o token Cloudflare para secrets do Worker.
 - navegador: salva a conexão de aplicação para as próximas aberturas.
 - D1: grava somente nomes/IDs não secretos e a revisão do manifesto.
 
+## Conectar MCP ao GPT
+
+Abra **Configurações → Conectar MCP**. A tela mostra:
+
+- URL MCP pronta: `https://<worker>.workers.dev/mcp`;
+- chave de acesso `CORVO_APP_KEY` para usar como `Authorization: Bearer`;
+- botão **Copiar link MCP**;
+- botão **Copiar conexão para GPT**;
+- botão **Copiar chave**;
+- botão **Revogar e gerar nova**.
+
+A rotação substitui o secret `CORVO_APP_KEY` no Worker. A chave anterior deixa de autenticar e a nova é salva somente no navegador atual. A Cloudflare Control API usada pelo Core exige `Workers Scripts Write` para atualizar o secret.
+
 ## Persistência
 
-O manifesto nasce `LOCKED`. Atualizações do frontend, reinícios e novos deploys não alteram esse perfil. O botão **Alterar configuração** é o único caminho normal para mudar recursos; uma alteração cria uma nova revisão auditável.
-
-Se o navegador perder seu armazenamento local, a infraestrutura não é apagada. Reabra o setup, informe um token Cloudflare e o app redetectará D1/R2/Queue/Worker. O banco já inicializado é preservado.
+O manifesto nasce `LOCKED`. Atualizações do frontend, reinícios e novos deploys não alteram esse perfil. O botão **Alterar configuração** é o caminho normal para mudar recursos; uma alteração cria nova revisão auditável.
 
 ## Segurança
 
