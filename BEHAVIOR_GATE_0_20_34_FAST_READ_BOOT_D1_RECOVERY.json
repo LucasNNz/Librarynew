@@ -1,0 +1,14 @@
+{
+  "release": "0.20.34",
+  "schema": "2.21.0",
+  "stale_cache_isolation": true,
+  "post_update_cache_bust": true,
+  "d1_diagnostic_unwraps_health_core": true,
+  "strict_core_update_http_error": true,
+  "embedded_worker_syntax": "PASS",
+  "frontend_structural": "PASS",
+  "worker_structural": "PASS",
+  "mcp_registered": 272,
+  "mcp_unique": 272,
+  "mcp_duplicates": 0
+}

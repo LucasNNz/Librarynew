@@ -71,7 +71,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.33";
+const EXPECTED_CORE_VERSION = "0.20.35";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -277,9 +277,13 @@ function unwrapCoreHealth(value:any): CoreHealthState {
 }
 
 function schemaGateDetail(value:any, httpStatus?:number) {
-  const core = unwrapCoreHealth(value);
+  // /ui/boot wraps the authoritative Core health under `health.core`. Older
+  // diagnostics inspected the boot envelope itself, which has a `version` but
+  // no `d1/schema`, producing the misleading `d1:null` message.
+  const core = unwrapCoreHealth(value?.health ?? value);
   return {
     httpStatus: httpStatus || null,
+    bootVersion: value?.version || null,
     coreVersion: core.version || null,
     d1: core.d1 || null,
     schema: core.schema || null,
@@ -934,8 +938,13 @@ export default function Home() {
     if(cached)applyBoot(cached);
 
     try {
-      const readBoot=async()=>{
-        const response=await fetchWithNetworkRetry("/api/ui/boot",{cache:"no-store"},{attempts:3,baseDelayMs:450});
+      const readBoot=async(fresh=false)=>{
+        // `caches.default` lives outside the Worker process and can retain a
+        // previous release's /ui/boot response briefly after a deployment.
+        // After update/migration, force a unique cache key so an old release
+        // snapshot can never fail the authoritative D1 gate.
+        const suffix=fresh?`?fresh=${encodeURIComponent(EXPECTED_CORE_VERSION)}-${Date.now()}`:"";
+        const response=await fetchWithNetworkRetry(`/api/ui/boot${suffix}`,{cache:"no-store"},{attempts:3,baseDelayMs:450});
         const value=await response.json().catch(()=>({})) as any;
         return {response,value};
       };
@@ -959,7 +968,7 @@ export default function Home() {
           setReleaseGateMessage("Atualizando o Core seguro…");
           try{
             const updateResponse=await fetch("/api/control/update-core",{method:"POST",cache:"no-store"});
-            if(!updateResponse.ok&&updateResponse.status<500){const value=await updateResponse.json().catch(()=>({})) as any;throw new Error(value?.detail||value?.error||`CORE_UPDATE_HTTP_${updateResponse.status}`);}
+            if(!updateResponse.ok){const value=await updateResponse.json().catch(()=>({})) as any;throw new Error(value?.detail||value?.error||`CORE_UPDATE_HTTP_${updateResponse.status}`);}
           }catch(error){if(!isTransientFetchError(error))throw error;}
           let versionOk=false;
           for(let attempt=0;attempt<30;attempt+=1){
@@ -979,7 +988,7 @@ export default function Home() {
         try{await fetchWithNetworkRetry("/api/control/reconcile-queue-consumer",{method:"POST",headers:{"content-type":"application/json"},body:"{}",cache:"no-store"},{attempts:3,baseDelayMs:500});}catch(error){console.warn("QUEUE_POLICY_RECONCILE_FAILED",error);}
 
         setReleaseGateMessage("Lendo snapshot compacto…");
-        bootResult=await readBoot();
+        bootResult=await readBoot(true);
         bootCore=unwrapCoreHealth(bootResult.value?.health);
         coreReady=Boolean(bootResult.response.ok&&bootCore.version===EXPECTED_CORE_VERSION&&bootCore.schemaContract?.ready===true);
       }

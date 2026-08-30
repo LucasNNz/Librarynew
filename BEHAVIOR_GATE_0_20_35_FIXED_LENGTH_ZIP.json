@@ -1,0 +1,18 @@
+{
+  "release": "0.20.35",
+  "gate": "PASS",
+  "checks": {
+    "project_zip_uses_fixed_length_stream": true,
+    "asset_zip_uses_fixed_length_stream": true,
+    "r2_sizes_preflighted": true,
+    "zip_expected_size_calculated": true,
+    "zip_size_mismatch_guard": true,
+    "downloader_working_cleared_on_failure": true,
+    "infra_block_event": true,
+    "success_reconciles_saved_state": true,
+    "embedded_worker_fixed_length": true,
+    "embedded_version_0_20_35": true,
+    "fixed_length_zip_smoke": true
+  },
+  "smoke_zip_sha256": "dcfefc626eb531fbb17f623588df7f03b2a83f5d6d4e7b6c0dec1bf236e9232e"
+}

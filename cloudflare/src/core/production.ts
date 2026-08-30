@@ -19,10 +19,88 @@ function le32(v:number){const b=new Uint8Array(4);new DataView(b.buffer).setUint
 function concat(parts:Uint8Array[]){const total=parts.reduce((n,p)=>n+p.byteLength,0),out=new Uint8Array(total);let o=0;for(const p of parts){out.set(p,o);o+=p.byteLength;}return out;}
 function dosDateTime(){const d=new Date();const time=((d.getHours()&31)<<11)|((d.getMinutes()&63)<<5)|((Math.floor(d.getSeconds()/2))&31);const date=(((d.getFullYear()-1980)&127)<<9)|(((d.getMonth()+1)&15)<<5)|(d.getDate()&31);return{time,date};}
 
-export type ZipEntry = { name:string; open:()=>Promise<ReadableStream<Uint8Array>|Uint8Array|null> };
+export type ZipEntry = {
+  name:string;
+  r2Key?:string;
+  sizeBytes?:number;
+  open:()=>Promise<ReadableStream<Uint8Array>|Uint8Array|null>;
+};
+type ResolvedZipEntry = ZipEntry & { sizeBytes:number };
 type Central = {name:Uint8Array;crc:number;size:number;offset:number;time:number;date:number};
-export function zipStream(entries:ZipEntry[]){const encoder=new TextEncoder();let totalBytes=0;const stream=new ReadableStream<Uint8Array>({start(controller){void(async()=>{try{const central:Central[]=[];for(const entry of entries){const name=encoder.encode(entry.name);const {time,date}=dosDateTime();const offset=totalBytes;const local=concat([le32(0x04034b50),le16(20),le16(0x0808),le16(0),le16(time),le16(date),le32(0),le32(0),le32(0),le16(name.length),le16(0),name]);controller.enqueue(local);totalBytes+=local.length;let crc=0xffffffff,size=0;const source=await entry.open();if(source instanceof Uint8Array){if(source.length){crc=crcUpdate(crc,source);size+=source.length;controller.enqueue(source);totalBytes+=source.length;}}else if(source){const reader=source.getReader();while(true){const {done,value}=await reader.read();if(done)break;if(value){crc=crcUpdate(crc,value);size+=value.length;controller.enqueue(value);totalBytes+=value.length;}}}crc=(~crc)>>>0;const descriptor=concat([le32(0x08074b50),le32(crc),le32(size),le32(size)]);controller.enqueue(descriptor);totalBytes+=descriptor.length;central.push({name,crc,size,offset,time,date});}
-          const centralOffset=totalBytes;const blocks:Uint8Array[]=[];for(const c of central){blocks.push(concat([le32(0x02014b50),le16(20),le16(20),le16(0x0808),le16(0),le16(c.time),le16(c.date),le32(c.crc),le32(c.size),le32(c.size),le16(c.name.length),le16(0),le16(0),le16(0),le16(0),le32(0),le32(c.offset),c.name]));}const centralDir=concat(blocks);controller.enqueue(centralDir);totalBytes+=centralDir.length;const end=concat([le32(0x06054b50),le16(0),le16(0),le16(central.length),le16(central.length),le32(centralDir.length),le32(centralOffset),le16(0)]);controller.enqueue(end);totalBytes+=end.length;controller.close();}catch(error){controller.error(error);}})();}});return{stream,getSize:()=>totalBytes};}
+type FixedLengthStreamShape = {readable:ReadableStream<Uint8Array>;writable:WritableStream<Uint8Array>};
+type FixedLengthStreamConstructor = new(expectedLength:number)=>FixedLengthStreamShape;
+
+function getFixedLengthStreamConstructor():FixedLengthStreamConstructor{
+  const ctor=(globalThis as unknown as {FixedLengthStream?:FixedLengthStreamConstructor}).FixedLengthStream;
+  if(!ctor)throw new Error("FIXED_LENGTH_STREAM_UNAVAILABLE");
+  return ctor;
+}
+
+export async function resolveZipEntrySizes(env:Env,entries:ZipEntry[]):Promise<ResolvedZipEntry[]>{
+  // R2 HEAD is authoritative. We intentionally resolve every unique object once before
+  // opening the ZIP stream so the final request body can be wrapped in FixedLengthStream.
+  // Repeated production slots pointing to the same AST share the same HEAD lookup.
+  const r2Keys=[...new Set(entries.map(e=>clean(e.r2Key)).filter(Boolean))];
+  const sizes=new Map<string,number>();
+  await Promise.all(r2Keys.map(async key=>{
+    const head=await env.MEDIA.head(key);
+    if(!head)throw new Error(`R2_OBJECT_MISSING:${key}`);
+    const size=Number(head.size);
+    if(!Number.isSafeInteger(size)||size<0)throw new Error(`R2_OBJECT_SIZE_INVALID:${key}:${String(head.size)}`);
+    sizes.set(key,size);
+  }));
+  return entries.map(entry=>{
+    const size=entry.r2Key?sizes.get(clean(entry.r2Key)):Number(entry.sizeBytes);
+    if(size===undefined||!Number.isSafeInteger(size)||size<0)throw new Error(`ZIP_ENTRY_SIZE_UNKNOWN:${entry.name}`);
+    if(size>0xffffffff)throw new Error(`ZIP64_REQUIRED_ENTRY_TOO_LARGE:${entry.name}:${size}`);
+    return {...entry,sizeBytes:size};
+  });
+}
+
+export function zipExpectedSize(entries:ResolvedZipEntry[]){
+  const encoder=new TextEncoder();let total=22; // end-of-central-directory
+  for(const entry of entries){
+    const nameLength=encoder.encode(entry.name).length;
+    if(nameLength>0xffff)throw new Error(`ZIP_ENTRY_NAME_TOO_LONG:${entry.name}`);
+    // local header 30 + name + payload + data descriptor 16 + central header 46 + name
+    total+=92+(2*nameLength)+entry.sizeBytes;
+    if(total>0xffffffff)throw new Error(`ZIP64_REQUIRED_ARCHIVE_TOO_LARGE:${total}`);
+  }
+  return total;
+}
+
+export function zipStream(entries:ResolvedZipEntry[]){
+  const encoder=new TextEncoder();let totalBytes=0;
+  const stream=new ReadableStream<Uint8Array>({start(controller){void(async()=>{try{
+    const central:Central[]=[];
+    for(const entry of entries){
+      const name=encoder.encode(entry.name);const {time,date}=dosDateTime();const offset=totalBytes;
+      const local=concat([le32(0x04034b50),le16(20),le16(0x0808),le16(0),le16(time),le16(date),le32(0),le32(0),le32(0),le16(name.length),le16(0),name]);
+      controller.enqueue(local);totalBytes+=local.length;
+      let crc=0xffffffff,size=0;const source=await entry.open();
+      if(source instanceof Uint8Array){if(source.length){crc=crcUpdate(crc,source);size+=source.length;controller.enqueue(source);totalBytes+=source.length;}}
+      else if(source){const reader=source.getReader();while(true){const {done,value}=await reader.read();if(done)break;if(value){crc=crcUpdate(crc,value);size+=value.length;controller.enqueue(value);totalBytes+=value.length;}}}
+      if(size!==entry.sizeBytes)throw new Error(`ZIP_ENTRY_SIZE_MISMATCH:${entry.name}:expected=${entry.sizeBytes}:actual=${size}`);
+      crc=(~crc)>>>0;const descriptor=concat([le32(0x08074b50),le32(crc),le32(size),le32(size)]);controller.enqueue(descriptor);totalBytes+=descriptor.length;central.push({name,crc,size,offset,time,date});
+    }
+    const centralOffset=totalBytes;const blocks:Uint8Array[]=[];
+    for(const c of central){blocks.push(concat([le32(0x02014b50),le16(20),le16(20),le16(0x0808),le16(0),le16(c.time),le16(c.date),le32(c.crc),le32(c.size),le32(c.size),le16(c.name.length),le16(0),le16(0),le16(0),le16(0),le32(0),le32(c.offset),c.name]));}
+    const centralDir=concat(blocks);controller.enqueue(centralDir);totalBytes+=centralDir.length;
+    const end=concat([le32(0x06054b50),le16(0),le16(0),le16(central.length),le16(central.length),le32(centralDir.length),le32(centralOffset),le16(0)]);controller.enqueue(end);totalBytes+=end.length;controller.close();
+  }catch(error){controller.error(error);}})();}});
+  return{stream,getSize:()=>totalBytes};
+}
+
+export async function fixedLengthZipStream(env:Env,entries:ZipEntry[]){
+  const resolved=await resolveZipEntrySizes(env,entries);const expectedSize=zipExpectedSize(resolved);const zipped=zipStream(resolved);
+  const FixedLengthStreamCtor=getFixedLengthStreamConstructor();const fixed=new FixedLengthStreamCtor(expectedSize);
+  const completion=zipped.stream.pipeTo(fixed.writable);
+  return{stream:fixed.readable,expectedSize,completion,getSize:()=>zipped.getSize()};
+}
+
+function zipInfrastructureFailure(message:string){
+  return /known length|FixedLengthStream|FIXED_LENGTH_STREAM|ZIP_ENTRY_SIZE_MISMATCH|ZIP_R2_SIZE_MISMATCH/i.test(message);
+}
 
 async function projectBundleEntries(env:Env,projectId:string){
   const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();if(!project)throw new Error("PROJECT_NOT_FOUND");
@@ -35,20 +113,20 @@ async function projectBundleEntries(env:Env,projectId:string){
   ]);
   const latestByRole=new Map<string,Record<string,unknown>>();for(const f of filesResult.results||[]){const role=clean(f.role).toUpperCase();if(!latestByRole.has(role))latestByRole.set(role,f);}
   const entries:ZipEntry[]=[];const used=new Set<string>();const unique=(name:string)=>{let n=safeName(name);if(!used.has(n)){used.add(n);return n;}const dot=n.lastIndexOf("."),stem=dot>0?n.slice(0,dot):n,ext=dot>0?n.slice(dot):"";let i=2;while(used.has(`${stem}-${i}${ext}`))i++;n=`${stem}-${i}${ext}`;used.add(n);return n;};
-  const addR2=(name:string,key:string)=>entries.push({name:unique(name),open:async()=>{const obj=await env.MEDIA.get(key);if(!obj)throw new Error(`R2_OBJECT_MISSING:${key}`);return obj.body;}});
-  const addText=(name:string,text:string)=>entries.push({name:unique(name),open:async()=>new TextEncoder().encode(text)});
+  const addR2=(name:string,key:string,sizeBytes?:number)=>entries.push({name:unique(name),r2Key:key,sizeBytes,open:async()=>{const obj=await env.MEDIA.get(key);if(!obj)throw new Error(`R2_OBJECT_MISSING:${key}`);return obj.body;}});
+  const addText=(name:string,text:string)=>{const bytes=new TextEncoder().encode(text);entries.push({name:unique(name),sizeBytes:bytes.length,open:async()=>bytes});};
   const script=["SCRIPT","ROTEIRO"].map(k=>latestByRole.get(k)).find(Boolean);const req=["REQUIREMENTS","IMAGENS_NECESSARIAS","IMAGENS NECESSARIAS"].map(k=>latestByRole.get(k)).find(Boolean);
-  if(script)addR2("ROTEIRO.txt",clean(script.r2_key));else addText("ROTEIRO.txt","ROTEIRO NÃO ANEXADO\n");
-  if(req)addR2("IMAGENS_NECESSARIAS.txt",clean(req.r2_key));else addText("IMAGENS_NECESSARIAS.txt","IMAGENS NECESSÁRIAS NÃO ANEXADAS\n");
-  for(const f of filesResult.results||[]){if(f===script||f===req)continue;addR2(`ARQUIVOS/${safeName(clean(f.file_name)||`${clean(f.role)}-${f.version}`)}`,clean(f.r2_key));}
+  if(script)addR2("ROTEIRO.txt",clean(script.r2_key),Number(script.size_bytes||0));else addText("ROTEIRO.txt","ROTEIRO NÃO ANEXADO\n");
+  if(req)addR2("IMAGENS_NECESSARIAS.txt",clean(req.r2_key),Number(req.size_bytes||0));else addText("IMAGENS_NECESSARIAS.txt","IMAGENS NECESSÁRIAS NÃO ANEXADAS\n");
+  for(const f of filesResult.results||[]){if(f===script||f===req)continue;addR2(`ARQUIVOS/${safeName(clean(f.file_name)||`${clean(f.role)}-${f.version}`)}`,clean(f.r2_key),Number(f.size_bytes||0));}
   const productionSlots=productionSlotsResult.results||[];
   const imageRows=productionSlots.length?productionSlots:(itemsResult.results||[]);
   if(productionSlots.length){
     const unresolved=productionSlots.filter(slot=>!clean(slot.asset_id)||!RESOLVED_SLOT_STATES.has(clean(slot.status).toUpperCase())||!clean(slot.target_file));
     if(unresolved.length)throw new Error(`PRODUCTION_SLOTS_INCOMPLETE:${unresolved.length}`);
   }
-  for(const item of imageRows){const key=clean(item.r2_key);if(!key)continue;const base=clean(item.target_file)||clean(item.original_name)||`${clean(item.item_key)||clean(item.id)}.${fileExt(clean(item.mime_type))}`;addR2(`IMAGENS/${safeName(base)}`,key);}
-  for(const media of mediaResult.results||[]){const prefix=Number(media.selected||0)?"SELECIONADA-":"";addR2(`THUMBS/${prefix}${safeName(clean(media.name)||`${clean(media.id)}.${fileExt(clean(media.mime_type))}`)}`,clean(media.r2_key));}
+  for(const item of imageRows){const key=clean(item.r2_key);if(!key)continue;const base=clean(item.target_file)||clean(item.original_name)||`${clean(item.item_key)||clean(item.id)}.${fileExt(clean(item.mime_type))}`;addR2(`IMAGENS/${safeName(base)}`,key,Number(item.size_bytes||0));}
+  for(const media of mediaResult.results||[]){const prefix=Number(media.selected||0)?"SELECIONADA-":"";addR2(`THUMBS/${prefix}${safeName(clean(media.name)||`${clean(media.id)}.${fileExt(clean(media.mime_type))}`)}`,clean(media.r2_key),Number(media.size_bytes||0));}
   const titles= titlesResult.results||[];const selected=titles.find(t=>Number(t.selected||0)===1);addText("TITULOS.txt",["TÍTULO SELECIONADO:",selected?clean(selected.text):"Nenhum título selecionado.","","IDEIAS ATIVAS:",...titles.map((t,i)=>`${i+1}. ${clean(t.text)}${Number(t.selected||0)?" [SELECIONADO]":""}`),""].join("\n"));
   addText("PROJETO.json",JSON.stringify({project_id:projectId,name:project.name,status:project.status,active_version:project.active_version,state_version:project.state_version,production_manifest:productionSlots.length>0,production_slots:productionSlots.length,images:imageRows.length,thumbs:(mediaResult.results||[]).length,titles:titles.length,generated_at:new Date().toISOString()},null,2));
   return{project,entries,imageCount:imageRows.length,thumbCount:(mediaResult.results||[]).length,titleCount:titles.length,productionSlotCount:productionSlots.length};
@@ -69,7 +147,48 @@ export async function queueFinalPackage(env:Env,input:{projectId:string;type?:st
   ]);await env.MATERIALIZE_QUEUE.send({kind:"GENERATE_PACKAGE",operationId,packageId,projectId:input.projectId} satisfies CorvoQueueJob);return{package_id:packageId,operation_id:operationId,project_id:input.projectId,project_revision:revision,type,status:"QUEUED",reused:false,httpStatus:202}as const;
 }
 
-export async function processPackageJob(env:Env,job:PackageJob){const ts=nowMs();await env.DB.batch([env.DB.prepare("UPDATE v2_download_packages SET status='PROCESSING',error=NULL,updated_at=? WHERE id=?").bind(ts,job.packageId),env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=?").bind(ts,job.operationId),env.DB.prepare("UPDATE v2_control_jobs SET status='PROCESSING',attempts=attempts+1,updated_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(ts,job.operationId)]);try{const bundle=await projectBundleEntries(env,job.projectId);const revision=projectRevision(bundle.project),fileName=`${safeName(clean(bundle.project.name)||job.projectId).replace(/\s+/g,"_").toUpperCase()}_PRODUCAO.zip`,r2Key=`projects/${job.projectId}/production/exports/r${revision}-${Date.now()}-${fileName}`;const zipped=zipStream(bundle.entries);await env.MEDIA.put(r2Key,zipped.stream,{httpMetadata:{contentType:"application/zip",contentDisposition:`attachment; filename=\"${fileName.replace(/[\"\\\r\n]/g,"-")}\"`},customMetadata:{projectId:job.projectId,revision:String(revision),packageId:job.packageId}});const head=await env.MEDIA.head(r2Key),done=nowMs();await env.DB.batch([env.DB.prepare("UPDATE v2_download_packages SET status='READY_FOR_DOWNLOAD',r2_key=?,file_name=?,size_bytes=?,ready_at=?,updated_at=?,error=NULL WHERE id=?").bind(r2Key,fileName,Number(head?.size||zipped.getSize()),done,done,job.packageId),env.DB.prepare("UPDATE automatic_projects SET zip_r2_key=?,zip_file_name=?,zip_size_bytes=?,state_version=state_version+1,updated_at=? WHERE id=?").bind(r2Key,fileName,Number(head?.size||zipped.getSize()),done,job.projectId),env.DB.prepare("UPDATE v2_ingest_operations SET status='COMPLETED',succeeded=1,failed=0,updated_at=? WHERE id=?").bind(done,job.operationId),env.DB.prepare("UPDATE v2_control_jobs SET status='COMPLETED',result_json=?,updated_at=?,completed_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(JSON.stringify({packageId:job.packageId,r2Key,fileName,sizeBytes:Number(head?.size||zipped.getSize()),images:bundle.imageCount,thumbs:bundle.thumbCount,titles:bundle.titleCount,productionSlots:bundle.productionSlotCount}),done,done,job.operationId)]);await reconcileAutomaticProject(env,job.projectId).catch(()=>undefined);return{packageId:job.packageId,status:"READY_FOR_DOWNLOAD",r2Key,fileName,sizeBytes:Number(head?.size||zipped.getSize())};}catch(error){const message=error instanceof Error?error.message:String(error),done=nowMs();await env.DB.batch([env.DB.prepare("UPDATE v2_download_packages SET status='FAILED',error=?,updated_at=? WHERE id=?").bind(message,done,job.packageId),env.DB.prepare("UPDATE v2_ingest_operations SET status='FAILED',failed=1,error=?,updated_at=? WHERE id=?").bind(message,done,job.operationId),env.DB.prepare("UPDATE v2_control_jobs SET status='FAILED',error=?,updated_at=?,completed_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(message,done,done,job.operationId)]);throw error;}}
+export async function processPackageJob(env:Env,job:PackageJob){
+  const ts=nowMs();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE v2_download_packages SET status='PROCESSING',error=NULL,updated_at=? WHERE id=?").bind(ts,job.packageId),
+    env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=?").bind(ts,job.operationId),
+    env.DB.prepare("UPDATE v2_control_jobs SET status='PROCESSING',attempts=attempts+1,updated_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(ts,job.operationId),
+  ]);
+  try{
+    const bundle=await projectBundleEntries(env,job.projectId);const revision=projectRevision(bundle.project);
+    const fileName=`${safeName(clean(bundle.project.name)||job.projectId).replace(/\s+/g,"_").toUpperCase()}_PRODUCAO.zip`;
+    const r2Key=`projects/${job.projectId}/production/exports/r${revision}-${Date.now()}-${fileName}`;
+    const zipped=await fixedLengthZipStream(env,bundle.entries);
+    const put=env.MEDIA.put(r2Key,zipped.stream,{httpMetadata:{contentType:"application/zip",contentDisposition:`attachment; filename=\"${fileName.replace(/[\"\\\r\n]/g,"-")}\"`},customMetadata:{projectId:job.projectId,revision:String(revision),packageId:job.packageId,knownLength:String(zipped.expectedSize)}});
+    await Promise.all([put,zipped.completion]);
+    const head=await env.MEDIA.head(r2Key);const actualSize=Number(head?.size||0);
+    if(!head||actualSize!==zipped.expectedSize)throw new Error(`ZIP_R2_SIZE_MISMATCH:expected=${zipped.expectedSize}:actual=${actualSize}`);
+    const done=nowMs();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE v2_download_packages SET status='READY_FOR_DOWNLOAD',r2_key=?,file_name=?,size_bytes=?,ready_at=?,updated_at=?,error=NULL WHERE id=?").bind(r2Key,fileName,actualSize,done,done,job.packageId),
+      env.DB.prepare("UPDATE automatic_projects SET zip_r2_key=?,zip_file_name=?,zip_size_bytes=?,state_version=state_version+1,updated_at=? WHERE id=?").bind(r2Key,fileName,actualSize,done,job.projectId),
+      env.DB.prepare("UPDATE v2_ingest_operations SET status='COMPLETED',succeeded=1,failed=0,updated_at=? WHERE id=?").bind(done,job.operationId),
+      env.DB.prepare("UPDATE v2_control_jobs SET status='COMPLETED',result_json=?,updated_at=?,completed_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(JSON.stringify({packageId:job.packageId,r2Key,fileName,sizeBytes:actualSize,expectedSize:zipped.expectedSize,images:bundle.imageCount,thumbs:bundle.thumbCount,titles:bundle.titleCount,productionSlots:bundle.productionSlotCount,fixedLengthStream:true}),done,done,job.operationId),
+      env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),job.projectId,"PACKAGE_EXPORT_READY","READY_FOR_DOWNLOAD",JSON.stringify({packageId:job.packageId,r2Key,fileName,sizeBytes:actualSize,fixedLengthStream:true}),done),
+    ]);
+    await updateProjectWorkflow(env,{projectId:job.projectId,activate:["DOWNLOADER_COMPLETED"],clear:["DOWNLOADER_WORKING"],metadata:{packageId:job.packageId,fixedLengthStream:true}}).catch(()=>undefined);
+    await reconcileAutomaticProject(env,job.projectId).catch(()=>undefined);
+    return{packageId:job.packageId,status:"READY_FOR_DOWNLOAD",r2Key,fileName,sizeBytes:actualSize,fixedLengthStream:true};
+  }catch(error){
+    const message=error instanceof Error?error.message:String(error),done=nowMs(),infra=zipInfrastructureFailure(message);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE v2_download_packages SET status='FAILED',error=?,updated_at=? WHERE id=?").bind(message,done,job.packageId),
+      env.DB.prepare("UPDATE v2_ingest_operations SET status='FAILED',failed=1,error=?,updated_at=? WHERE id=?").bind(message,done,job.operationId),
+      env.DB.prepare("UPDATE v2_control_jobs SET status='FAILED',error=?,updated_at=?,completed_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(message,done,done,job.operationId),
+      env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),job.projectId,infra?"PACKAGE_EXPORT_BLOCKED":"PACKAGE_EXPORT_FAILED",infra?"PACKAGE_BLOCKED_INFRASTRUCTURE":"FAILED",JSON.stringify({packageId:job.packageId,error:message,nextAction:infra?"CORRIGIR_EXPORTADOR_ZIP_FIXED_LENGTH_STREAM":"REVIEW_PACKAGE_FAILURE"}),done),
+    ]);
+    await updateProjectWorkflow(env,{projectId:job.projectId,clear:["DOWNLOADER_WORKING"],metadata:{packageId:job.packageId,error:message,infra}}).catch(()=>undefined);
+    if(infra){
+      await env.DB.prepare("UPDATE automatic_projects SET status='PACKAGE_BLOCKED_INFRASTRUCTURE',pipeline_status='PACKAGE_BLOCKED_INFRASTRUCTURE',next_action='CORRIGIR_EXPORTADOR_ZIP_FIXED_LENGTH_STREAM',state_version=state_version+1,updated_at=? WHERE id=?").bind(done,job.projectId).run().catch(()=>undefined);
+    }
+    throw error;
+  }
+}
 
 export async function listReadyPackages(env:Env,input:{projectId?:string;status?:string;limit?:number}={}){const where:string[]=[];const values:unknown[]=[];if(input.projectId){where.push("p.project_id=?");values.push(input.projectId)}if(input.status&&input.status!=="ALL"){where.push("p.status=?");values.push(input.status)}else if(!input.status)where.push("p.status='READY_FOR_DOWNLOAD'");values.push(Math.max(1,Math.min(input.limit||100,200)));const rows=await env.DB.prepare(`SELECT p.*,a.name AS project_name FROM v2_download_packages p LEFT JOIN automatic_projects a ON a.id=p.project_id ${where.length?`WHERE ${where.join(" AND ")}`:""} ORDER BY p.created_at DESC LIMIT ?`).bind(...values).all<Record<string,unknown>>();return{total:(rows.results||[]).length,packages:rows.results||[]};}
 export async function getPackageLink(request:Request,env:Env,packageId:string,ttlMinutes=30){const row=await env.DB.prepare("SELECT * FROM v2_download_packages WHERE id=?").bind(packageId).first<Record<string,unknown>>();if(!row)return{error:"PACKAGE_NOT_FOUND",status:404}as const;if(!["READY_FOR_DOWNLOAD","DOWNLOADED"].includes(clean(row.status)))return{error:`PACKAGE_NOT_READY:${clean(row.status)}`,status:409}as const;const ttl=Math.max(1,Math.min(ttlMinutes,60))*60;return{package_id:packageId,project_id:row.project_id,status:row.status,download_url:await createSignedPackageUrl(request,packageId,env,ttl),expires_at:new Date(Date.now()+ttl*1000).toISOString(),filename:row.file_name,size_bytes:Number(row.size_bytes||0),sha256:row.sha256||null,direct_to_pc:true,chat_file_delivery:"DISABLED",httpStatus:200}as const;}

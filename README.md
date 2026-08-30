@@ -1,4 +1,23 @@
-# Corvo Library V2 0.20.33 — Inline References No-Ticket + MCP3 Production Pipeline + Project Readability + FAST READ
+# Corvo Library V2 0.20.35 — Fixed-Length ZIP Export Recovery
+
+## ZIP / R2 infrastructure recovery 0.20.35
+
+- project production ZIP and generic asset ZIP now preflight every unique R2 object with `HEAD`;
+- exact ZIP byte length is calculated before upload;
+- the ZIP stream is piped through Cloudflare `FixedLengthStream(expectedSize)` before `R2.put`;
+- the same physical AST can still appear in multiple production slots/target filenames without duplicating its R2 object;
+- R2 output size is verified against the expected ZIP length before a package is marked READY;
+- package infrastructure failures automatically clear `DOWNLOADER_WORKING`, record `PACKAGE_EXPORT_BLOCKED`, and park the project at `PACKAGE_BLOCKED_INFRASTRUCTURE`;
+- successful regeneration records `PACKAGE_EXPORT_READY`, clears the downloader working tag, and reconciles the existing saved project state without re-running collection, QA, rotations, scenes, or slots.
+
+## FAST READ Boot / D1 Recovery 0.20.34
+
+- corrige o falso `FAST_READ_BOOT_FAILED` após atualização do Core quando `caches.default` ainda contém `/ui/boot` de uma release anterior;
+- toda chave do cache FAST READ recebe namespace da release (`__corvo_release=0.20.34`), impedindo colisão entre Workers antigos e novos;
+- após self-update/migrations, o frontend executa leitura de boot com cache-bust único antes de validar D1/schema;
+- `schemaGateDetail` lê `health.core`, portanto `d1`, `schema` e `schemaContract` deixam de aparecer como `null` apenas por causa do envelope do boot;
+- resposta HTTP de falha em `/control/update-core` agora interrompe o fluxo com o erro real, em vez de terminar acusando o D1;
+- schema D1 permanece `2.21.0`; não há migração destrutiva ou reset de dados nesta release.
 
 ## Inline References No-Ticket 0.20.33
 
@@ -90,10 +109,10 @@ Checkpoint operacional da Corvo Library V2 com **FAST READ**, Project Slots, age
 - rotas completas antigas permanecem disponíveis para diagnóstico e compatibilidade.
 
 ## Compatibilidade
-- App/Core/MCP: **0.20.33**;
+- App/Core/MCP: **0.20.35**;
 - schema: **2.21.0**;
 - Worker + D1 + R2 + Queue preservados;
 - migration `9021_v2_production_model.sql` é aditiva e não destrutiva;
-- Worker autoatualizável embutido sincronizado e validado em 0.20.33.
+- Worker autoatualizável embutido sincronizado e validado em 0.20.35.
 
 Consulte também `RELEASE_0_20_32_MCP3_PRODUCTION_PIPELINE.md`, `VALIDATION_0_20_32_MCP3_PRODUCTION_PIPELINE.json`, `BEHAVIOR_GATE_0_20_32_MCP3_PRODUCTION_PIPELINE.json` e os documentos das versões anteriores.

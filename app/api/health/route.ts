@@ -7,7 +7,7 @@ export async function GET() {
   const core = await getCoreHealth();
   return NextResponse.json({
     app: "ok",
-    version: "0.20.33",
+    version: "0.20.35",
     architecture: "CLOUDFLARE_CORE",
     coreConfigured: coreConfigured(),
     core,
