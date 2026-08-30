@@ -73,6 +73,16 @@ function targetFilesFromBlock(block:string){
   return found.slice(0,20);
 }
 
+function targetSceneNumber(line:string){
+  // Production target files are authoritative evidence for scene numbering when a
+  // human-written heading uses an unexpected style. Example: 061-tomoro.jpg.
+  // This fallback never invents a scene without a numbered media reference.
+  const match=String(line??"").match(/\b0*(\d{1,4})[-_ ]+[A-Za-z0-9][A-Za-z0-9._-]{0,160}\.(?:jpe?g|png|webp|gif|avif)\b/i);
+  if(!match)return null;
+  const number=Number(match[1]);
+  return Number.isFinite(number)&&number>0&&number<=1000?number:null;
+}
+
 export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
   const normalized=String(content??"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
   const lines=normalized.split("\n");
@@ -84,6 +94,17 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
     if(previous&&previous.number===header.number&&index-previous.index<=3){if(!previous.title&&header.title)previous.title=header.title;continue;}
     boundaries.push({index,...header});
   }
+  // Recovery path for real scripts whose last/isolated questions do not use one of
+  // the canonical heading spellings. If a target file is numbered, its prefix is
+  // enough to recover the missing PRODUCTION_SCENE without changing any slot/asset.
+  const explicitNumbers=new Set(boundaries.map(boundary=>boundary.number));
+  for(let index=0;index<lines.length;index++){
+    const number=targetSceneNumber(lines[index]);
+    if(!number||explicitNumbers.has(number))continue;
+    boundaries.push({index,number,title:""});
+    explicitNumbers.add(number);
+  }
+  boundaries.sort((a,b)=>a.index-b.index||a.number-b.number);
   if(!boundaries.length)return [];
 
   const scenes:ParsedProjectScene[]=[];

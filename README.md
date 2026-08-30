@@ -1,4 +1,15 @@
-# Corvo Library V2 0.20.36 — Forma Final Export: 3 arquivos
+# Corvo Library V2 0.20.37 — Forma Final Export: 3 arquivos
+
+## Final Export Worker + Scene Reconciliation 0.20.37
+
+- corrige `PROJECT_IMAGES_ZIP` / `PROJECT_SCRIPT_TXT` que podiam permanecer em `PROCESSING` durante drift de cenas;
+- o exportador não reconstrói pools nem os 102 production slots para corrigir cenas: faz upsert leve de `v2_production_scenes` em chunks D1;
+- slots existentes têm somente `scene_id` reconciliado pelo prefixo numérico do `target_file`; `asset_id`, status FROZEN e referência permanecem intactos;
+- parser usa o prefixo dos target files (`065-*` ... `072-*`) como fallback quando um cabeçalho humano não segue um dos formatos canônicos;
+- smoke realista: 64 cabeçalhos canônicos + 8 cenas recuperadas por target numerado = 72 production scenes;
+- pacote `QUEUED/PROCESSING` estagnado por 90 s é reenfileirado automaticamente sem criar nova coleta/QA/slots;
+- preflight das imagens usa concorrência limitada a 10, preservando a ordem final do ZIP;
+- arquitetura de três arquivos e schema D1 `2.22.0` permanecem inalterados.
 
 ## Forma Final Export 0.20.36
 
@@ -126,10 +137,10 @@ Checkpoint operacional da Corvo Library V2 com **FAST READ**, Project Slots, age
 - rotas completas antigas permanecem disponíveis para diagnóstico e compatibilidade.
 
 ## Compatibilidade
-- App/Core/MCP: **0.20.36**;
+- App/Core/MCP: **0.20.37**;
 - schema: **2.22.0**;
 - Worker + D1 + R2 + Queue preservados;
 - migrations `9021_v2_production_model.sql` e `9022_v2_final_exports_forma.sql` são aditivas e não destrutivas;
-- Worker autoatualizável embutido sincronizado e validado em 0.20.36.
+- Worker autoatualizável embutido sincronizado e validado em 0.20.37.
 
 Consulte também `RELEASE_0_20_32_MCP3_PRODUCTION_PIPELINE.md`, `VALIDATION_0_20_32_MCP3_PRODUCTION_PIPELINE.json`, `BEHAVIOR_GATE_0_20_32_MCP3_PRODUCTION_PIPELINE.json` e os documentos das versões anteriores.

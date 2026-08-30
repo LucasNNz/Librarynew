@@ -1,6 +1,6 @@
 import type { CorvoQueueJob, Env, PackageJob } from "../types";
 import { createSignedPackageUrl, createSignedProjectMediaUrl, validSignedPackageRequest, validSignedProjectMediaRequest } from "./auth";
-import { id, nowMs } from "./ids";
+import { id, nowMs, stableId } from "./ids";
 import { projectWriteGuard, updateProjectWorkflow } from "./project-workflow";
 import { materializeProductionModel, productionCompletionGate, type ProductionSceneSeed } from "./production-model";
 import { reconcileAutomaticProject } from "./projects";
@@ -132,6 +132,12 @@ function mimeForArtifactType(type:string){if(type==="PROJECT_SCRIPT_TXT")return"
 function filenameForArtifactType(type:string){if(type==="PROJECT_IMAGES_ZIP")return"imagens.zip";if(type==="PROJECT_SCRIPT_TXT")return"roteiro.txt";if(type==="PROJECT_PUBLICATION_ZIP")return"thumbs_titulos.zip";return"projeto.zip";}
 async function sha256Hex(value:Uint8Array|string){const bytes=typeof value==="string"?new TextEncoder().encode(value):value;const digest=await crypto.subtle.digest("SHA-256",bytes);return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");}
 
+async function mapLimit<T,R>(items:T[],limit:number,worker:(item:T,index:number)=>Promise<R>):Promise<R[]>{
+  const output=new Array<R>(items.length);let cursor=0;const width=Math.max(1,Math.min(limit,items.length||1));
+  await Promise.all(Array.from({length:width},async()=>{while(true){const index=cursor++;if(index>=items.length)return;output[index]=await worker(items[index],index);}}));
+  return output;
+}
+
 async function activeScript(env:Env,projectId:string){
   const row=await env.DB.prepare("SELECT * FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>();
   if(!row?.r2_key)throw new Error("SCRIPT_NOT_READY");
@@ -179,13 +185,50 @@ async function ensureImageTargetFormat(env:Env,input:{projectId:string;assetId:s
   const head=existing||await env.MEDIA.head(convertedKey);return{r2Key:convertedKey,sizeBytes:Number(head?.size||bytes.length),mime:wanted,converted:true};
 }
 
+async function reconcileProductionScenesLight(env:Env,input:{projectId:string;version:number;scenes:ReturnType<typeof parseProjectScriptScenes>}){
+  const ts=nowMs();
+  const sceneIds=new Map<number,string>();
+  const sceneStatements:D1PreparedStatement[]=[];
+  for(const scene of input.scenes){
+    const sceneId=await stableId("PSCENE",`${input.projectId}\n${input.version}\n${scene.itemKey}`,12);
+    sceneIds.set(scene.number,sceneId);
+    sceneStatements.push(env.DB.prepare(`INSERT INTO v2_production_scenes(id,project_id,version,scene_key,scene_number,title,universe,subject,concept,semantic_reference,script_excerpt,preset,context,composition_class,status,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'READY',?,?)
+      ON CONFLICT(project_id,version,scene_key) DO UPDATE SET scene_number=excluded.scene_number,title=excluded.title,universe=COALESCE(NULLIF(excluded.universe,''),v2_production_scenes.universe),subject=COALESCE(NULLIF(excluded.subject,''),v2_production_scenes.subject),concept=COALESCE(NULLIF(excluded.concept,''),v2_production_scenes.concept),semantic_reference=COALESCE(NULLIF(excluded.semantic_reference,''),v2_production_scenes.semantic_reference),script_excerpt=excluded.script_excerpt,preset=COALESCE(NULLIF(excluded.preset,''),v2_production_scenes.preset),context=excluded.context,composition_class=excluded.composition_class,status='READY',updated_at=excluded.updated_at`)
+      .bind(sceneId,input.projectId,input.version,scene.itemKey,scene.number,scene.title||scene.itemKey,scene.universe||null,scene.subject||null,scene.concept||null,scene.reference||null,scene.scriptExcerpt||null,scene.preset||null,scene.scriptExcerpt||null,scene.compositionClass||"CONTEXTUAL",ts,ts));
+  }
+  for(let offset=0;offset<sceneStatements.length;offset+=50)await env.DB.batch(sceneStatements.slice(offset,offset+50));
+
+  // Existing 102/102 slots are production truth. Only repair their scene_id using
+  // the numeric target prefix; never touch asset_id/status/reference pools here.
+  const slotRows=await env.DB.prepare("SELECT id,target_file,scene_id FROM v2_production_slots WHERE project_id=? AND version=?").bind(input.projectId,input.version).all<Record<string,unknown>>();
+  const slotUpdates:D1PreparedStatement[]=[];let relinked=0;
+  for(const slot of slotRows.results||[]){
+    const match=clean(slot.target_file).match(/^0*(\d{1,4})[-_ ]/);if(!match)continue;
+    const number=Number(match[1]),sceneId=sceneIds.get(number);if(!sceneId||clean(slot.scene_id)===sceneId)continue;
+    slotUpdates.push(env.DB.prepare("UPDATE v2_production_slots SET scene_id=?,updated_at=? WHERE id=?").bind(sceneId,ts,slot.id));relinked++;
+  }
+  for(let offset=0;offset<slotUpdates.length;offset+=50)await env.DB.batch(slotUpdates.slice(offset,offset+50));
+  await env.DB.batch([
+    env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,input.projectId),
+    env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),input.projectId,"PRODUCTION_SCENES_FAST_RECONCILED","OK",JSON.stringify({questions:input.scenes.length,sceneUpserts:sceneStatements.length,slotSceneRelinks:relinked,preservedSlots:true,preservedAssets:true}),ts),
+  ]);
+  const row=await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=?").bind(input.projectId,input.version).first<Record<string,unknown>>();
+  return{sceneCount:Number(row?.total||0),relinked};
+}
+
 async function validateScriptStructure(env:Env,projectId:string){
   const script=await activeScript(env,projectId);const parsed=parseProjectScriptScenes(script.text);const refs=scriptImageRefs(script.text);
   if(parsed.length>100)throw new Error(`FORMA_QUESTION_LIMIT_EXCEEDED:${parsed.length}:max=100`);
   if(refs.length>250)throw new Error(`FORMA_IMAGE_LIMIT_EXCEEDED:${refs.length}:max=250`);
   const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();if(!project)throw new Error("PROJECT_NOT_FOUND");const version=Number(project.active_version||1);
   let sceneCount=Number((await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=?").bind(projectId,version).first<Record<string,unknown>>())?.total||0);
-  if(parsed.length!==sceneCount){const seeds:ProductionSceneSeed[]=parsed.map(scene=>({sceneKey:scene.itemKey,number:scene.number,title:scene.title,universe:scene.universe,subject:scene.subject,concept:scene.concept,reference:scene.reference,scriptExcerpt:scene.scriptExcerpt,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass,slots:scene.targetFiles.map(targetFile=>({targetFile,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass}))}));await materializeProductionModel(env,{projectId,version,scenes:seeds});sceneCount=Number((await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=?").bind(projectId,version).first<Record<string,unknown>>())?.total||0);}
+  if(parsed.length!==sceneCount){
+    // Export must not rebuild pools/slots. Repair scenes only, in D1 batches, then
+    // continue using the already-resolved production slots. This keeps the Queue
+    // hot path short enough to finish PROJECT_SCRIPT_TXT / PROJECT_IMAGES_ZIP.
+    const repaired=await reconcileProductionScenesLight(env,{projectId,version,scenes:parsed});sceneCount=repaired.sceneCount;
+  }
   if(parsed.length!==sceneCount)throw new Error(`PRODUCTION_SCENES_MISMATCH:questions_script=${parsed.length}:production_scenes_total=${sceneCount}`);
   return{script,questions:parsed.length,imageRefs:refs,sceneCount,version};
 }
@@ -197,9 +240,14 @@ async function finalImagesBundle(env:Env,projectId:string){
   const byTarget=new Map<string,Record<string,unknown>[]>();for(const slot of slots){const key=normalizeTarget(clean(slot.target_file));if(!key)continue;const arr=byTarget.get(key)||[];arr.push(slot);byTarget.set(key,arr);}
   const duplicateTargets=[...byTarget.entries()].filter(([,list])=>list.length>1).map(([name])=>name);if(duplicateTargets.length)throw new Error(`DUPLICATE_TARGET_NAMES:${duplicateTargets.slice(0,20).join(",")}`);
   const missing=structure.imageRefs.filter(name=>!byTarget.has(normalizeTarget(name)));if(missing.length)throw new Error(`SCRIPT_IMAGE_REFS_MISSING_SLOTS:${missing.length}:${missing.slice(0,20).join(",")}`);
-  const entries:ZipEntry[]=[];let converted=0;
-  for(const name of structure.imageRefs){const slot=byTarget.get(normalizeTarget(name))![0];const preset=clean(slot.preset).toUpperCase();if(["CENTRAL_2","FOCO_4"].includes(preset)&&expectedMimeForTarget(name)!=="image/png")throw new Error(`TRANSPARENCY_PRESET_REQUIRES_PNG:${name}:${preset}`);const prepared=await ensureImageTargetFormat(env,{projectId,assetId:clean(slot.asset_id),r2Key:clean(slot.r2_key),targetFile:name,sourceMime:clean(slot.mime_type),assetHash:clean(slot.asset_sha256)});if(prepared.converted)converted++;entries.push({name:safeName(name),r2Key:prepared.r2Key,sizeBytes:prepared.sizeBytes,open:async()=>{const obj=await env.MEDIA.get(prepared.r2Key);if(!obj)throw new Error(`R2_OBJECT_MISSING:${prepared.r2Key}`);return obj.body;}});}
-  return{entries,structure,slotsTotal:slots.length,converted,expectedNames:structure.imageRefs.map(safeName)};
+  const preparedEntries=await mapLimit(structure.imageRefs,10,async name=>{
+    const slot=byTarget.get(normalizeTarget(name))![0];const preset=clean(slot.preset).toUpperCase();
+    if(["CENTRAL_2","FOCO_4"].includes(preset)&&expectedMimeForTarget(name)!=="image/png")throw new Error(`TRANSPARENCY_PRESET_REQUIRES_PNG:${name}:${preset}`);
+    const prepared=await ensureImageTargetFormat(env,{projectId,assetId:clean(slot.asset_id),r2Key:clean(slot.r2_key),targetFile:name,sourceMime:clean(slot.mime_type),assetHash:clean(slot.asset_sha256)});
+    return{name:safeName(name),prepared};
+  });
+  let converted=0;const entries:ZipEntry[]=preparedEntries.map(({name,prepared})=>{if(prepared.converted)converted++;return{name,r2Key:prepared.r2Key,sizeBytes:prepared.sizeBytes,open:async()=>{const obj=await env.MEDIA.get(prepared.r2Key);if(!obj)throw new Error(`R2_OBJECT_MISSING:${prepared.r2Key}`);return obj.body;}};});
+  return{entries,structure,slotsTotal:slots.length,converted,expectedNames:structure.imageRefs.map(safeName),preflightConcurrency:10};
 }
 
 async function finalPublicationBundle(env:Env,projectId:string){
@@ -277,7 +325,23 @@ export async function queueFinalPackage(env:Env,input:{projectId:string;type?:st
   const revisionHash=isFinal?await artifactRevisionHash(env,input.projectId,type as FinalArtifactType):null;
   const byOp=await env.DB.prepare("SELECT * FROM v2_download_packages WHERE operation_id=?").bind(operationId).first<Record<string,unknown>>();if(byOp)return{...byOp,reused:true,httpStatus:202}as const;
   const existing=isFinal?await env.DB.prepare("SELECT * FROM v2_download_packages WHERE project_id=? AND type=? AND revision_hash=? AND status NOT IN ('FAILED') ORDER BY created_at DESC LIMIT 1").bind(input.projectId,type,revisionHash).first<Record<string,unknown>>():await env.DB.prepare("SELECT * FROM v2_download_packages WHERE project_id=? AND project_revision=? AND type=? AND status NOT IN ('FAILED') ORDER BY created_at DESC LIMIT 1").bind(input.projectId,revision,type).first<Record<string,unknown>>();
-  if(existing)return{...existing,reused:true,httpStatus:202}as const;
+  if(existing){
+    const status=clean(existing.status).toUpperCase();
+    if(["READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(status))return{...existing,reused:true,httpStatus:200}as const;
+    const ageMs=Math.max(0,nowMs()-Number(existing.updated_at||existing.created_at||0));
+    if(["QUEUED","PROCESSING"].includes(status)&&ageMs>=90_000){
+      const staleOperationId=clean(existing.operation_id);const stalePackageId=clean(existing.id);const recoveredAt=nowMs();
+      await env.DB.batch([
+        env.DB.prepare("UPDATE v2_download_packages SET status='QUEUED',error='STALE_EXPORT_REQUEUED',updated_at=? WHERE id=?").bind(recoveredAt,stalePackageId),
+        env.DB.prepare("UPDATE v2_ingest_operations SET status='QUEUED',error=NULL,failed=0,updated_at=? WHERE id=?").bind(recoveredAt,staleOperationId),
+        env.DB.prepare("UPDATE v2_control_jobs SET status='QUEUED',error=NULL,updated_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(recoveredAt,staleOperationId),
+        env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),input.projectId,"FINAL_ARTIFACT_STALE_REQUEUED","QUEUED",JSON.stringify({packageId:stalePackageId,type,previousStatus:status,ageMs}),recoveredAt),
+      ]);
+      await env.MATERIALIZE_QUEUE.send({kind:"GENERATE_PACKAGE",operationId:staleOperationId,packageId:stalePackageId,projectId:input.projectId} satisfies CorvoQueueJob);
+      return{...existing,status:"QUEUED",reused:true,recovered_from_stale:true,previous_status:status,stale_age_ms:ageMs,httpStatus:202}as const;
+    }
+    return{...existing,reused:true,stale:false,httpStatus:202}as const;
+  }
   await updateProjectWorkflow(env,{projectId:input.projectId,activate:["DOWNLOADER_WORKING"],ownerId:"MCP_DOWNLOADER",executionId:operationId,ttlSeconds:600,metadata:{source:"queue_final_package",type}}).catch(()=>undefined);
   const packageId=id("PKG"),jobId=id("JOB"),ts=nowMs();await env.DB.batch([
     env.DB.prepare("INSERT INTO v2_download_packages (id,operation_id,project_id,project_revision,type,status,revision_hash,mime_type,created_at,updated_at) VALUES (?,?,?,?,?,'QUEUED',?,?,?,?)").bind(packageId,operationId,input.projectId,revision,type,revisionHash,mimeForArtifactType(type),ts,ts),
