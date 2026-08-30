@@ -1,4 +1,16 @@
-# Corvo Library V2 0.20.6 — Legacy Core Compatible
+# Corvo Library V2 0.20.7 — Fetch Bridge Seguro
+
+Esta correção substitui o acesso direto navegador → Worker por um proxy
+same-origin do próprio app. Assim, Workers antigos não derrubam o boot com um
+erro opaco de CORS (`Failed to fetch`), e o servidor retorna o status real.
+
+O boot agora é estritamente de leitura. Abrir, recarregar ou atualizar a
+interface não executa Factory Zero e não apaga assets, projetos ou histórico.
+Migrações e manutenção permanecem ações explícitas.
+
+Veja `RELEASE_0_20_7_FETCH_BRIDGE_SAFE_BOOT.md`.
+
+# Histórico: Corvo Library V2 0.20.6 — Legacy Core Compatible
 
 O boot não depende de atualizar o Worker. A UI fica vazia, aplica a migration 9014 pelo endpoint de migrations já presente no Core 0.19+, lê o D1 final e só então renderiza.
 

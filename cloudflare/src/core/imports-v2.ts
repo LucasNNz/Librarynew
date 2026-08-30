@@ -80,7 +80,9 @@ function parseZip(bytes: Uint8Array) {
 }
 
 async function inflateRaw(bytes: Uint8Array) {
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw" as CompressionFormat));
+  const owned = new Uint8Array(bytes.byteLength);
+  owned.set(bytes);
+  const stream = new Blob([owned.buffer]).stream().pipeThrough(new DecompressionStream("deflate-raw" as CompressionFormat));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
@@ -179,7 +181,9 @@ function metadata(path: string, manifest: Manifest | null): MediaMetadata {
 }
 
 async function sha256Hex(bytes: Uint8Array) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const owned = new Uint8Array(bytes.byteLength);
+  owned.set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", owned.buffer);
   return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
 }
 function assetIdFromSha(sha: string) { return `AST-${sha.slice(0, 20).toUpperCase()}`; }

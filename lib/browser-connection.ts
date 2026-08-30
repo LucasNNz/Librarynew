@@ -38,7 +38,9 @@ export function clearBrowserConnection() {
 }
 
 function shouldProxy(value: string) {
-  return value.startsWith("/api/") && !value.startsWith("/api/setup/");
+  return value.startsWith("/api/")
+    && !value.startsWith("/api/setup/")
+    && !value.startsWith("/api/core-proxy/");
 }
 
 export function installCorvoFetchBridge() {
@@ -51,8 +53,12 @@ export function installCorvoFetchBridge() {
     const path = raw.slice(4); // /api/assets -> /assets
     const headers = new Headers(init?.headers);
     headers.set("x-corvo-app-key", connection.appKey);
+    headers.set("x-corvo-core-url", connection.coreUrl);
     headers.set("accept", headers.get("accept") || "application/json");
-    return nativeFetch(`${connection.coreUrl.replace(/\/$/, "")}${path}`, { ...init, headers, cache: "no-store" });
+    // Keep browser traffic same-origin. The server route forwards the request to
+    // the saved Worker, avoiding CORS/preflight failures and opaque
+    // `Failed to fetch` errors from older Core releases.
+    return nativeFetch(`/api/core-proxy${path}`, { ...init, headers, cache: "no-store" });
   };
   window.fetch = patched;
   return () => { if (window.fetch === patched) window.fetch = nativeFetch; };

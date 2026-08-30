@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.6";
+const EXPECTED_CORE_VERSION = "0.20.7";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -566,44 +566,29 @@ export default function Home() {
   const loadAuthoritativeBootstrap = useCallback(async () => {
     if (!readBrowserConnection() || releaseGateState === "running") return;
     setReleaseGateState("running");
-    setReleaseGateMessage("Preparando o D1 real…");
+    setReleaseGateMessage("Lendo o estado real do D1…");
     setHealth(null);
     setLoading(true);
     setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]); setRecentOperations([]);
     setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
     setTotal(0); setNextCursor(null);
     try {
-      // Compatibilidade deliberada com o Core 0.19 já publicado.
-      // Nenhum auto-update do Worker acontece no boot. Primeiro aplicamos apenas
-      // migrations novas no D1; a UI continua vazia durante todo o processo.
-      const migrationResponse = await fetchWithNetworkRetry(
-        "/api/control/apply-migrations",
-        { method:"POST", cache:"no-store" },
-        { attempts:3, baseDelayMs:500 },
-      );
-      const migration = await migrationResponse.json().catch(()=>({})) as any;
-      if (!migrationResponse.ok) throw new Error(migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
-      if (String(migration?.targetVersion || "") !== "0.20.6" || String(migration?.schemaVersion || "") !== "2.14.0") {
-        throw new Error(`MIGRATION_SOURCE_STALE:${String(migration?.targetVersion || "unknown")}/${String(migration?.schemaVersion || "unknown")}`);
-      }
-      const executed = Array.isArray(migration?.executed) ? migration.executed.map(String) : [];
-      const cleanExecuted = executed.includes("9014_v2_authoritative_factory_zero.sql");
-
-      setReleaseGateMessage("Lendo o estado final do D1…");
-      // Só depois da migration buscamos o snapshot real. Nada dessas respostas é
-      // aplicado isoladamente na tela: o commit visual acontece apenas no fim.
+      // Boot is read-only. Database migrations and Core publication must be
+      // explicit maintenance actions; opening the UI must never erase data.
+      const read = (path:string) => fetchWithNetworkRetry(path, { cache:"no-store" }, { attempts:4, baseDelayMs:500 });
       const [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse, operationsResponse] = await Promise.all([
-        fetch("/api/health", { cache:"no-store" }),
-        fetch("/api/catalog/stats", { cache:"no-store" }),
-        fetch("/api/catalog/universes", { cache:"no-store" }),
-        fetch("/api/assets?limit=48&status=APPROVED", { cache:"no-store" }),
-        fetch("/api/projects?limit=100", { cache:"no-store" }),
-        fetch("/api/operations?limit=25", { cache:"no-store" }),
+        read("/api/health"),
+        read("/api/catalog/stats"),
+        read("/api/catalog/universes"),
+        read("/api/assets?limit=48&status=APPROVED"),
+        read("/api/projects?limit=100"),
+        read("/api/operations?limit=25").catch(()=>null),
       ]);
       const critical = [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse];
       if (critical.some(response => !response.ok)) {
         const failed = critical.find(response => !response.ok)!;
-        throw new Error(`REAL_STATE_HTTP_${failed.status}`);
+        const payload = await failed.json().catch(()=>({})) as {error?:string;detail?:string};
+        throw new Error(payload.error || payload.detail || `REAL_STATE_HTTP_${failed.status}`);
       }
 
       const rawHealth = await healthResponse.json() as any;
@@ -617,13 +602,9 @@ export default function Home() {
       const projectValue = await projectResponse.json() as any;
       const nextProjects = Array.isArray(projectValue?.items) ? projectValue.items as AutomaticProject[] : [];
       let nextOperations: Operation[] = [];
-      if (operationsResponse.ok) {
+      if (operationsResponse?.ok) {
         const operationValue = await operationsResponse.json().catch(()=>({})) as any;
         nextOperations = Array.isArray(operationValue?.items) ? operationValue.items as Operation[] : [];
-      }
-
-      if (cleanExecuted && (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0)) {
-        throw new Error("FACTORY_ZERO_9014_VERIFICATION_FAILED");
       }
 
       // React 18+ agrupa estes setters: o usuário recebe um snapshot final, nunca
@@ -637,7 +618,7 @@ export default function Home() {
       setProjects(nextProjects);
       setRecentOperations(nextOperations);
       setLoading(false);
-      setReleaseGateMessage(cleanExecuted ? "D1 limpo e estado real confirmado." : "Estado real confirmado no D1.");
+      setReleaseGateMessage("Estado real confirmado no D1.");
       setReleaseGateState("done");
     } catch (error) {
       setReleaseGateState("error");
