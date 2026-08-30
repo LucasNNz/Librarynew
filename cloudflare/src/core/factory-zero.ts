@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import { nowMs } from "./ids";
 
-const RELEASE_KEY = "factory_zero_release_0_20_3";
+const RELEASE_KEY = "factory_zero_release_0_20_5";
 const SCHEMA_VERSION = "2.13.0";
 
 const CONTENT_TABLES = [
@@ -45,7 +45,7 @@ export async function factoryZeroStatus(env: Env) {
     tableCount(env,"requests",tables), tableCount(env,"batches",tables),
   ]);
   return {
-    release: "0.20.3",
+    release: "0.20.5",
     schemaVersion: SCHEMA_VERSION,
     marker,
     required: marker !== "DONE",
@@ -55,7 +55,7 @@ export async function factoryZeroStatus(env: Env) {
 }
 
 export async function executeFactoryZero(env: Env, confirm: string) {
-  if (confirm !== "FACTORY_ZERO_0_20_3") throw new Error("FACTORY_ZERO_CONFIRMATION_REQUIRED");
+  if (confirm !== "FACTORY_ZERO_0_20_5") throw new Error("FACTORY_ZERO_CONFIRMATION_REQUIRED");
   const before = await factoryZeroStatus(env);
   if (!before.required) return { ok:true, idempotent:true, before, after:before };
 
@@ -82,8 +82,8 @@ export async function executeFactoryZero(env: Env, confirm: string) {
   if (tables.has("v2_maintenance_state")) {
     await env.DB.prepare("DELETE FROM v2_maintenance_state").run();
     await env.DB.prepare(`INSERT INTO v2_maintenance_state(key,status,detail_json,attempts,created_at,updated_at,completed_at)
-      VALUES ('PURGE_FACTORY_ZERO_R2_0_20_3','PENDING',?,0,?,?,NULL)`)
-      .bind(JSON.stringify({prefixes:R2_PREFIXES,preserveBucket:true,refreshRecovery:false,reason:"0.20.3 one-time live factory zero"}),ts,ts).run();
+      VALUES ('PURGE_FACTORY_ZERO_R2_0_20_5','PENDING',?,0,?,?,NULL)`)
+      .bind(JSON.stringify({prefixes:R2_PREFIXES,preserveBucket:true,refreshRecovery:false,reason:"0.20.5 one-request authoritative factory zero"}),ts,ts).run();
   }
 
   const after = await factoryZeroStatus(env);

@@ -64,7 +64,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.4", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.5", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -97,7 +97,32 @@ export default {
     if (!authorized(request, env)) return withCors(json({ error: "UNAUTHORIZED" }, { status: 401 }), request);
 
     let response: Response;
-    if (url.pathname === "/health" && request.method === "GET") { ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined)); response = json(await health(env)); }
+    if (url.pathname === "/bootstrap" && request.method === "POST") {
+      const before = await factoryZeroStatus(env);
+      const reset = before.required ? await executeFactoryZero(env, "FACTORY_ZERO_0_20_5") : null;
+      const catalogUrl = new URL(request.url);
+      catalogUrl.pathname = "/assets";
+      catalogUrl.search = "?limit=48&status=APPROVED";
+      const catalogRequest = new Request(catalogUrl.toString(), { method:"GET", headers:request.headers });
+      const [coreHealth, stats, universes, catalog, projectPage, operations] = await Promise.all([
+        health(env),
+        catalogStats(env),
+        listUniverses(env),
+        listAssets(catalogRequest, env),
+        listAutomaticProjects(env, 100),
+        listOperations(env, 25),
+      ]);
+      ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
+      response = json({
+        ok:true,
+        authoritative:true,
+        version:"0.20.5",
+        health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
+        factoryZero:{ executed:Boolean(reset && !reset.idempotent), status:await factoryZeroStatus(env) },
+        stats, universes, catalog, projects:projectPage, operations,
+      });
+    }
+    else if (url.pathname === "/health" && request.method === "GET") { ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined)); response = json(await health(env)); }
     else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
     else if (url.pathname === "/control/apply-migrations" && request.method === "POST") response = json(await applyMigrationsFromApp(env));
     else if (url.pathname === "/control/rotate-app-key" && request.method === "POST") response = json(await rotateAppKey(env));

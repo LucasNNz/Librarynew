@@ -1,0 +1,41 @@
+{
+  "checkpoint": "0.20.5",
+  "test": "authoritative single-response boot",
+  "frontend": {
+    "bootstrap_network_calls": 1,
+    "only_bootstrap_endpoint": true,
+    "initial_health_stats_prefetch_removed": true,
+    "data_hidden_until_ready": true,
+    "no_immediate_second_refresh_on_gate_done": true,
+    "browser_persists_only_connection": true
+  },
+  "worker": {
+    "bootstrap_route": true,
+    "factory_zero_and_snapshot_same_route": true,
+    "no_self_update_in_bootstrap": true,
+    "authoritative_flag": true,
+    "release_marker": true
+  },
+  "dirty_d1_simulation": {
+    "before": {
+      "assets": 1,
+      "projects": 1,
+      "infra": 1
+    },
+    "after": {
+      "assets": 0,
+      "projects": 0,
+      "infra": 1
+    },
+    "infra": [
+      "INSTANCE-LIVE",
+      9,
+      "LOCKED",
+      "corvoquiz-prod"
+    ],
+    "marker": "DONE",
+    "r2_cleanup_task": "PENDING",
+    "foreign_key_violations": 0
+  },
+  "pass": true
+}

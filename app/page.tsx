@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.4";
+const EXPECTED_CORE_VERSION = "0.20.5";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -244,6 +244,7 @@ export default function Home() {
   const [infraMessage, setInfraMessage] = useState("");
   const [infraSaving, setInfraSaving] = useState(false);
   const [localConnection, setLocalConnection] = useState<BrowserConnection | null>(null);
+  const [connectionResolved, setConnectionResolved] = useState(false);
   const [cloudflareToken, setCloudflareToken] = useState("");
   const [cloudflareAccountId, setCloudflareAccountId] = useState("");
   const [cloudflareAccounts, setCloudflareAccounts] = useState<Array<{id:string;name:string}>>([]);
@@ -562,123 +563,64 @@ export default function Home() {
     }
   }, [candidateState]);
 
-  const enforceFactoryZeroRelease = useCallback(async () => {
+  const loadAuthoritativeBootstrap = useCallback(async () => {
     if (!readBrowserConnection() || releaseGateState === "running") return;
     setReleaseGateState("running");
-    setReleaseGateMessage("Preparando Factory Zero 0.20.4…");
-    setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]);
+    setReleaseGateMessage("Carregando o estado real do D1…");
+    setHealth(null);
+    setLoading(true);
+    setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]); setRecentOperations([]);
     setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
+    setTotal(0); setNextCursor(null);
     try {
-      const fetchCore = (input:RequestInfo|URL, init:RequestInit={}, attempts=5) => fetchWithNetworkRetry(input,init,{attempts,baseDelayMs:700,onRetry:()=>setReleaseGateMessage("Core reiniciando após atualização… reconectando automaticamente.")});
-
-      let probe = await fetchCore("/api/health", { cache:"no-store" }, 4);
-      if (!probe.ok) throw new Error(`HEALTH_HTTP_${probe.status}`);
-      let raw = await probe.json();
-      let version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
-      if (version !== EXPECTED_CORE_VERSION) {
-        setReleaseGateMessage(`Atualizando Core ${version || "antigo"} → ${EXPECTED_CORE_VERSION}…`);
-        let updateAcknowledged=false;
-        try {
-          const update = await fetch("/api/control/update-core", { method:"POST" });
-          const updateValue = await update.json().catch(()=>({}));
-          if (!update.ok) throw new Error(updateValue?.error || `CORE_UPDATE_HTTP_${update.status}`);
-          updateAcknowledged=true;
-        } catch(error) {
-          // A atualização substitui o próprio Worker. O deploy pode encerrar a conexão
-          // depois de ter sido aceito; nesse caso o health abaixo confirma o resultado.
-          if(!isTransientFetchError(error)) throw error;
-          setReleaseGateMessage("Atualização enviada; o Worker reiniciou durante a resposta. Reconectando…");
-        }
-        let ready = false;
-        for (let attempt=0; attempt<36; attempt+=1) {
-          await sleep(attempt===0 ? 1100 : Math.min(2500,1100+attempt*90));
-          try {
-            probe = await fetch("/api/health", { cache:"no-store" });
-            if (!probe.ok) continue;
-            raw = await probe.json();
-            version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
-            if (version === EXPECTED_CORE_VERSION) { ready = true; break; }
-          } catch(error) {
-            if(!isTransientFetchError(error)) throw error;
-            setReleaseGateMessage("Worker sendo republicado… aguardando o endpoint voltar.");
-          }
-        }
-        if (!ready) throw new Error(`CORE_UPDATE_TIMEOUT:${version || "unknown"}${updateAcknowledged?"":";response_lost"}`);
+      // Uma única chamada autoritativa. O Worker conclui o Factory Zero, consulta o D1
+      // e devolve o snapshot final na MESMA resposta. Nada é renderizado antes disso.
+      const response = await fetch("/api/bootstrap", { method:"POST", cache:"no-store" });
+      const value = await response.json().catch(()=>({})) as any;
+      if (!response.ok) {
+        if (response.status === 404) throw new Error("CORE_BOOTSTRAP_UNAVAILABLE: atualize o Core explicitamente antes de carregar dados.");
+        throw new Error(value?.error || `BOOTSTRAP_HTTP_${response.status}`);
       }
+      if (!value?.authoritative || value?.version !== EXPECTED_CORE_VERSION) throw new Error("BOOTSTRAP_NOT_AUTHORITATIVE");
+      const zero = value?.factoryZero?.status;
+      if (zero?.required) throw new Error("FACTORY_ZERO_NOT_CONFIRMED");
+      // Só exigimos contagem zero quando ESTE boot acabou de executar o reset.
+      // Depois que o usuário importar/criar dados reais, reloads normais devem preservá-los.
+      if (value?.factoryZero?.executed && (Number(zero?.counts?.assets||0)!==0 || Number(zero?.counts?.projects||0)!==0)) throw new Error("FACTORY_ZERO_RESET_VERIFICATION_FAILED");
 
-      setReleaseGateMessage("Core online. Aplicando schema de forma idempotente…");
-      const migrationResponse = await fetchCore("/api/control/apply-migrations", { method:"POST" }, 6);
-      const migration = await migrationResponse.json().catch(()=>({}));
-      if (!migrationResponse.ok) throw new Error(migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
-
-      setReleaseGateMessage("Verificando se o Factory Zero ainda é necessário…");
-      let statusResponse = await fetchCore("/api/control/factory-zero/status", { cache:"no-store" }, 6);
-      let statusValue = await statusResponse.json().catch(()=>({}));
-      if (!statusResponse.ok) throw new Error(statusValue?.error || `FACTORY_ZERO_STATUS_HTTP_${statusResponse.status}`);
-      if (statusValue?.required) {
-        setReleaseGateMessage("Limpando dados antigos do D1 e resíduos Corvo do R2…");
-        let resetResponse:Response|null=null;
-        let resetBody:any=null;
-        try {
-          resetResponse = await fetchCore("/api/control/factory-zero", {
-            method:"POST", headers:{"content-type":"application/json"},
-            body:JSON.stringify({confirm:"FACTORY_ZERO_0_20_3"}),
-          }, 3);
-          resetBody = await resetResponse.json().catch(()=>({}));
-          if (!resetResponse.ok) throw new Error(resetBody?.error || `FACTORY_ZERO_HTTP_${resetResponse.status}`);
-        } catch(error) {
-          if(!isTransientFetchError(error)) throw error;
-          // O POST é idempotente e pode ter concluído antes da conexão cair.
-          // Confirme o marcador no servidor antes de repetir qualquer limpeza.
-          setReleaseGateMessage("A resposta do reset foi interrompida; confirmando o resultado no D1…");
-        }
-
-        statusResponse = await fetchCore("/api/control/factory-zero/status", { cache:"no-store" }, 8);
-        statusValue = await statusResponse.json().catch(()=>({}));
-        if (!statusResponse.ok) throw new Error(statusValue?.error || `FACTORY_ZERO_VERIFY_HTTP_${statusResponse.status}`);
-        if (statusValue?.required) {
-          const retryReset = await fetchCore("/api/control/factory-zero", {
-            method:"POST", headers:{"content-type":"application/json"},
-            body:JSON.stringify({confirm:"FACTORY_ZERO_0_20_3"}),
-          }, 5);
-          const retryBody = await retryReset.json().catch(()=>({}));
-          if(!retryReset.ok) throw new Error(retryBody?.error || `FACTORY_ZERO_RETRY_HTTP_${retryReset.status}`);
-        } else if (resetBody?.after && (Number(resetBody.after?.counts?.assets||0)!==0 || Number(resetBody.after?.counts?.projects||0)!==0)) {
-          throw new Error("FACTORY_ZERO_VERIFICATION_FAILED");
-        }
-      }
-
-      const finalStatusResponse = await fetchCore("/api/control/factory-zero/status", { cache:"no-store" }, 6);
-      const finalStatus = await finalStatusResponse.json().catch(()=>({}));
-      if(!finalStatusResponse.ok) throw new Error(finalStatus?.error || `FACTORY_ZERO_FINAL_HTTP_${finalStatusResponse.status}`);
-      if(finalStatus?.required || Number(finalStatus?.counts?.assets||0)!==0 || Number(finalStatus?.counts?.projects||0)!==0) throw new Error("FACTORY_ZERO_FINAL_VERIFICATION_FAILED");
-
-      setReleaseGateMessage("Factory Zero confirmado: 0 assets · 0 projetos.");
+      setHealth(value.health as Health);
+      setStats(value.stats || { total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
+      setUniverses(Array.isArray(value.universes) ? value.universes : []);
+      const catalog = value.catalog || {};
+      setAssets(Array.isArray(catalog.items) ? catalog.items : []);
+      setTotal(Number(catalog.total || 0));
+      setNextCursor(catalog.nextCursor || null);
+      setProjects(Array.isArray(value?.projects?.items) ? value.projects.items : []);
+      setRecentOperations(Array.isArray(value.operations) ? value.operations : []);
+      setLoading(false);
+      setReleaseGateMessage("Estado real confirmado no D1.");
       setReleaseGateState("done");
-      // A limpeza já foi confirmada no Core. Uma atualização visual transitória não
-      // pode transformar um sucesso do D1 em falso erro de Factory Zero.
-      await Promise.allSettled([refreshHealth(), refreshStats(), fetchCatalog(null,false), refreshRecords("Projetos")]);
     } catch (error) {
       setReleaseGateState("error");
-      if(isTransientFetchError(error)) setReleaseGateMessage("Não consegui alcançar o Core após várias tentativas. A conexão salva será preservada; use Tentar novamente quando o Worker estiver online.");
-      else setReleaseGateMessage(error instanceof Error ? error.message : "FACTORY_ZERO_RELEASE_GATE_FAILED");
+      setLoading(false);
+      setHealth(null);
+      setAssets([]); setProjects([]); setUniverses([]); setRecentOperations([]);
+      setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
+      setReleaseGateMessage(error instanceof Error ? error.message : "AUTHORITATIVE_BOOT_FAILED");
     }
-  }, [releaseGateState, refreshHealth, refreshStats, fetchCatalog, refreshRecords]);
+  }, [releaseGateState]);
 
   useEffect(() => {
     const dispose = installCorvoFetchBridge();
     setLocalConnection(readBrowserConnection());
+    setConnectionResolved(true);
     return dispose;
   }, []);
 
   useEffect(() => {
-    void Promise.all([refreshHealth(), refreshStats()]);
-  }, [refreshHealth, refreshStats]);
-
-  useEffect(() => {
-    if (!localConnection || !health?.core.ok || releaseGateState !== "idle") return;
-    void enforceFactoryZeroRelease();
-  }, [localConnection, health?.core.ok, releaseGateState, enforceFactoryZeroRelease]);
+    if (!connectionResolved || !localConnection || releaseGateState !== "idle") return;
+    void loadAuthoritativeBootstrap();
+  }, [connectionResolved, localConnection, releaseGateState, loadAuthoritativeBootstrap]);
 
   useEffect(() => {
     if (active !== "Assets" || assetView === "Importar & R2") return;
@@ -687,12 +629,14 @@ export default function Home() {
   }, [active, assetView, status]);
 
   useEffect(() => {
+    if (!localConnection || releaseGateState !== "done") return;
     if (active === "Assets" && assetView === "Importar & R2") return;
     const timer = setTimeout(() => void fetchCatalog(null, false), 280);
     return () => clearTimeout(timer);
-  }, [active, assetView, fetchCatalog]);
+  }, [active, assetView, fetchCatalog, localConnection]);
 
   useEffect(() => {
+    if (!localConnection || releaseGateState !== "done") return;
     if (currentView === "Visão geral") {
       void Promise.all([refreshRecords("Projetos"), refreshOperations()]);
     }
@@ -703,7 +647,7 @@ export default function Home() {
     if (currentView === "Políticas") void refreshPolicies();
     if (currentView === "Estoque & giro") void refreshStock();
     if (currentView === "Configurações") void refreshSettings();
-  }, [currentView, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings]);
+  }, [currentView, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings, localConnection]);
 
   useEffect(() => {
     if (!operation || ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(operation.status)) return;
@@ -715,6 +659,7 @@ export default function Home() {
   }, [operation]);
 
   const coreState = !health ? "VERIFICANDO" : health.core.ok ? "ONLINE" : health.coreConfigured ? "INDISPONÍVEL" : "AGUARDANDO CONFIGURAÇÃO";
+  const dataReady = connectionResolved && Boolean(localConnection) && releaseGateState === "done";
   const selectedUniverse = useMemo(() => universes.find(item => item.name === universe), [universes, universe]);
   const activeProjects = useMemo(() => projects.filter(project => !["COMPLETED","DONE","CANCELLED","FAILED"].includes(String(project.pipeline_status || project.status || "").toUpperCase())), [projects]);
   const completedOps = useMemo(() => recentOperations.filter(item => ["COMPLETED","COMPLETED_WITH_ERRORS"].includes(String(item.status || "").toUpperCase())).length, [recentOperations]);
@@ -1049,7 +994,10 @@ Tudo é configurado pela própria tela Configurações.
       </header>
 
       <div className="content contentV18">
-        {localConnection && releaseGateState !== "done" && <div className={`releaseGateBanner ${releaseGateState}`}><div><strong>{releaseGateState === "error" ? "Factory Zero precisa de atenção" : "Preparando biblioteca limpa"}</strong><span>{releaseGateMessage || "Verificando Core, D1 e estado da release…"}</span></div>{releaseGateState === "error" && <button className="primary" onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button>}</div>}
+        {!connectionResolved && <section className="authoritativeBoot"><span className="eyebrow">FONTE ÚNICA</span><h2>Carregando conexão…</h2><p>Nenhum dado é exibido antes de confirmar a fonte real.</p></section>}
+        {connectionResolved && !localConnection && <section className="authoritativeBoot"><span className="eyebrow">SEM FONTE DE DADOS</span><h2>Conecte a infraestrutura</h2><p>A Library não usa mock, cache recuperado ou conteúdo de demonstração. Conecte D1/R2 para carregar dados reais.</p><button className="primary" onClick={()=>openInfrastructureSetup(false)}>Configurar infraestrutura</button></section>}
+        {connectionResolved && localConnection && releaseGateState !== "done" && <section className={`authoritativeBoot ${releaseGateState}`}><span className="eyebrow">D1 AUTORITATIVO</span><h2>{releaseGateState === "error" ? "Não foi possível carregar o estado real" : "Carregando dados reais…"}</h2><p>{releaseGateMessage || "Aguardando uma única resposta do Core."}</p>{releaseGateState === "error" && <div className="inlineActions"><button className="primary" onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button><button className="secondary" disabled={coreUpdateBusy} onClick={()=>void (async()=>{await updateCoreFromApp();setReleaseGateState("idle");setReleaseGateMessage("");})()}>{coreUpdateBusy?"Atualizando Core…":"Atualizar Core explicitamente"}</button></div>}</section>}
+        {dataReady && <>
         {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <div className="titleActions"><button className="setupButton mcpConnectButton" onClick={openMcpConnection}>↗ Conectar MCP</button><button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button></div>}</div>}
 
         {active === "Visão geral" && <div className="overviewDashboard">
@@ -1132,7 +1080,7 @@ Tudo é configurado pela própria tela Configurações.
 
           {!health?.coreConfigured && <div className="notice"><strong>Fundação criada.</strong><span>Falta apenas conectar o projeto ao Corvo Core. A V2 não solicitará credenciais Cloudflare na interface.</span></div>}
 
-          {loading ? <div className="empty">Carregando catálogo…</div> : assets.length === 0 ? <div className="empty"><Mark /><strong>Nenhum asset para estes filtros</strong><span>O catálogo será lido diretamente do D1 restaurado, sem seed de produção ou snapshot intermediário.</span></div> : <>
+          {loading ? <div className="empty">Carregando catálogo…</div> : assets.length === 0 ? <div className="empty"><Mark /><strong>Nenhum asset para estes filtros</strong><span>O catálogo é lido diretamente do D1 real conectado, sem seed, cache de dados ou snapshot intermediário.</span></div> : <>
             <div className="resultMeta"><span>{total.toLocaleString("pt-BR")} resultados</span><span>{assets.length.toLocaleString("pt-BR")} carregados</span></div>
             <div className="grid">{assets.map(asset => <article className={`card ${selectedAssets.has(asset.id)?"selected":""}`} key={asset.id}>
               <div className="preview"><label className="assetCheck"><input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={()=>toggleAssetSelection(asset.id)} aria-label={`Selecionar ${asset.name}`}/><span>✓</span></label><span className="previewFallback">◇</span>{asset.previewUrl && <img src={asset.previewUrl} alt={asset.name} loading="lazy" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>}<em className={statusClass(asset.status)}>{asset.rawStatus || asset.status}</em></div>
@@ -1240,6 +1188,8 @@ Tudo é configurado pela própria tela Configurações.
         </section>}
 
         {!["Visão geral","Assets","Projetos","Execuções","Análise","Configurações"].includes(active) && <div className="modulePlaceholder"><strong>{active}</strong><p>Este módulo será ligado ao núcleo V2 sem duplicar navegação ou estado visual.</p><span>EM DESENVOLVIMENTO CONTÍNUO</span></div>}
+
+        </>}
 
         {mcpOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Conectar MCP">
           <div className="setupModal mcpModal">
