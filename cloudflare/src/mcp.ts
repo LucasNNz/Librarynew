@@ -23,6 +23,7 @@ import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectIte
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage } from "./core/production";
 import { addProjectQaEvent, attachProjectReferencesInline, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
+import { assignAssetsToSlots, listProductionModel, productionModelCounts, upsertProductionSlots } from "./core/production-model";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getSourceRoutingPlan, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -33,7 +34,7 @@ import { exploreR2 } from "./core/r2-explorer";
 import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from "./core/pending-r2-reconcile";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
-import { fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
+import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -44,7 +45,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.31" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.33" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -308,9 +309,17 @@ function createServer(env: Env, request: Request) {
   }, async (v) => output(await getQaWorkPacket(request,env,{projectId:v.project_id,limitItems:v.limite_cenas,candidatesPerItem:v.candidatas_por_cena})));
 
   server.registerTool("submit_qa_decisions", {
-    description: "Decisões QA em lote sobre candidatas MATERIALIZED. APPROVE promove incoming/ para assets/ e cria AST-*; REJECT remove o temporário. Retorna assets, deleções e requisitos restantes por cena.",
+    description: "ACK assíncrono para 1-100 decisões QA. Grava a operação e processa em chunks seguros na Queue/Data Plane, evitando limite de subrequests do Worker.",
     inputSchema: {
+      operation_id: z.string().optional(),
       decisions: z.array(z.object({candidate_id:z.string().min(1),decision:z.enum(["APPROVE","REJECT"]),observation:z.string().optional()})).min(1).max(100),
+    },
+  }, async (v) => output(await enqueueQaDecisions(env,{operationId:v.operation_id,decisions:v.decisions.map((d: {candidate_id:string;decision:"APPROVE"|"REJECT";observation?:string})=>({candidateId:d.candidate_id,decision:d.decision,observation:d.observation}))})));
+
+  server.registerTool("submit_qa_decisions_sync", {
+    description: "Rota síncrona de compatibilidade/diagnóstico. Para lotes normais prefira submit_qa_decisions assíncrono.",
+    inputSchema: {
+      decisions: z.array(z.object({candidate_id:z.string().min(1),decision:z.enum(["APPROVE","REJECT"]),observation:z.string().optional()})).min(1).max(30),
     },
   }, async (v) => output(await submitQaDecisions(request,env,{decisions:v.decisions.map((d: {candidate_id:string;decision:"APPROVE"|"REJECT";observation?:string})=>({candidateId:d.candidate_id,decision:d.decision,observation:d.observation}))})));
 
@@ -910,6 +919,31 @@ function createServer(env: Env, request: Request) {
   server.registerTool("exportar_pacote_qa_json", { description:"Exporta o pacote de QA como JSON lógico com metadados e links; não materializa arquivo no chat.", inputSchema:{ status:z.string().optional(), limite:z.number().int().min(1).max(200).optional() } }, async(v)=>output({format:"JSON",items:await listCandidates(requestFor(request,`/candidates?status=${encodeURIComponent(v.status||"MATERIALIZED")}&limit=${v.limite||100}`),env)}));
   server.registerTool("gerar_grid_candidatas", { description:"Compatibilidade visual: devolve candidatos e seus links temporários para que o cliente componha a grade sem gerar imagem intermediária.", inputSchema:{ limite:z.number().int().min(1).max(100).optional() } }, async(v)=>output({render:"CLIENT_GRID",items:await listCandidates(requestFor(request,`/candidates?status=MATERIALIZED&limit=${v.limite||40}`),env)}));
 
+  server.registerTool("obter_modelo_producao", {
+    description:"Retorna separadamente REFERENCE_POOL, PRODUCTION_SCENE e PRODUCTION_SLOT, incluindo manifesto slot -> asset e contagens reais de produção.",
+    inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(1000).optional() },
+  }, async(v)=>output(await listProductionModel(env,{projectId:v.projeto_id,limit:v.limite})));
+
+  server.registerTool("obter_contagens_producao", {
+    description:"Contagens compactas: pools de referência, cenas de produção e slots resolvidos. Use no hot path em vez de total_items como indicador único.",
+    inputSchema:{ projeto_id:z.string().min(1) },
+  }, async(v)=>output(await productionModelCounts(env,v.projeto_id)));
+
+  server.registerTool("criar_slots_projeto_lote", {
+    description:"Upsert idempotente de até 500 PRODUCTION_SLOT pelo target_file. Todos os fluxos de assign/export passam a enxergar os mesmos slots.",
+    inputSchema:{ projeto_id:z.string().min(1), slots:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),scene_key:z.string().optional(),subject:z.string().optional(),universe:z.string().optional(),reference:z.string().optional(),preset:z.string().optional(),context:z.string().optional(),composition_class:z.string().optional(),observation:z.string().optional()})).min(1).max(500) },
+  }, async(v)=>output(await upsertProductionSlots(env,{projectId:v.projeto_id,slots:v.slots.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,sceneKey:x.scene_key,subject:x.subject,universe:x.universe,reference:x.reference,preset:x.preset,context:x.context,compositionClass:x.composition_class,observation:x.observation}))})));
+
+  server.registerTool("assign_assets_to_slots", {
+    description:"Associa AST existente a até 500 production slots sem copiar bytes no R2. O mesmo AST pode atender N target_files; se target_file não existir, o slot é criado idempotentemente.",
+    inputSchema:{ projeto_id:z.string().min(1), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
+  }, async(v)=>output(await assignAssetsToSlots(env,{projectId:v.projeto_id,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,assetId:x.asset_id,observation:x.observation}))})));
+
+  server.registerTool("atribuir_assets_aos_slots", {
+    description:"Alias em português de assign_assets_to_slots.",
+    inputSchema:{ projeto_id:z.string().min(1), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
+  }, async(v)=>output(await assignAssetsToSlots(env,{projectId:v.projeto_id,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,assetId:x.asset_id,observation:x.observation}))})));
+
   server.registerTool("FAST_APPROVE_PROJECT_ITEMS", { description:"ACK assíncrono: aprova pares item/candidata e congela os itens no Data Plane. Não espera o lote concluir.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), aprovacoes:z.array(z.object({item_id:z.string().optional(),target_file:z.string().optional(),candidata_id:z.string().min(1),observacao:z.string().optional()})).min(1).max(100) } }, async(v)=>output(await enqueueFastApproveProjectItems(env,{projectId:v.projeto_id,operationId:v.operation_id,approvals:v.aprovacoes.map((a: {item_id?:string;target_file?:string;candidata_id:string;observacao?:string})=>({itemId:a.item_id,targetFile:a.target_file,candidateId:a.candidata_id,note:a.observacao}))})));
   server.registerTool("aplicar_decisoes_supervisor_lote", { description:"ACK assíncrono para decisões do Supervisor sobre vários itens.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), decisoes:z.array(z.object({item_id:z.string().min(1),status:z.string().min(1),observacao:z.string().optional()})).min(1).max(200) } }, async(v)=>output(await enqueueSupervisorDecisions(env,{projectId:v.projeto_id,operationId:v.operation_id,decisions:v.decisoes.map((d: {item_id:string;status:string;observacao?:string})=>({itemId:d.item_id,status:d.status,observation:d.observacao}))})));
   server.registerTool("aprovar_itens_lote", { description:"Aprova itens que tenham exatamente uma candidata ativa; ambiguidades são devolvidas sem decisão automática.", inputSchema:{ projeto_id:z.string().min(1), item_ids:z.array(z.string()).min(1).max(100), observacao:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await enqueueApprovalsByItems(env,{projectId:v.projeto_id,itemIds:v.item_ids,reason:v.observacao,operationId:v.operation_id})));
@@ -927,10 +961,10 @@ function createServer(env: Env, request: Request) {
   server.registerTool("listar_pacote_producao_projeto", { description:"Retorna itens, arquivos, thumbs, títulos e pacotes do projeto.", inputSchema:{ projeto_id:z.string().min(1) } }, async(v)=>output((await projectProductionPackage(request,env,v.projeto_id))||{error:"NOT_FOUND"}));
   server.registerTool("decidir_thumbs_projeto", { description:"Alias completo para decisão de thumbs do projeto.", inputSchema:{ projeto_id:z.string().min(1), decisoes:z.array(z.object({thumb_id:z.string().min(1),acao:z.string().min(1),motivo:z.string().optional()})).max(100) } }, async(v)=>output(await decideProjectThumbs(env,v.projeto_id,v.decisoes.map((d: {thumb_id:string;acao:string;motivo?:string})=>({mediaId:d.thumb_id,action:d.acao,reason:d.motivo})))));
   server.registerTool("decidir_titulos_projeto", { description:"Aprova, rejeita ou seleciona títulos de produção.", inputSchema:{ projeto_id:z.string().min(1), decisoes:z.array(z.object({titulo_id:z.string().min(1),acao:z.string().min(1)})).max(100) } }, async(v)=>output(await decideProjectTitles(env,v.projeto_id,v.decisoes.map((d: {titulo_id:string;acao:string})=>({titleId:d.titulo_id,action:d.acao})))));
-  server.registerTool("gerar_pacote_final", { description:"ACK assíncrono para gerar ZIP final diretamente no R2.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"FULL_PROJECT_ZIP"})));
-  server.registerTool("exportar_projeto_completo_zip", { description:"Alias de gerar_pacote_final; o ZIP permanece no R2 e depois é baixado por link temporário.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"FULL_PROJECT_ZIP"})));
-  server.registerTool("gerar_zip", { description:"Compatibilidade histórica: enfileira geração do ZIP final do projeto.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"FULL_PROJECT_ZIP"})));
-  server.registerTool("regenerar_zip_projeto", { description:"Gera nova revisão do pacote ZIP sem apagar versões anteriores no R2.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"FULL_PROJECT_ZIP"})));
+  server.registerTool("gerar_pacote_final", { description:"ACK assíncrono para gerar ZIP final diretamente no R2.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
+  server.registerTool("exportar_projeto_completo_zip", { description:"Alias de gerar_pacote_final; o ZIP permanece no R2 e depois é baixado por link temporário.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
+  server.registerTool("gerar_zip", { description:"Compatibilidade histórica: enfileira geração do ZIP final do projeto.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
+  server.registerTool("regenerar_zip_projeto", { description:"Gera nova revisão do pacote ZIP sem apagar versões anteriores no R2.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional() } }, async(v)=>output(await queueFinalPackage(env,{projectId:v.projeto_id,operationId:v.operation_id,type:"PROJECT_PRODUCTION_ZIP"})));
   server.registerTool("listar_pacotes_prontos_para_download", { description:"Lista pacotes READY_FOR_DOWNLOAD armazenados no R2.", inputSchema:{ projeto_id:z.string().optional(), limite:z.number().int().min(1).max(200).optional() } }, async(v)=>output(await listReadyPackages(env,{projectId:v.projeto_id,limit:v.limite||100})));
   server.registerTool("obter_link_download_pacote", { description:"Gera link temporário direto ao R2/Worker para download no computador.", inputSchema:{ pacote_id:z.string().min(1), validade_minutos:z.number().int().min(1).max(60).optional() } }, async(v)=>output(await getPackageLink(request,env,v.pacote_id,v.validade_minutos||30)));
   server.registerTool("confirmar_download_pacote", { description:"Registra confirmação do download sem apagar automaticamente o pacote.", inputSchema:{ pacote_id:z.string().min(1), maquina:z.string().optional(), sha256:z.string().optional() } }, async(v)=>output(await confirmPackageDownload(env,v.pacote_id,{machineName:v.maquina,sha256:v.sha256})));
@@ -948,11 +982,13 @@ function createServer(env: Env, request: Request) {
   server.registerTool("obter_plano_roteamento_fonte", { description:"Obtém o plano de roteamento mais recente por projeto/item/termo.", inputSchema:{ projeto_id:z.string().optional(), item_id:z.string().optional(), termo_coleta_id:z.string().optional() } }, async(v)=>output((await getSourceRoutingPlan(env,{projectId:v.projeto_id,itemId:v.item_id,collectionTermId:v.termo_coleta_id}))||{error:"NOT_FOUND"}));
 
   server.registerTool("anexar_script_projeto", { description:"CAMINHO PREFERENCIAL E OBRIGATORIO PARA SCRIPT textual: grava o roteiro diretamente no R2 e D1 em uma unica chamada MCP, sem ticket, sem URL externa e sem PUT. Idempotente pelo conteudo.", inputSchema:{ projeto_id:z.string().min(1), conteudo:z.string().min(1).max(2000000), nome_arquivo:z.string().min(1).optional() } }, async(v)=>output(await attachProjectScriptInline(request,env,{projectId:v.projeto_id,content:v.conteudo,fileName:v.nome_arquivo})));
-  server.registerTool("anexar_referencias_projeto", { description:"CAMINHO DIRETO DO AGENTE DE REFERENCIAS: grava em uma unica chamada o TXT que orienta o Coletor, imediatamente visivel no slot Referencias do Coletor e no inventario de arquivos. Nao exige ticket/PUT externo e e idempotente pelo conteudo.", inputSchema:{ projeto_id:z.string().min(1), conteudo:z.string().min(1).max(2000000), nome_arquivo:z.string().min(1).optional(), agente:z.string().optional() } }, async(v)=>output(await attachProjectReferencesInline(request,env,{projectId:v.projeto_id,content:v.conteudo,fileName:v.nome_arquivo,origin:v.agente||"MCP_REFERENCE_AGENT"})));
+  server.registerTool("anexar_referencias_projeto", { description:"ROTA INLINE OBRIGATORIA PARA O TXT DE REFERENCIAS DO COLETOR: projeto_id + conteudo + nome_arquivo -> R2/D1 -> slot reference READY em uma unica chamada MCP. NUNCA gera ticket, uploadUrl ou PUT externo. O arquivo fica imediatamente visivel, copiavel e baixavel; idempotente pelo conteudo.", inputSchema:{ projeto_id:z.string().min(1), conteudo:z.string().min(1).max(2000000), nome_arquivo:z.string().min(1).optional(), agente:z.string().optional() } }, async(v)=>output(await attachProjectReferencesInline(request,env,{projectId:v.projeto_id,content:v.conteudo,fileName:v.nome_arquivo,origin:v.agente||"MCP_REFERENCE_AGENT"})));
   server.registerTool("obter_referencias_projeto", { description:"Le o TXT mais recente do slot Referencias do Coletor e devolve o conteudo copiavel mais links de visualizacao e download.", inputSchema:{ projeto_id:z.string().min(1), versao:z.number().int().positive().optional() } }, async(v)=>{let row:Record<string,unknown>|null=null;for(const role of ["REFERENCES","REFERENCIAS","REFERENCE_BRIEF","IMAGENS_NECESSARIAS","IMAGENS NECESSARIAS"]){row=await readProjectFile(env,v.projeto_id,role,v.versao);if(row)break;}if(!row)return output({error:"NOT_FOUND"});const link=await getProjectFileLink(request,env,String(row.id),15);return output({...row,...(link||{})});});
 
-  server.registerTool("anexar_arquivo_projeto", { description:"Prepara upload direto para R2 somente para arquivo binario/anexo. Para SCRIPT textual use obrigatoriamente anexar_script_projeto; SCRIPT nao gera ticket externo por esta ferramenta.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), nome_arquivo:z.string().min(1), mime_type:z.string().optional(), tamanho_max:z.number().int().positive().optional() } }, async(v)=>{
-    if(String(v.role||"").trim().toUpperCase()==="SCRIPT") return output({error:"SCRIPT_USE_INLINE_MCP",required_tool:"anexar_script_projeto",reason:"SCRIPT textual nao deve depender de uploadUrl/PUT externo"});
+  server.registerTool("anexar_arquivo_projeto", { description:"Prepara upload direto para R2 somente para arquivo binario/anexo. SCRIPT e Referencias do Coletor sao textuais e possuem rotas MCP inline obrigatorias; esta ferramenta nunca deve gerar ticket para esses roles.", inputSchema:{ projeto_id:z.string().min(1), role:z.string().min(1), nome_arquivo:z.string().min(1), mime_type:z.string().optional(), tamanho_max:z.number().int().positive().optional() } }, async(v)=>{
+    const role=String(v.role||"").trim().toUpperCase();
+    if(role==="SCRIPT") return output({error:"SCRIPT_USE_INLINE_MCP",required_tool:"anexar_script_projeto",reason:"SCRIPT textual nao deve depender de uploadUrl/PUT externo",external_put_required:false});
+    if(["REFERENCES","REFERENCIAS","REFERENCE","REFERENCE_BRIEF","IMAGENS_NECESSARIAS","IMAGENS NECESSARIAS"].includes(role)) return output({error:"REFERENCES_USE_INLINE_MCP",required_tool:"anexar_referencias_projeto",reason:"O TXT de Referencias do Coletor deve ser gravado inline em uma unica chamada MCP; ticket/PUT externo e proibido para este slot.",external_put_required:false});
     return output(await prepareDirectUpload(request,env,{uploadType:"PROJECT_FILE",projectId:v.projeto_id,role:v.role,fileName:v.nome_arquivo,mimeType:v.mime_type,maxBytes:v.tamanho_max}));
   });
   server.registerTool("listar_arquivos_projeto", { description:"Lista imediatamente todos os arquivos anexados ao projeto registrados no D1, com links temporários de preview e download. Use esta ferramenta após qualquer anexo; não depende de varredura do R2.", inputSchema:{ projeto_id:z.string().min(1) } }, async(v)=>output((await listProjectFiles(request,env,v.projeto_id))||{error:"NOT_FOUND"}));

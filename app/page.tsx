@@ -71,7 +71,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.31";
+const EXPECTED_CORE_VERSION = "0.20.33";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -1660,7 +1660,7 @@ Tudo é configurado pela própria tela Configurações.
                     </section>
 
                     <aside className="projectInfoColumn">
-                      <section className="projectSummaryCard"><header><h4>Resumo do projeto</h4></header><dl><div><dt>Total de cenas</dt><dd>{itemsTotal}</dd></div><div><dt>Assets alvo</dt><dd>{target}</dd></div><div><dt>MATERIALIZED</dt><dd>{materialized}</dd></div><div><dt>Aprovados</dt><dd>{approved}</dd></div><div><dt>Falhas</dt><dd>{failed}</dd></div><div><dt>Thumbs</dt><dd>{projectSlot.thumbs.count}/{projectSlot.thumbs.max}</dd></div><div><dt>Títulos</dt><dd>{projectSlot.titles.count}/{projectSlot.titles.max}</dd></div></dl></section>
+                      <section className="projectSummaryCard"><header><h4>Resumo do projeto</h4></header><dl>{Number(projectSlot.production?.production_slots_total||0)>0&&<><div><dt>Pools de referência</dt><dd>{Number(projectSlot.production?.reference_pools_total||0)}</dd></div><div><dt>Cenas de produção</dt><dd>{Number(projectSlot.production?.production_scenes_total||0)}</dd></div><div><dt>Slots finais</dt><dd>{Number(projectSlot.production?.production_slots_resolved||0)}/{Number(projectSlot.production?.production_slots_total||0)}</dd></div></>}<div><dt>Itens do coletor</dt><dd>{itemsTotal}</dd></div><div><dt>Assets alvo</dt><dd>{target}</dd></div><div><dt>MATERIALIZED</dt><dd>{materialized}</dd></div><div><dt>Aprovados</dt><dd>{approved}</dd></div><div><dt>Falhas</dt><dd>{failed}</dd></div><div><dt>Thumbs</dt><dd>{projectSlot.thumbs.count}/{projectSlot.thumbs.max}</dd></div><div><dt>Títulos</dt><dd>{projectSlot.titles.count}/{projectSlot.titles.max}</dd></div></dl></section>
                       <section className="projectSignalsCard"><header><h4>Sinais recentes</h4><span>estado real</span></header><div>{projectSlot.activeTags.slice(0,4).map(tag=><article key={`signal-${tag.tag}`}><span className={`signalDot ${String(tag.tag).includes("WORKING")?"live":"stable"}`}/><div><strong>{PROJECT_TAG_LABELS[tag.tag]||tag.tag.replace(/_/g," ")}</strong><small>{tag.last_seen_at?`heartbeat ${formatProjectMoment(Number(tag.last_seen_at))}`:"marco estável"}</small></div></article>)}{projectSlot.activeTags.length===0&&projectSlot.slots.slice(0,3).map(slot=><article key={`signal-slot-${slot.key}`}><span className={`signalDot ${slot.state==="READY"?"stable":"idle"}`}/><div><strong>{slot.label}</strong><small>{slot.summary}</small></div></article>)}</div></section>
                     </aside>
                   </div>

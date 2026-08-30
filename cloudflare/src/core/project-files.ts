@@ -109,18 +109,44 @@ export async function attachProjectReferencesInline(request:Request,env:Env,inpu
   const bytes=new TextEncoder().encode(content);
   const maxBytes=2*1024*1024;
   if(bytes.byteLength>maxBytes)return {error:"REFERENCES_TOO_LARGE",maxBytes,sizeBytes:bytes.byteLength,status:413} as const;
-  const role="REFERENCES";
+  const role="REFERENCES",slotKey="reference",slotState="READY";
+  const origin=clean(input.origin)||"MCP_REFERENCE_AGENT";
   const fileName=safeName(input.fileName||"REFERENCIAS_COLETOR.txt");
   const contentHash=await sha256Hex(bytes);
   const fileId=await stableId("PF",`${projectId}\n${role}\n${contentHash}`,12);
+  const referenceInstruction="Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.";
   const existing=await env.DB.prepare("SELECT id,project_id,role,version,file_name,r2_key,mime_type,size_bytes,content_hash,created_at FROM automatic_project_files WHERE id=?").bind(fileId).first<Record<string,unknown>>();
+
   if(existing){
+    const r2Key=clean(existing.r2_key);
+    const object=r2Key?await env.MEDIA.head(r2Key):null;
+    let repaired=false,eventId:string|null=null;
+    if(!object){
+      const repairKey=r2Key||`projects/${projectId}/files/references/${fileId}-${fileName}`;
+      await env.MEDIA.put(repairKey,bytes,{httpMetadata:{contentType:"text/plain; charset=utf-8"},customMetadata:{projectId,role,fileId,contentHash,inlineMcp:"true",origin}});
+      if(!r2Key)await env.DB.prepare("UPDATE automatic_project_files SET r2_key=? WHERE id=?").bind(repairKey,fileId).run();
+      repaired=true;eventId=id("PEV");const ts=nowMs();
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(eventId,projectId,"REFERENCES_REPAIRED_INLINE","OK",JSON.stringify({fileId,role,slotKey,slotState,fileName,sizeBytes:bytes.byteLength,contentHash,transport:"MCP_INLINE",origin,r2Restored:true}),ts),
+        env.DB.prepare(`INSERT INTO v2_project_slot_access(project_id,slot_key,mcp_open,instruction,opened_by,opened_at,updated_at) VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(project_id,slot_key) DO UPDATE SET mcp_open=1,instruction=excluded.instruction,opened_by=excluded.opened_by,updated_at=excluded.updated_at`).bind(projectId,slotKey,1,referenceInstruction,origin,ts,ts),
+        env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,projectId),
+      ]);
+    }else{
+      const ts=nowMs();
+      await env.DB.prepare(`INSERT INTO v2_project_slot_access(project_id,slot_key,mcp_open,instruction,opened_by,opened_at,updated_at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(project_id,slot_key) DO UPDATE SET mcp_open=1,instruction=COALESCE(v2_project_slot_access.instruction,excluded.instruction),updated_at=excluded.updated_at`)
+        .bind(projectId,slotKey,1,referenceInstruction,origin,ts,ts).run().catch(()=>undefined);
+    }
+    await updateProjectWorkflow(env,{projectId,activate:["REFERENCE_CHECKED"],clear:["REFERENCE_ANALYSIS_WORKING"],metadata:{source:repaired?"REFERENCES_REPAIRED_INLINE":"REFERENCES_INLINE_IDEMPOTENT",fileId}}).catch(()=>undefined);
+    const state=await env.DB.prepare("SELECT state_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
     const signed=await createSignedProjectFileUrl(request,fileId,env,900);
-    return {...existing,ok:true,idempotent:true,projectFileId:fileId,transport:"MCP_INLINE",download_url:signed,preview_url:`${signed}&mode=preview`,content};
+    return {...existing,ok:true,idempotent:true,repaired,projectFileId:fileId,eventId,transport:"MCP_INLINE",external_put_required:false,slot_key:slotKey,slot_state:slotState,state_version:Number(state?.state_version||0),download_url:signed,preview_url:`${signed}&mode=preview`,content,copyable_content:content};
   }
+
   const r2Key=`projects/${projectId}/files/references/${fileId}-${fileName}`;
-  await env.MEDIA.put(r2Key,bytes,{httpMetadata:{contentType:"text/plain; charset=utf-8"},customMetadata:{projectId,role,fileId,contentHash,inlineMcp:"true",origin:clean(input.origin)||"MCP_REFERENCE_AGENT"}});
-  const ts=nowMs();
+  await env.MEDIA.put(r2Key,bytes,{httpMetadata:{contentType:"text/plain; charset=utf-8"},customMetadata:{projectId,role,fileId,contentHash,inlineMcp:"true",origin}});
+  const ts=nowMs(),eventId=id("PEV");
   const insert=await env.DB.prepare(`INSERT OR IGNORE INTO automatic_project_files (id,project_id,role,version,file_name,r2_key,mime_type,size_bytes,content_hash,created_at)
     SELECT ?,?,?,COALESCE(MAX(version),0)+1,?,?,?,?,?,? FROM automatic_project_files WHERE project_id=? AND upper(role)=?`)
     .bind(fileId,projectId,role,fileName,r2Key,"text/plain; charset=utf-8",bytes.byteLength,contentHash,ts,projectId,role).run();
@@ -129,11 +155,14 @@ export async function attachProjectReferencesInline(request:Request,env:Env,inpu
   const inserted=Number((insert as any)?.meta?.changes||0)>0;
   if(inserted){
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"REFERENCES_ATTACHED_INLINE","OK",JSON.stringify({fileId,role,fileName,sizeBytes:bytes.byteLength,contentHash,transport:"MCP_INLINE",origin:clean(input.origin)||"MCP_REFERENCE_AGENT"}),ts),
+      env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(eventId,projectId,"REFERENCES_ATTACHED_INLINE","OK",JSON.stringify({fileId,role,slotKey,slotState,fileName,sizeBytes:bytes.byteLength,contentHash,transport:"MCP_INLINE",origin,physicalFile:true,externalPut:false}),ts),
+      env.DB.prepare(`INSERT INTO v2_project_slot_access(project_id,slot_key,mcp_open,instruction,opened_by,opened_at,updated_at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(project_id,slot_key) DO UPDATE SET mcp_open=1,instruction=excluded.instruction,opened_by=excluded.opened_by,updated_at=excluded.updated_at`).bind(projectId,slotKey,1,referenceInstruction,origin,ts,ts),
       env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,projectId),
     ]);
     await updateProjectWorkflow(env,{projectId,activate:["REFERENCE_CHECKED"],clear:["REFERENCE_ANALYSIS_WORKING"],metadata:{source:"REFERENCES_ATTACHED_INLINE",fileId}}).catch(()=>undefined);
   }
+  const state=await env.DB.prepare("SELECT state_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
   const signed=await createSignedProjectFileUrl(request,fileId,env,900);
-  return {...row,ok:true,idempotent:!inserted,projectFileId:fileId,transport:"MCP_INLINE",download_url:signed,preview_url:`${signed}&mode=preview`,content};
+  return {...row,ok:true,idempotent:!inserted,projectFileId:fileId,eventId:inserted?eventId:null,transport:"MCP_INLINE",external_put_required:false,slot_key:slotKey,slot_state:slotState,state_version:Number(state?.state_version||0),download_url:signed,preview_url:`${signed}&mode=preview`,content,copyable_content:content};
 }

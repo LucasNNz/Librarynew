@@ -1,0 +1,118 @@
+{
+  "checkpoint": "0.20.32",
+  "gate": "MCP3_PRODUCTION_PIPELINE",
+  "status": "PASS",
+  "parser_smoke": {
+    "scenes": 72,
+    "slots": 102,
+    "first": {
+      "itemKey": "CENA-001",
+      "number": 1,
+      "title": "Personagem 1",
+      "subject": "Personagem 1",
+      "universe": "Digimon Beatbreak",
+      "concept": "Personagem 1",
+      "reference": "REF-1",
+      "scriptExcerpt": "[01]\nUNIVERSO: Digimon Beatbreak\nSUJEITO: Personagem 1\nREFERENCIA: REF-1\nPRESET: QUAL_VOCE_PREFERE\n001-personagem-1.jpg\n001-reserva-1.jpg",
+      "preset": "QUAL_VOCE_PREFERE",
+      "compositionClass": "CONTEXTUAL",
+      "targetFiles": [
+        "001-personagem-1.jpg",
+        "001-reserva-1.jpg"
+      ]
+    },
+    "last": {
+      "itemKey": "CENA-072",
+      "number": 72,
+      "title": "Personagem 72",
+      "subject": "Personagem 72",
+      "universe": "Digimon Beatbreak",
+      "concept": "Personagem 72",
+      "reference": "REF-72",
+      "scriptExcerpt": "[72]\nUNIVERSO: Digimon Beatbreak\nSUJEITO: Personagem 72\nREFERENCIA: REF-72\nPRESET: QUAL_VOCE_PREFERE\n072-personagem-72.jpg",
+      "preset": "QUAL_VOCE_PREFERE",
+      "compositionClass": "CONTEXTUAL",
+      "targetFiles": [
+        "072-personagem-72.jpg"
+      ]
+    }
+  },
+  "worker_bundle_sha256": "1670be78e2c4f5223641d5a064178b3de9be72dec0d3720bd5c147564a876423",
+  "checks": [
+    {
+      "name": "explicit_entity_tables",
+      "status": "PASS",
+      "detail": "REFERENCE_POOL / PRODUCTION_SCENE / PRODUCTION_SLOT separados no schema e Worker embutido."
+    },
+    {
+      "name": "target_file_unique",
+      "status": "PASS",
+      "detail": "target_file único por projeto+versão."
+    },
+    {
+      "name": "script_parser_72_102",
+      "status": "PASS",
+      "detail": "smoke sintético: 72 cenas / 102 slots."
+    },
+    {
+      "name": "script_metadata_preserved",
+      "status": "PASS",
+      "detail": "Parser repassa semântica e contexto ao modelo de produção."
+    },
+    {
+      "name": "assign_batch_500",
+      "status": "PASS",
+      "detail": "Assign aceita até 500 vínculos."
+    },
+    {
+      "name": "assign_no_r2_copy",
+      "status": "PASS",
+      "detail": "Assign lógico não grava/copia objeto no R2 e declara asset 1:N slots."
+    },
+    {
+      "name": "slot_upsert_by_target",
+      "status": "PASS",
+      "detail": "Upsert/localização por target_file."
+    },
+    {
+      "name": "zip_manifest_slots",
+      "status": "PASS",
+      "detail": "ZIP usa production slots como manifesto e target_file como nome final."
+    },
+    {
+      "name": "zip_allows_same_asset_multiple_names",
+      "status": "PASS",
+      "detail": "Loop é por slot; não deduplica por asset_id."
+    },
+    {
+      "name": "completion_gate_slots",
+      "status": "PASS",
+      "detail": "Com modelo de produção, conclusão usa productionCompletionGate em vez de pools/total_items."
+    },
+    {
+      "name": "qa_async_ack",
+      "status": "PASS",
+      "detail": "QA padrão é ACK assíncrono; sync separado para diagnóstico."
+    },
+    {
+      "name": "qa_chunks_10",
+      "status": "PASS",
+      "detail": "Queue processa chunks internos de 10."
+    },
+    {
+      "name": "mcp_production_tools_embedded",
+      "status": "PASS",
+      "detail": "Ferramentas do modelo de produção presentes uma vez no Worker embutido."
+    },
+    {
+      "name": "embedded_version",
+      "status": "PASS",
+      "detail": "Wrapper e bundle embutido alinhados em 0.20.32."
+    },
+    {
+      "name": "mcp_unique_tools",
+      "status": "PASS",
+      "detail": "272 registradas / 272 únicas / duplicadas 0."
+    }
+  ]
+}

@@ -1,6 +1,36 @@
-# Corvo Library V2 0.20.31 — Project Readability + Collector Reference Brief + Project Artifacts + FAST READ
+# Corvo Library V2 0.20.33 — Inline References No-Ticket + MCP3 Production Pipeline + Project Readability + FAST READ
+
+## Inline References No-Ticket 0.20.33
+
+O slot **Referências do Coletor** possui caminho textual MCP obrigatório e autocontido:
+
+- `anexar_referencias_projeto(projeto_id, conteudo, nome_arquivo?, agente?)`;
+- grava bytes diretamente no R2 e índice/versão no D1 em uma única chamada;
+- devolve `slot_key=reference`, `slot_state=READY`, conteúdo copiável, preview e download;
+- incrementa `state_version` quando há mudança física;
+- mantém o slot explicitamente aberto para MCP;
+- chamada idempotente pelo hash do conteúdo;
+- se o registro D1 existir e o objeto R2 tiver sumido, a mesma chamada restaura o arquivo físico;
+- `anexar_arquivo_projeto` **não pode** gerar ticket/PUT externo para SCRIPT nem para roles de Referências; nesses casos aponta para a ferramenta inline correta;
+- endpoint HTTP equivalente: `POST /projects/:projectId/references/inline`.
+
+Isso elimina o caso em que o slot de Referências era aberto corretamente, mas o TXT ficava em `WAITING` porque um ticket de PUT externo falhava por DNS.
+
 
 Checkpoint operacional da Corvo Library V2 com **FAST READ**, Project Slots, agentes paralelos e customização manual/MCP.
+
+## MCP3 Production Pipeline 0.20.32
+- separa explicitamente `REFERENCE_POOL`, `PRODUCTION_SCENE` e `PRODUCTION_SLOT`;
+- migration `9021_v2_production_model.sql` / schema `2.21.0`;
+- SCRIPT cria/reconcilia idempotentemente cenas e slots finais por `target_file`;
+- `assign_assets_to_slots` associa até 500 slots a AST existentes sem copiar bytes no R2;
+- o mesmo AST pode atender vários `target_file` (relação asset 1:N production slots);
+- `criar_slots_projeto_lote` faz upsert idempotente por `target_file`;
+- `FAST_APPROVE_PROJECT_ITEMS` consegue resolver slot pelo `target_file` mesmo sem item legado;
+- ZIP de projeto usa manifesto `production_slot.target_file -> asset_id` e preserva repetições lógicas do mesmo asset;
+- projeto só pode concluir quando os production slots exigidos estiverem resolvidos e o pacote requerido estiver pronto;
+- QA normal usa ACK assíncrono + Queue com chunks internos de 10; a rota síncrona fica apenas para diagnóstico/compatibilidade;
+- snapshots/UI expõem contagens separadas de pools, cenas e slots, evitando usar `total_items` como indicador único.
 
 ## Destaques preservados do 0.20.27
 - visual de Projetos e seleção múltipla sempre visível;
@@ -60,10 +90,10 @@ Checkpoint operacional da Corvo Library V2 com **FAST READ**, Project Slots, age
 - rotas completas antigas permanecem disponíveis para diagnóstico e compatibilidade.
 
 ## Compatibilidade
-- App/Core/MCP: **0.20.31**;
-- schema: **2.20.0**;
+- App/Core/MCP: **0.20.33**;
+- schema: **2.21.0**;
 - Worker + D1 + R2 + Queue preservados;
-- nenhuma migration destrutiva adicionada;
-- Worker autoatualizável embutido atualizado para 0.20.31.
+- migration `9021_v2_production_model.sql` é aditiva e não destrutiva;
+- Worker autoatualizável embutido sincronizado e validado em 0.20.33.
 
-Consulte também `RELEASE_0_20_31_PROJECT_READABILITY_REFERENCE_BRIEF.md`, `VALIDATION_0_20_31_PROJECT_READABILITY_REFERENCE_BRIEF.json`, `BEHAVIOR_GATE_0_20_31_REFERENCE_BRIEF.json` e os documentos das versões anteriores.
+Consulte também `RELEASE_0_20_32_MCP3_PRODUCTION_PIPELINE.md`, `VALIDATION_0_20_32_MCP3_PRODUCTION_PIPELINE.json`, `BEHAVIOR_GATE_0_20_32_MCP3_PRODUCTION_PIPELINE.json` e os documentos das versões anteriores.

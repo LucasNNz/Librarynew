@@ -24,7 +24,7 @@ import { alterInfrastructureProfile, getInfrastructureProfile, initializeInfrast
 import { configureStockPolicy, evaluateCollectionNeed, registerAssetConsultation, stockPanel, stockTextReport } from "./core/stock";
 import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectItems, enqueueSupervisorDecisions, processFastApproveJob, processSupervisorDecisionsJob, rejectProjectItems, relinkProjectItems } from "./core/fast-control";
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPackageLink, listReadyPackages, processPackageJob, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalPackage, servePackageFile, serveProjectMedia } from "./core/production";
-import { addProjectQaEvent, getProjectFileLink, listProjectFiles, readProjectFile, serveProjectFile } from "./core/project-files";
+import { addProjectQaEvent, attachProjectReferencesInline, getProjectFileLink, listProjectFiles, readProjectFile, serveProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources, processCollectionJob } from "./core/collection";
@@ -39,7 +39,7 @@ import { maintenanceStatus, runPendingMaintenance } from "./core/maintenance";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 import { operationalCleanOnce } from "./core/operational-clean";
-import { fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
+import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, processQaDecisionsJob, submitQaDecisions } from "./core/collector-qa";
 import { inspectCriticalSchema, requireCriticalSchema } from "./core/schema-contract";
 import { serveAssetThumbnail } from "./core/thumbnails";
 import { uiAnalysisSnapshot, uiAssetsSnapshot, uiExecutionsSnapshot, uiOverviewSnapshot, uiProjectsSnapshot, uiSettingsSnapshot } from "./core/ui-fast-read";
@@ -74,7 +74,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.31", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.33", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
@@ -154,7 +154,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.31",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.33",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -180,7 +180,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.31",
+        version:"0.20.33",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -257,6 +257,12 @@ export default {
     }
     else if (/^\/projects\/[^/]+\/slot\/text$/.test(url.pathname) && request.method === "POST") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {slotKey?:string;text?:string;origin?:string}; const value=await fillProjectTextSlot(request,env,{projectId,slotKey:String(body.slotKey||""),text:String(body.text||""),origin:body.origin||"UI_MANUAL"}); response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value);
+    }
+    else if (/^\/projects\/[^/]+\/references\/inline$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]);
+      const body=await request.json() as {content?:string;fileName?:string;origin?:string};
+      const value=await attachProjectReferencesInline(request,env,{projectId,content:String(body.content||""),fileName:body.fileName,origin:body.origin||"APP_INLINE"});
+      response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value,{status:201});
     }
     else if (/^\/projects\/[^/]+\/slot\/image$/.test(url.pathname) && request.method === "POST") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {slotKey?:string;url?:string;candidateId?:string;itemId?:string;targetCandidates?:number;requiredApproved?:number;origin?:string}; const value=await fillProjectImageSlot(env,{projectId,slotKey:String(body.slotKey||""),url:body.url,candidateId:body.candidateId,itemId:body.itemId,targetCandidates:body.targetCandidates,requiredApproved:body.requiredApproved,origin:body.origin||"UI_MANUAL"}); response="error" in value?json(value,{status:Number((value as any).status||400)}):json(value,{status:body.url?202:200});
@@ -488,6 +494,11 @@ export default {
       response=json(await getQaWorkPacket(request,env,{projectId:url.searchParams.get("projectId")||undefined,limitItems:Number(url.searchParams.get("limitItems")||10),candidatesPerItem:Number(url.searchParams.get("candidatesPerItem")||20)}));
     }
     else if (url.pathname === "/qa/decisions" && request.method === "POST") {
+      const body=await request.json() as {operationId?:string;decisions:Array<{candidateId:string;decision:"APPROVE"|"REJECT";observation?:string}>};
+      const value=await enqueueQaDecisions(env,body);
+      response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:202});
+    }
+    else if (url.pathname === "/qa/decisions/sync" && request.method === "POST") {
       const body=await request.json() as {decisions:Array<{candidateId:string;decision:"APPROVE"|"REJECT";observation?:string}>};
       response=json(await submitQaDecisions(request,env,body));
     }
@@ -536,6 +547,7 @@ export default {
         if (!job.kind || job.kind === "MATERIALIZE_URL") await materialize(message as Message<MaterializeJob>, env);
         else if (job.kind === "FAST_APPROVE_PROJECT_ITEMS") { await processFastApproveJob(env,job); message.ack(); }
         else if (job.kind === "SUPERVISOR_DECISIONS") { await processSupervisorDecisionsJob(env,job); message.ack(); }
+        else if (job.kind === "QA_DECISIONS") { await processQaDecisionsJob(env,job); message.ack(); }
         else if (job.kind === "GENERATE_PACKAGE") { await processPackageJob(env,job); message.ack(); }
         else if (job.kind === "COLLECTION_TICK") { await processCollectionJob(env,job); message.ack(); }
         else if (job.kind === "EXPORT_ASSETS") { await processAssetExportJob(env,job); message.ack(); }

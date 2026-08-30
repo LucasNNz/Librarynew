@@ -1,4 +1,4 @@
-import type { Env } from "../types";
+import type { Env, QaDecisionsJob, CorvoQueueJob } from "../types";
 import { createSignedCandidateUrl, createSignedFileUrl } from "./auth";
 import { activateProjectItemCandidateReserve, approveCandidate, rejectCandidate } from "./ingest";
 import { id, nowMs, stableId } from "./ids";
@@ -374,4 +374,50 @@ export async function submitQaDecisions(request: Request, env: Env, input: { dec
       remaining_requirements: { approved_needed: state.remainingApproved, status: state.requirementStatus },
     })),
   };
+}
+
+
+export async function enqueueQaDecisions(env:Env,input:{operationId?:string;decisions:Array<{candidateId:string;decision:"APPROVE"|"REJECT";observation?:string}>}){
+  const decisions=(input.decisions||[]).map(d=>({candidateId:collectorClean(d.candidateId),decision:d.decision,observation:d.observation})).filter(d=>d.candidateId&&["APPROVE","REJECT"].includes(d.decision)).slice(0,100);
+  if(!decisions.length)return {error:"NO_QA_DECISIONS",status:400} as const;
+  const operationId=collectorClean(input.operationId)||id("QA"),ts=nowMs();
+  const insert=await env.DB.prepare(`INSERT OR IGNORE INTO v2_ingest_operations(id,type,status,requested,succeeded,failed,payload_json,created_at,updated_at)
+    VALUES (?,'QA_DECISIONS','QUEUED',?,0,0,?,?,?)`).bind(operationId,decisions.length,JSON.stringify({decisions}),ts,ts).run();
+  const created=Number(insert.meta?.changes||0)>0;
+  if(created)await env.MATERIALIZE_QUEUE.send({kind:"QA_DECISIONS",operationId,decisions} satisfies CorvoQueueJob);
+  const existing=!created?await env.DB.prepare("SELECT status,requested,succeeded,failed FROM v2_ingest_operations WHERE id=?").bind(operationId).first<Record<string,unknown>>():null;
+  return {accepted:decisions.length,operation_id:operationId,status:collectorClean(existing?.status)||"QUEUED",idempotent:!created,httpStatus:202,processing:"ASYNC_CHUNKED",chunk_size:10};
+}
+
+export async function processQaDecisionsJob(env:Env,job:QaDecisionsJob){
+  const started=nowMs();
+  await env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=?").bind(started,job.operationId).run();
+  const results:Record<string,unknown>[]=[];
+  const touched=new Set<string>();
+  for(let offset=0;offset<job.decisions.length;offset+=10){
+    const chunk=job.decisions.slice(offset,offset+10);
+    const settled=await Promise.all(chunk.map(async raw=>{
+      const candidateId=collectorClean(raw.candidateId);
+      const candidate=await env.DB.prepare("SELECT id,project_id,item_id,status FROM v2_ingest_candidates WHERE id=?").bind(candidateId).first<Record<string,unknown>>();
+      if(!candidate)return {candidate_id:candidateId,decision:raw.decision,error:"NOT_FOUND"};
+      if(collectorClean(candidate.status).toUpperCase()!=="MATERIALIZED")return {candidate_id:candidateId,decision:raw.decision,error:"NOT_MATERIALIZED",current_status:candidate.status};
+      const projectId=collectorClean(candidate.project_id),itemId=collectorClean(candidate.item_id);
+      if(!projectId||!itemId)return {candidate_id:candidateId,decision:raw.decision,error:"PROJECT_ITEM_REQUIRED"};
+      touched.add(`${projectId}\n${itemId}`);
+      await markProjectItemQaInProgress(env,projectId,itemId);
+      if(raw.decision==="APPROVE"){
+        const value=await approveCandidate(candidateId,env);
+        return "error" in value?{candidate_id:candidateId,decision:raw.decision,...value}:{candidate_id:candidateId,decision:raw.decision,status:"APPROVED",asset_id:value.assetId,r2_key:value.r2Key,incoming_deleted:value.incomingDeleted??true};
+      }
+      const value=await rejectCandidate(candidateId,env);
+      return "error" in value?{candidate_id:candidateId,decision:raw.decision,...value}:{candidate_id:candidateId,decision:raw.decision,status:"REJECTED",incoming_deleted:value.incomingDeleted};
+    }));
+    results.push(...settled);
+  }
+  const itemStates:ProjectPipelineItemState[]=[];
+  for(const pair of touched){const [projectId,itemId]=pair.split("\n");const state=await refreshProjectItemPipelineState(env,projectId,itemId);if(state)itemStates.push(state);}
+  const approved=results.filter(r=>r.status==="APPROVED").length,rejected=results.filter(r=>r.status==="REJECTED").length,failed=results.filter(r=>r.error).length,done=nowMs();
+  const status=failed===0?"COMPLETED":approved+rejected>0?"COMPLETED_WITH_ERRORS":"FAILED";
+  await env.DB.prepare("UPDATE v2_ingest_operations SET status=?,succeeded=?,failed=?,error=?,updated_at=? WHERE id=?").bind(status,approved+rejected,failed,failed?`${failed} QA decision(s) failed`:null,done,job.operationId).run();
+  return {operation_id:job.operationId,status,approved,rejected,failed,results,items:itemStates.map(state=>({item_id:state.itemId,collection_status:state.collectionStatus,qa_status:state.qaStatus,approved:state.approved,rejected:state.rejected,remaining_approved:state.remainingApproved}))};
 }

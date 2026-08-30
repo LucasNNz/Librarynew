@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import { id, nowMs } from "./ids";
 import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
 import { materializeScenesFromProjectScript } from "./project-script-parser";
+import { productionCompletionGate } from "./production-model";
 
 function encodeCursor(updatedAt: number, projectId: string) {
   return btoa(JSON.stringify([updatedAt, projectId])).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
@@ -69,9 +70,12 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
   const collectedFiles=Number(attachmentSummary?.collected_files||0);
   const projectMedia=Number(attachmentSummary?.project_media||0);
   const packages=Number(attachmentSummary?.packages||0);
+  const production=await productionCompletionGate(env,projectId).catch(()=>null);
   return {
     project_id:projectId,state_version:version,changed:true,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,
     counts:{ total:Number(project.total_items||0),approved:Number(project.approved_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),frozen:Number(project.frozen_count||0) },
+    production:production?{reference_pools_total:production.reference_pools_total,reference_pools_ready:production.reference_pools_ready,production_scenes_total:production.production_scenes_total,production_scenes_ready:production.production_scenes_ready,production_slots_total:production.production_slots_total,production_slots_resolved:production.production_slots_resolved,package_ready:production.package_ready,can_complete:production.can_complete}:null,
+    completion_source:Number(production?.production_slots_total||0)>0?"PRODUCTION_SLOTS":"LEGACY_ITEMS",
     attachments:{project_files:projectFiles,scripts:Number(attachmentSummary?.scripts||0),references:Number(attachmentSummary?.references||0),requirements:Number(attachmentSummary?.requirements||0),collected_files:collectedFiles,project_media:projectMedia,packages,total_visible:projectFiles+collectedFiles+projectMedia+packages,visibility:"MCP_IMMEDIATE_AFTER_D1_COMMIT"},
     lease:{status:project.supervisor_status,execution_id:project.supervisor_execution_id,expires_at:project.supervisor_lease_expires_at,last_seen_at:project.supervisor_last_seen_at},
     updated_at:project.updated_at,
@@ -122,8 +126,8 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   // If an older project has SCRIPT READY but no scenes/items, parse the latest text script
   // before computing project state. This repairs pre-0.20.30 projects idempotently.
   let scriptRecovery:Record<string,unknown>|null=null;
-  const currentItemCount=await env.DB.prepare("SELECT COUNT(*) AS count FROM automatic_project_items WHERE project_id=?").bind(projectId).first<{count:number}>();
-  if(Number(currentItemCount?.count||0)===0){
+  const currentProductionSceneCount=await env.DB.prepare("SELECT COUNT(*) AS count FROM v2_production_scenes WHERE project_id=?").bind(projectId).first<{count:number}>().catch(()=>({count:0}));
+  if(Number(currentProductionSceneCount?.count||0)===0){
     const script=await env.DB.prepare("SELECT id,file_name,r2_key,mime_type,size_bytes FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>();
     if(script?.r2_key && Number(script.size_bytes||0)<=2*1024*1024){
       const mime=String(script.mime_type||"").toLowerCase();
@@ -172,16 +176,30 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   if (statements.length) {
     for (let offset=0; offset<statements.length; offset+=50) await env.DB.batch(statements.slice(offset,offset+50));
   }
-  const completed = counts.total>0 && counts.approved+counts.frozen>=counts.total;
-  const pipeline = completed ? "CONCLUIDO" : counts.failed>0 ? "ATENCAO" : "PROCESSANDO";
-  const status = completed ? "COMPLETED" : String(project.status)==="WAITING_FILES" && counts.total===0 ? "WAITING_FILES" : "ACTIVE";
+  const production=await productionCompletionGate(env,projectId).catch(()=>null);
+  const hasProduction=Number(production?.production_slots_total||0)>0;
+  // Reference pools are reusable inputs, never final production output. A legacy project
+  // containing only REF-* items must not satisfy the old item-based completion gate.
+  const referenceOnly=counts.total>0 && items.every(item=>String(item.item_key||"").toUpperCase().startsWith("REF-"));
+  const hasScript=Boolean(await env.DB.prepare("SELECT 1 ok FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' LIMIT 1").bind(projectId).first().catch(()=>null));
+  const productionRequired=hasScript||referenceOnly;
+  const legacyCompleted=!productionRequired && counts.total>0 && counts.approved+counts.frozen>=counts.total;
+  const completed=hasProduction?Boolean(production?.can_complete):legacyCompleted;
+  const slotsResolved=Number(production?.production_slots_resolved||0),slotsTotal=Number(production?.production_slots_total||0);
+  const nextAction=completed?null:hasProduction
+    ? (slotsResolved<slotsTotal?"ASSIGN_ASSETS_TO_SLOTS":production?.package_ready?"FINALIZE":"GENERATE_PACKAGE")
+    : productionRequired?"CREATE_PRODUCTION_SLOTS":"DISPATCH";
+  const pipeline=completed?"CONCLUIDO":hasProduction
+    ? (slotsResolved<slotsTotal?"SLOT_ASSIGNMENT_WORKING":"PACKAGE_PENDING")
+    : referenceOnly?"REFERENCE_STAGE_COMPLETE":hasScript?"INTERPRETANDO_ROTEIRO":counts.failed>0?"ATENCAO":"PROCESSANDO";
+  const status=completed?"COMPLETED":String(project.status)==="WAITING_FILES"&&counts.total===0&&!hasProduction&&!productionRequired?"WAITING_FILES":"ACTIVE";
   await env.DB.batch<Record<string, unknown>>([
     env.DB.prepare(`UPDATE automatic_projects SET status=?,pipeline_status=?,next_action=?,total_items=?,approved_count=?,frozen_count=?,collecting_count=?,materializing_count=?,waiting_qa_count=?,relink_count=?,technical_count=?,waiting_seed_count=?,failed_count=?,pending_count=?,completed_at=?,state_version=state_version+1,updated_at=? WHERE id=?`)
-      .bind(status,pipeline,completed?null:"DISPATCH",counts.total,counts.approved,counts.frozen,counts.collecting,counts.materializing,counts.waitingQa,counts.relink,counts.technical,counts.waitingSeed,counts.failed,counts.pending,completed?ts:null,ts,projectId),
+      .bind(status,pipeline,nextAction,counts.total,counts.approved,counts.frozen,counts.collecting,counts.materializing,counts.waitingQa,counts.relink,counts.technical,counts.waitingSeed,counts.failed,counts.pending,completed?ts:null,ts,projectId),
     env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
-      .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,createdWorkItems:statements.length}),ts),
+      .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,production,createdWorkItems:statements.length}),ts),
   ]);
-  return { project: await getAutomaticProject(env,projectId), counts, createdWorkItems: statements.length, scriptRecovery };
+  return { project: await getAutomaticProject(env,projectId), counts, production, createdWorkItems: statements.length, scriptRecovery };
 }
 
 export async function processAutomaticProject(env: Env, projectId: string) {

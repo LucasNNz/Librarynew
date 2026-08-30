@@ -79,6 +79,13 @@ export type SupervisorDecisionsJob = {
   decisions: Array<{ itemId: string; status: string; observation?: string }>;
 };
 
+
+export type QaDecisionsJob = {
+  kind: "QA_DECISIONS";
+  operationId: string;
+  decisions: Array<{ candidateId: string; decision: "APPROVE" | "REJECT"; observation?: string }>;
+};
+
 export type PackageJob = {
   kind: "GENERATE_PACKAGE";
   operationId: string;
@@ -104,4 +111,4 @@ export type ImportZipJob = {
   importId: string;
 };
 
-export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | PackageJob | CollectionJob | AssetExportJob | ImportZipJob;
+export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | QaDecisionsJob | PackageJob | CollectionJob | AssetExportJob | ImportZipJob;

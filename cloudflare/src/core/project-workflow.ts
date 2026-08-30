@@ -113,7 +113,7 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
   await expireProjectWorkflowTags(env,projectId);
   await syncDerivedProjectWorkflow(env,projectId).catch(()=>undefined);
   const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>(); if(!project)return null;
-  const [tags,script,referenceBrief,thumbs,titles,items,candidates,packages,slotAccess]=await Promise.all([
+  const [tags,script,referenceBrief,thumbs,titles,items,candidates,packages,slotAccess,production]=await Promise.all([
     env.DB.prepare("SELECT tag,status,owner_id,execution_id,last_seen_at,lease_expires_at,updated_at FROM v2_project_workflow_tags WHERE project_id=? AND status='ACTIVE' ORDER BY updated_at DESC").bind(projectId).all<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' ORDER BY version DESC,created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,role,version,file_name,size_bytes,created_at FROM automatic_project_files WHERE project_id=? AND upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS') ORDER BY created_at DESC,version DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
@@ -127,9 +127,15 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
     env.DB.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN status='DISCOVERED' THEN 1 ELSE 0 END) reserve,SUM(CASE WHEN status IN ('QUEUED','DOWNLOADING','RETRYING') THEN 1 ELSE 0 END) active,SUM(CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN 1 ELSE 0 END) materialized,SUM(CASE WHEN status='APPROVED' THEN 1 ELSE 0 END) approved,SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) failed FROM v2_ingest_candidates WHERE project_id=?`).bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT id,status,file_name,size_bytes,ready_at,downloaded_at,created_at FROM v2_download_packages WHERE project_id=? ORDER BY created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>(),
     env.DB.prepare("SELECT slot_key,mcp_open,instruction,opened_by,opened_at,updated_at FROM v2_project_slot_access WHERE project_id=?").bind(projectId).all<Record<string,unknown>>(),
+    env.DB.prepare(`SELECT COUNT(*) production_slots_total,
+      SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) production_slots_resolved,
+      (SELECT COUNT(*) FROM v2_production_scenes WHERE project_id=?) production_scenes_total,
+      (SELECT COUNT(*) FROM v2_reference_pools WHERE project_id=?) reference_pools_total
+      FROM v2_production_slots WHERE project_id=?`).bind(projectId,projectId,projectId).first<Record<string,unknown>>().catch(()=>null),
   ]);
   const activeTags=(tags.results||[]).map(row=>({...row,tag:upper(row.tag)}));
   const target=Number(items?.target||0),materialized=Number(items?.materialized||0),required=Number(items?.required_approved||0),approved=Math.max(Number(items?.approved||0),Number(candidates?.approved||0));
+  const productionTotal=Number(production?.production_slots_total||0),productionResolved=Number(production?.production_slots_resolved||0);
   const accessMap=new Map((slotAccess.results||[]).map(row=>[String(row.slot_key),row]));
   const slot=(key:string,label:string,state:string,summary:string,progress:number)=>{const access=accessMap.get(key);const implicitReference=key==="reference"&&!access;return {key,label,state,summary,progress:Math.max(0,Math.min(100,Math.round(progress))),mcpOpen:implicitReference?true:Boolean(Number(access?.mcp_open||0)),instruction:access?.instruction||(implicitReference?"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.":null),openedBy:access?.opened_by||(implicitReference?"SYSTEM_DEFAULT":null),openedAt:access?.opened_at||null};};
   const scriptReady=Boolean(script),referenceReady=Boolean(referenceBrief),thumbCount=Number(thumbs?.total||0),titleCount=Number(titles?.total||0),zipStatus=upper(packages?.status || (project.zip_r2_key ? "READY" : "MISSING"));
@@ -139,17 +145,30 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
     slot("thumbs","Thumbs",thumbCount?"READY":"MISSING",`${Math.min(thumbCount,3)}/3 opções`,thumbCount/3*100),
     slot("titles","Títulos",titleCount?"READY":"MISSING",`${Math.min(titleCount,3)}/3 opções`,titleCount/3*100),
     slot("candidates","Coleta / candidatas",target>0&&materialized>=target?"READY":target>0?"WORKING":"WAITING",target?`${materialized}/${target} MATERIALIZED · ${Number(candidates?.reserve||0)} reserva`:"Sem cenas de coleta",target?materialized/target*100:0),
-    slot("approved","Imagens aprovadas",required>0&&approved>=required?"READY":required>0?"WORKING":"WAITING",required?`${approved}/${required} necessárias`:`${approved} aprovadas`,required?approved/required*100:(approved?100:0)),
+    slot("approved","Imagens aprovadas",productionTotal>0?(productionResolved>=productionTotal?"READY":"WORKING"):(required>0&&approved>=required?"READY":required>0?"WORKING":"WAITING"),productionTotal>0?`${productionResolved}/${productionTotal} slots resolvidos`:(required?`${approved}/${required} necessárias`:`${approved} aprovadas`),productionTotal>0?productionResolved/productionTotal*100:(required?approved/required*100:(approved?100:0))),
     slot("zip","ZIP final",["READY","READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(zipStatus)?"READY":"WAITING",packages?.file_name?String(packages.file_name):"Ainda não gerado",packages?100:0),
   ];
   const progress=Math.round(slots.reduce((sum,s)=>sum+s.progress,0)/slots.length);
-  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},candidates:{...candidates},package:packages||null,slotAccess:slotAccess.results||[]};
+  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},production:{production_slots_total:productionTotal,production_slots_resolved:productionResolved,production_scenes_total:Number(production?.production_scenes_total||0),reference_pools_total:Number(production?.reference_pools_total||0)},candidates:{...candidates},package:packages||null,slotAccess:slotAccess.results||[]};
 }
 
 export async function setProjectLifecycle(env:Env,input:{projectIds:string[];action:"COMPLETE"|"REJECT"|"REOPEN";reason?:string}){
   const ids=[...new Set((input.projectIds||[]).map(clean).filter(Boolean))].slice(0,200),ts=nowMs(),results:Record<string,unknown>[]=[];
   for(const projectId of ids){
     const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>(); if(!project){results.push({projectId,error:"NOT_FOUND"});continue;}
+    if(input.action==="COMPLETE"){
+      const slots=await env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) resolved FROM v2_production_slots WHERE project_id=?").bind(projectId).first<Record<string,unknown>>().catch(()=>null);
+      const total=Number(slots?.total||0),resolved=Number(slots?.resolved||0);
+      const pkg=await env.DB.prepare("SELECT status FROM v2_download_packages WHERE project_id=? ORDER BY created_at DESC LIMIT 1").bind(projectId).first<Record<string,unknown>>().catch(()=>null);
+      const packageReady=Number(project.automatic_zip||0)===0||["READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(upper(pkg?.status));
+      const [script,legacyRefs]=await Promise.all([
+        env.DB.prepare("SELECT 1 ok FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' LIMIT 1").bind(projectId).first().catch(()=>null),
+        env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN upper(item_key) LIKE 'REF-%' THEN 1 ELSE 0 END) refs FROM automatic_project_items WHERE project_id=?").bind(projectId).first<Record<string,unknown>>().catch(()=>null),
+      ]);
+      const referenceOnly=Number(legacyRefs?.total||0)>0&&Number(legacyRefs?.refs||0)>=Number(legacyRefs?.total||0);
+      if(total===0&&(script||referenceOnly)){results.push({projectId,error:"PRODUCTION_SLOTS_REQUIRED",production_slots_total:0,reason:referenceOnly?"REFERENCE_POOLS_ARE_NOT_FINAL_OUTPUT":"SCRIPT_REQUIRES_PRODUCTION_MODEL"});continue;}
+      if(total>0&&(resolved<total||!packageReady)){results.push({projectId,error:"PRODUCTION_NOT_COMPLETE",production_slots_total:total,production_slots_resolved:resolved,package_ready:packageReady});continue;}
+    }
     if(input.action==="REOPEN"){
       await env.DB.prepare("UPDATE automatic_projects SET lifecycle_status='ACTIVE',mcp_locked=0,status='ACTIVE',pipeline_status='AGUARDANDO',completed_at=NULL,rejected_at=NULL,closed_reason=NULL,resumed_at=?,resume_reason=?,state_version=state_version+1,updated_at=? WHERE id=?").bind(ts,input.reason||"EXPLICIT_REOPEN",ts,projectId).run();
       results.push({projectId,lifecycleStatus:"ACTIVE",mcpLocked:false}); continue;
@@ -174,7 +193,7 @@ export async function deleteProjectsPermanently(env:Env,projectIds:string[],conf
     const objects:string[]=[];
     for(const sql of ["SELECT r2_key FROM automatic_project_files WHERE project_id=?","SELECT r2_key FROM v2_project_media WHERE project_id=?","SELECT r2_key FROM v2_download_packages WHERE project_id=?","SELECT r2_key FROM v2_ingest_candidates WHERE project_id=? AND r2_key LIKE 'incoming/%'"]){const rows=await env.DB.prepare(sql).bind(projectId).all<{r2_key?:string}>();for(const row of rows.results||[])if(row.r2_key)objects.push(row.r2_key);}
     for(let offset=0;offset<objects.length;offset+=1000)await env.MEDIA.delete(objects.slice(offset,offset+1000)).catch(()=>undefined);
-    const tables=["v2_project_slot_access","v2_project_workflow_tags","v2_runtime_heartbeats","worker_events","worker_work_items","worker_sessions","supervisor_project_candidates","supervisor_decision_queue","plan_branches","source_routing_plans","v2_control_jobs","v2_download_packages","v2_project_media","v2_project_titles","v2_ingest_events","v2_ingest_candidates","automatic_project_events","automatic_project_files","automatic_project_items"];
+    const tables=["v2_production_slots","v2_production_scenes","v2_reference_pools","v2_project_slot_access","v2_project_workflow_tags","v2_runtime_heartbeats","worker_events","worker_work_items","worker_sessions","supervisor_project_candidates","supervisor_decision_queue","plan_branches","source_routing_plans","v2_control_jobs","v2_download_packages","v2_project_media","v2_project_titles","v2_ingest_events","v2_ingest_candidates","automatic_project_events","automatic_project_files","automatic_project_items"];
     for(const table of tables){
       try { if(table==="v2_runtime_heartbeats") await env.DB.prepare("DELETE FROM v2_runtime_heartbeats WHERE scope_id LIKE ?").bind(`%${projectId}%`).run(); else await env.DB.prepare(`DELETE FROM ${table} WHERE project_id=?`).bind(projectId).run(); } catch{}
     }

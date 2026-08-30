@@ -1,0 +1,700 @@
+ADAPTACOES_RECOMENDADAS_MCP3_PIPELINE_IMAGENS
+Projeto: DIGIMON BEATBREAK - MONTE SUA EQUIPE GLOWING DAWN
+Objetivo: tornar o fluxo SCRIPT -> cenas -> coleta -> QA -> reutilizacao -> ZIP mais eficiente, escalavel e coerente com o modelo de producao.
+
+==================================================
+1. RESUMO DO QUE OCORREU
+==================================================
+
+A coleta em si funcionou bem.
+
+Conseguimos:
+- 56 candidatas materializadas.
+- QA aplicado sobre as candidatas.
+- Diversos assets AST-* aprovados e catalogados.
+- 12 pools semanticos principais congelados.
+- Repertorio reaproveitavel salvo na Biblioteca.
+
+O principal gargalo apareceu depois:
+REFERENCIAS APROVADAS -> 72 CENAS -> 102 ARQUIVOS/SLOTS FINAIS.
+
+Hoje o app trata os 12 pools de referencia como itens finais do projeto.
+Isso permitiu que o projeto fosse considerado COMPLETED antes de existirem os 72 itens/cenas e 102 slots reais exigidos pelo roteiro.
+
+==================================================
+2. PROBLEMAS ENCONTRADOS
+==================================================
+
+2.1 QA EM LOTE ESTOUROU LIMITE DO WORKER
+
+Foi enviado um lote grande com dezenas de decisoes de QA.
+
+O Worker aplicou parte das decisoes, mas bateu no limite interno de subrequests da Cloudflare antes de devolver a resposta completa.
+
+Consequencia:
+- parte das candidatas ficou APPROVED/REJECTED corretamente;
+- a resposta da operacao falhou;
+- foi necessario consultar o estado novamente para descobrir o que realmente tinha sido aplicado.
+
+SOLUCAO RECOMENDADA:
+O endpoint de QA deve aceitar 50-100+ decisoes de uma vez, mas internamente:
+- quebrar em chunks seguros; OU
+- gravar as decisoes;
+- devolver ACK imediatamente;
+- processar no Data Plane/Queue.
+
+Exemplo:
+
+accepted: 56
+status: QUEUED
+
+O Supervisor nao deve precisar descobrir empiricamente quantas decisoes cabem dentro do limite do Worker.
+
+--------------------------------------------------
+
+2.2 ESTADO DO ITEM NAO FOI RECONCILIADO AUTOMATICAMENTE APOS QA
+
+Varias candidatas viraram APPROVED corretamente, mas alguns project_items continuaram como:
+- COLLECTING
+- IN_QA
+
+Foi necessario reconciliar o projeto depois.
+
+SOLUCAO RECOMENDADA:
+A operacao de APPROVE deve atualizar de forma atomica/logica:
+
+candidate -> APPROVED
+asset -> AST-* criado
+item.approved_count
+item.qa_status
+item.collection_status
+item.stage
+
+Se required_approved for atingido:
+item -> pronto para freeze/finalizacao.
+
+Idealmente sem exigir reconciliacao posterior.
+
+--------------------------------------------------
+
+2.3 CONFUSAO ENTRE REFERENCE POOL E ITEM DE PRODUCAO
+
+Foram criados:
+
+REF-TOMORO
+REF-GEKKOMON
+REF-KYO
+etc.
+
+Esses 12 itens representam pools semanticos para coleta/reutilizacao.
+
+Eles NAO representam as 72 cenas nem os 102 slots exigidos pelo roteiro.
+
+Hoje o app tratou os pools como os itens finais do projeto.
+
+SOLUCAO RECOMENDADA:
+Separar explicitamente entidades/tipos:
+
+REFERENCE_POOL
+PRODUCTION_SCENE
+PRODUCTION_SLOT
+
+Exemplo:
+
+reference_pools: 12
+production_scenes: 72
+production_slots: 102
+
+Nunca usar total_items sozinho para representar os tres conceitos.
+
+--------------------------------------------------
+
+2.4 PROJETO FOI CONCLUIDO PREMATURAMENTE
+
+Depois que os 12 REF-* foram congelados, o projeto chegou a:
+
+status: COMPLETED
+pipeline_status: CONCLUIDO
+frozen_count: 12
+
+Mas ainda nao existiam os 72 itens/cenas nem os 102 arquivos esperados pelo roteiro.
+
+SOLUCAO RECOMENDADA:
+O gate de COMPLETED deve considerar exclusivamente os requisitos finais do projeto.
+
+Exemplo:
+
+required_production_slots = 102
+resolved_production_slots = 102
+
+Somente entao:
+
+status = COMPLETED
+
+Pools de referencia completos devem gerar apenas algo como:
+
+REFERENCE_STAGE_COMPLETE
+
+Nunca conclusao global do projeto.
+
+--------------------------------------------------
+
+2.5 SCRIPT NAO GEROU AS CENAS AUTOMATICAMENTE
+
+O SCRIPT estava corretamente anexado e visivel, mas o projeto continuou inicialmente com:
+
+total_items = 0
+
+Foi preciso criar manualmente os pools de referencia pelo FAST PUSH.
+
+SOLUCAO RECOMENDADA:
+Quando:
+
+SCRIPT = READY
+
+deve acontecer automaticamente:
+
+parse do roteiro
+-> cria 72 production_scenes
+-> cria 102 production_slots
+-> define target_file
+-> define preset
+-> define sujeito
+-> define referencia semantica
+-> define contexto
+-> define tipo/composition_class
+-> liga cada slot ao seu pool/referencia
+
+Tudo de forma idempotente.
+
+Se o mesmo SCRIPT for processado novamente:
+- nao duplicar cenas;
+- nao duplicar slots;
+- apenas reconciliar alteracoes reais.
+
+--------------------------------------------------
+
+2.6 NAO EXISTE ROTA EFICIENTE "ASSET EXISTENTE -> SLOT"
+
+Temos um asset AST-* aprovado de Tomoro.
+
+Esse mesmo asset pode atender varios slots:
+
+001-tomoro.jpg
+003-tomoro.jpg
+016-tomoro.jpg
+etc.
+
+Hoje nao existe uma rota direta que permita:
+
+asset existente
+-> associar a varios target_files
+-> sem duplicar bytes no R2
+-> sem nova materializacao
+
+Foi testado FAST_APPROVE_PROJECT_ITEMS usando apenas target_file.
+
+A operacao foi aceita inicialmente pela Queue, mas nao criou o item/slot necessario e terminou como falha.
+
+SOLUCAO PRINCIPAL RECOMENDADA:
+
+Criar uma ferramenta como:
+
+assign_assets_to_slots
+
+Exemplo:
+
+assign_assets_to_slots(
+  project_id,
+  [
+    {
+      target_file: "001-tomoro.jpg",
+      asset_id: "AST-..."
+    },
+    {
+      target_file: "001-chiropmon.jpg",
+      asset_id: "AST-..."
+    },
+    {
+      target_file: "003-tomoro.jpg",
+      asset_id: "AST-..."
+    }
+  ]
+)
+
+Requisitos:
+- lote de 200-500 vinculos;
+- nao copiar arquivo no R2;
+- apenas criar associacao logica;
+- permitir o mesmo AST em varios slots;
+- atualizar status do production_slot;
+- registrar historico de uso;
+- ser idempotente.
+
+--------------------------------------------------
+
+2.7 TARGET_FILE NAO FAZ UPSERT DE SLOT
+
+Foi testado:
+
+FAST_APPROVE_PROJECT_ITEMS
+target_file = "001-tomoro.jpg"
+
+sem item_id.
+
+A operacao foi aceita como QUEUED, mas:
+- nenhum production_item foi criado;
+- total_items continuou 12;
+- a operacao acabou registrada como FAILED.
+
+SOLUCAO RECOMENDADA:
+
+Se target_file nao existir, a rota deve poder:
+
+UPSERT production_slot pelo target_file.
+
+Exemplo:
+
+target_file unique dentro do projeto.
+
+Se existir:
+-> vincula.
+
+Se nao existir:
+-> cria slot
+-> vincula asset
+-> marca resolved.
+
+--------------------------------------------------
+
+2.8 MATERIALIZAR_LOTE CRIA ITEM HISTORICO QUE NAO E VISIVEL PARA RELINKAR_ITEM
+
+Foi testado materializar_lote com:
+
+item_id = SLOT-001-TOMORO
+arquivo_alvo = 001-tomoro.jpg
+sem candidata.
+
+A chamada aceitou o item.
+
+Mas depois:
+
+relinkar_item("SLOT-001-TOMORO", AST-...)
+
+retornou:
+
+ITEM_NOT_FOUND
+
+Ou seja:
+o item criado pelo lote historico nao pertence ao mesmo modelo de project_item consumido por relinkar_item.
+
+SOLUCAO RECOMENDADA:
+
+Unificar o modelo de item.
+
+OU criar uma rota explicita:
+
+criar_slots_projeto_lote
+
+Exemplo:
+
+[
+  {
+    slot_id: "SLOT-001-TOMORO",
+    target_file: "001-tomoro.jpg",
+    subject: "Tomoro Tenma",
+    reference_pool: "REF-TOMORO",
+    preset: "...",
+    scene_id: "SCENE-001"
+  }
+]
+
+Apos criacao, todas as rotas de:
+- relink
+- approve
+- freeze
+- export
+- QA
+
+devem enxergar o mesmo item.
+
+--------------------------------------------------
+
+2.9 ZIP HISTORICO NAO ENXERGA ASSETS CONGELADOS DO PROJETO
+
+Foi tentado usar exportar_zip_arquivo sobre um lote criado a partir dos itens ja congelados.
+
+Resultado:
+
+NO_FROZEN_ASSETS
+
+Isso demonstra que o exportador historico e o modelo de assets congelados do projeto ainda nao compartilham a mesma fonte de verdade.
+
+SOLUCAO RECOMENDADA:
+
+O ZIP final nao deve depender de lote historico.
+
+Ele deve receber o manifesto dos production_slots.
+
+Fonte de verdade:
+
+production_slot.target_file
+production_slot.asset_id
+
+--------------------------------------------------
+
+2.10 EXPORTAR_ASSETS_ZIP DEDUPLICA ASSETS REPETIDOS
+
+Teste conceitual:
+
+[AST-A, AST-A, AST-B]
+
+O exportador contabilizou apenas 2 assets.
+
+Isso e correto para backup de biblioteca.
+
+Mas e incorreto para pacote de producao, onde o mesmo arquivo fisico pode precisar aparecer varias vezes com nomes diferentes.
+
+SOLUCAO RECOMENDADA:
+
+Separar:
+
+EXPORT_LIBRARY_ASSETS_ZIP
+de
+EXPORT_PROJECT_PRODUCTION_ZIP
+
+O ZIP de projeto deve operar por manifesto, nao por lista de IDs unicos.
+
+Exemplo:
+
+[
+  {
+    target_file: "001-tomoro.jpg",
+    asset_id: "AST-A"
+  },
+  {
+    target_file: "003-tomoro.jpg",
+    asset_id: "AST-A"
+  },
+  {
+    target_file: "007-tomoro.jpg",
+    asset_id: "AST-B"
+  }
+]
+
+No R2:
+AST-A existe uma vez.
+
+No ZIP:
+AST-A pode aparecer varias vezes com nomes diferentes.
+
+==================================================
+3. ARQUITETURA IDEAL
+==================================================
+
+SCRIPT
+  |
+  v
+PARSER AUTOMATICO
+  |
+  +--> 72 PRODUCTION_SCENES
+  |
+  +--> 102 PRODUCTION_SLOTS
+         |
+         +--> target_file
+         +--> preset
+         +--> subject
+         +--> reference_pool
+         +--> context
+         +--> composition_class
+
+Depois:
+
+REFERENCE_POOLS
+
+REF-TOMORO
+  -> AST-A
+  -> AST-B
+  -> AST-C
+  -> AST-D
+  -> AST-E
+
+REF-GEKKOMON
+  -> AST-F
+  -> AST-G
+  -> AST-H
+
+etc.
+
+Depois do QA:
+
+ASSIGN_ASSETS_TO_SLOTS
+
+001-tomoro.jpg     -> AST-A
+001-chiropmon.jpg  -> AST-X
+003-tomoro.jpg     -> AST-B
+004-tomoro.jpg     -> AST-C
+016-tomoro.jpg     -> AST-A
+
+Nao ha duplicacao de objeto no R2.
+
+Depois:
+
+PROJECT PRODUCTION ZIP
+
+O ZIP abre o manifesto e faz streaming:
+
+AST-A -> grava como 001-tomoro.jpg
+AST-X -> grava como 001-chiropmon.jpg
+AST-B -> grava como 003-tomoro.jpg
+AST-C -> grava como 004-tomoro.jpg
+AST-A -> grava novamente como 016-tomoro.jpg
+
+==================================================
+4. NOVA ROTA RECOMENDADA - ALTA PRIORIDADE
+==================================================
+
+Nome sugerido:
+
+assign_assets_to_slots
+
+Entrada:
+
+project_id
+
+assignments: [
+  {
+    slot_id?: string,
+    target_file: string,
+    asset_id: string,
+    observation?: string
+  }
+]
+
+Comportamento:
+
+1. localizar production_slot por slot_id ou target_file;
+2. se permitido, fazer upsert do slot;
+3. validar AST existente;
+4. nao duplicar R2;
+5. salvar slot.asset_id;
+6. marcar slot como RESOLVED/FROZEN;
+7. registrar uso do asset;
+8. atualizar contadores da scene;
+9. atualizar contadores do projeto;
+10. retornar ACK rapido.
+
+Suportar:
+- 200 a 500 assignments por chamada;
+- idempotencia;
+- processamento assincrono se necessario.
+
+==================================================
+5. NOVO MODELO DE CONTAGEM
+==================================================
+
+Evitar:
+
+total_items = 12
+
+como unico indicador.
+
+Usar:
+
+reference_pools_total
+reference_pools_ready
+
+production_scenes_total
+production_scenes_ready
+
+production_slots_total
+production_slots_resolved
+
+Exemplo neste projeto:
+
+reference_pools_total = 12
+production_scenes_total = 72
+production_slots_total = 102
+
+Conclusao:
+
+production_slots_resolved == production_slots_total
+
+==================================================
+6. PIPELINE DE QA MAIS EFICIENTE
+==================================================
+
+Atual:
+
+Supervisor envia grande lote
+-> Worker processa varias operacoes sincronicamente
+-> limite de subrequests
+-> resposta falha depois de parte ter sido aplicada
+
+Proposto:
+
+Supervisor
+-> submit_qa_decisions
+-> grava decisoes
+-> ACK 202
+
+Exemplo:
+
+accepted: 56
+operation_id: QA-...
+status: QUEUED
+
+Queue/Data Plane:
+-> processa chunks internos
+-> 10 ou 20 por execucao
+-> atualiza item
+-> cria AST
+-> apaga incoming rejeitado
+-> conclui QA
+
+Supervisor consulta apenas snapshot.
+
+==================================================
+7. ESTADO IDEAL DO PROJETO
+==================================================
+
+Exemplo de estados:
+
+SCRIPT_READY
+REFERENCE_ANALYSIS_COMPLETE
+REFERENCE_COLLECTION_COMPLETE
+REFERENCE_QA_COMPLETE
+SCENES_READY
+SLOT_ASSIGNMENT_WORKING
+SLOT_ASSIGNMENT_COMPLETE
+PACKAGE_READY
+COMPLETED
+
+Nao marcar COMPLETED quando apenas os pools estiverem congelados.
+
+==================================================
+8. PRIORIDADE DE IMPLEMENTACAO
+==================================================
+
+PRIORIDADE 1
+SCRIPT -> cenas + slots automatico
+
+Motivo:
+sem isso o projeto nao possui a estrutura real de producao.
+
+--------------------------------------------------
+
+PRIORIDADE 2
+assign_assets_to_slots em lote
+
+Motivo:
+permite reaproveitar assets sem duplicacao e resolve a ponte entre biblioteca e producao.
+
+--------------------------------------------------
+
+PRIORIDADE 3
+ZIP baseado em manifesto slot -> asset
+
+Motivo:
+permite gerar os 102 arquivos finais mesmo utilizando um numero muito menor de arquivos fisicos.
+
+--------------------------------------------------
+
+PRIORIDADE 4
+QA assincrono/chunked com ACK imediato
+
+Motivo:
+remove limite de subrequests do caminho quente e melhora escala.
+
+--------------------------------------------------
+
+PRIORIDADE 5
+Gate de conclusao baseado em production_slots
+
+Motivo:
+impede projeto ser marcado como concluido antes de realmente estar pronto.
+
+==================================================
+9. GANHO ESPERADO
+==================================================
+
+Com essas mudancas:
+
+ANTES:
+
+SCRIPT
+-> coleta referencia
+-> QA
+-> tenta transformar referencias em cenas
+-> tenta recriar/copiar arquivos
+-> incompatibilidade de items
+-> relink
+-> reconciliacao
+-> lote historico
+-> ZIP
+
+DEPOIS:
+
+SCRIPT
+-> 72 cenas + 102 slots
+-> coleta 12 pools
+-> QA das variacoes
+-> assign_assets_to_slots
+-> ZIP
+
+A maior parte da complexidade operacional desaparece.
+
+==================================================
+10. REGRA CENTRAL
+==================================================
+
+Uma imagem fisica aprovada deve poder atender N slots de producao sem ser duplicada no R2.
+
+A relacao correta e:
+
+ASSET 1:N PRODUCTION_SLOTS
+
+O ZIP e quem materializa os diferentes nomes de arquivo durante a exportacao.
+
+Exemplo:
+
+AST-A
+  -> 001-tomoro.jpg
+  -> 003-tomoro.jpg
+  -> 016-tomoro.jpg
+
+Um unico objeto armazenado.
+Tres entradas logicas.
+Tres arquivos no ZIP.
+
+==================================================
+11. VEREDITO
+==================================================
+
+Coleta:
+FUNCIONAL.
+
+Materializacao:
+FUNCIONAL.
+
+QA:
+FUNCIONAL, mas precisa ACK/chunk interno.
+
+Catalogacao AST:
+FUNCIONAL.
+
+Reutilizacao semantica:
+FUNCIONAL.
+
+Principal gap:
+transformar os assets aprovados em todos os production_slots exigidos pelo roteiro.
+
+A implementacao mais importante e:
+
+SCRIPT -> PRODUCTION_SCENES/PRODUCTION_SLOTS
++
+ASSIGN_ASSETS_TO_SLOTS
++
+ZIP POR MANIFESTO.
+
+Essas tres mudancas alinham o app com o modelo de producao em escala e evitam duplicacao, retrabalho e conclusao prematura.

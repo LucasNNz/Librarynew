@@ -1,6 +1,7 @@
 import type { CorvoQueueJob, Env, FastApproveJob, SupervisorDecisionsJob } from "../types";
 import { id, nowMs, safeFilenameFromUrl, stableId } from "./ids";
 import { reconcileAutomaticProject } from "./projects";
+import { assignAssetsToSlots } from "./production-model";
 
 type Approval = { itemId?: string; targetFile?: string; candidateId: string; note?: string };
 type Decision = { itemId: string; status: string; observation?: string };
@@ -112,8 +113,22 @@ async function ensureAssetForCandidate(env: Env, projectId: string, item: Record
 }
 
 async function approveOne(env: Env, projectId: string, approval: Approval) {
-  const item = await resolveProjectItem(env, projectId, approval); if (!item) throw new Error("PROJECT_ITEM_NOT_FOUND");
   const candidate = await candidateMedia(env, approval.candidateId); if (!candidate) throw new Error("CANDIDATE_NOT_MATERIALIZED");
+  let item = await resolveProjectItem(env, projectId, approval);
+  const requestedTarget=clean(approval.targetFile);
+  if(!item&&requestedTarget){
+    const synthetic:Record<string,unknown>={target_file:requestedTarget,term:candidate.subject||requestedTarget,universe:candidate.universe||null,kind:"Imagem",context:null,semantic_reference:candidate.subject||requestedTarget};
+    const asset=await ensureAssetForCandidate(env,projectId,synthetic,candidate,approval.note);if(!asset)throw new Error("ASSET_CREATE_FAILED");
+    const assetId=clean(asset.id);
+    const linked=await assignAssetsToSlots(env,{projectId,assignments:[{targetFile:requestedTarget,assetId,observation:approval.note}]});
+    if("error" in linked)throw new Error(String(linked.error));
+    const ts=nowMs();
+    if(candidate.source==="V2_FAST_PUSH")await env.DB.prepare("UPDATE v2_ingest_candidates SET status='APPROVED',asset_id=?,updated_at=? WHERE id=?").bind(assetId,ts,approval.candidateId).run();
+    if(candidate.source==="SUPERVISOR")await env.DB.prepare("UPDATE supervisor_project_candidates SET status='APPROVED',updated_at=? WHERE id=?").bind(ts,approval.candidateId).run();
+    if(candidate.fileId)await env.DB.prepare("UPDATE materialization_files SET final_asset_id=? WHERE id=?").bind(assetId,candidate.fileId).run();
+    return {targetFile:requestedTarget,candidateId:approval.candidateId,assetId,status:"FROZEN",productionSlot:true,upserted:true};
+  }
+  if (!item) throw new Error("PROJECT_ITEM_NOT_FOUND");
 
   const alreadyLinkedId = clean(item.linked_asset_id);
   if (alreadyLinkedId) {
@@ -154,7 +169,9 @@ async function approveOne(env: Env, projectId: string, approval: Approval) {
   if (candidate.fileId) statements.push(env.DB.prepare("UPDATE materialization_files SET final_asset_id=? WHERE id=?").bind(assetId,candidate.fileId));
   if (item.materialization_item_id) statements.push(env.DB.prepare("UPDATE materialization_items SET status='FROZEN',frozen_asset_id=?,selected_file_id=COALESCE(?,selected_file_id),updated_at=? WHERE id=?").bind(assetId,candidate.fileId,ts,item.materialization_item_id));
   await env.DB.batch(statements);
-  return { itemId: item.id, candidateId: approval.candidateId, assetId, status: "FROZEN" };
+  const targetFile=requestedTarget||clean(item.target_file);
+  if(targetFile)await assignAssetsToSlots(env,{projectId,assignments:[{targetFile,assetId,observation:approval.note}]}).catch(()=>undefined);
+  return { itemId: item.id, targetFile:targetFile||null, candidateId: approval.candidateId, assetId, status: "FROZEN" };
 }
 
 async function ensureOperation(env: Env, operationId: string, type: string, requested: number, projectId: string, payload: unknown) {

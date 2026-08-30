@@ -1,0 +1,25 @@
+{
+  "checkpoint": "0.20.33",
+  "gate": "INLINE_REFERENCES_NO_TICKET",
+  "passed": 16,
+  "total": 16,
+  "status": "PASS",
+  "checks": {
+    "tool_anexar_referencias_source": true,
+    "tool_obter_referencias_source": true,
+    "generic_blocks_references_ticket": true,
+    "inline_writes_r2": true,
+    "inline_writes_d1_file": true,
+    "inline_opens_reference_slot": true,
+    "inline_touches_state_version": true,
+    "inline_returns_ready": true,
+    "inline_returns_copyable": true,
+    "inline_no_external_put": true,
+    "r2_repair_path": true,
+    "http_inline_route": true,
+    "embedded_tool_anexar": true,
+    "embedded_hard_gate": true,
+    "embedded_ready_response": true,
+    "embedded_http_inline_route": true
+  }
+}

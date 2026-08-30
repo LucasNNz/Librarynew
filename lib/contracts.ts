@@ -189,6 +189,7 @@ export type ProjectSlotSnapshot = {
   thumbs: {count:number;selected:number;max:number};
   titles: {count:number;selected:number;max:number};
   items: Record<string,unknown>;
+  production?: {reference_pools_total:number;production_scenes_total:number;production_slots_total:number;production_slots_resolved:number};
   candidates: Record<string,unknown>;
   package?: Record<string,unknown>|null;
   slotAccess?: Array<Record<string,unknown>>;

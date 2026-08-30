@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { id, nowMs, stableId } from "./ids";
+import { materializeProductionModel, type ProductionSceneSeed } from "./production-model";
 
 function clean(value: unknown){return String(value??"").trim();}
 
@@ -12,6 +13,9 @@ export type ParsedProjectScene = {
   concept:string;
   reference:string;
   scriptExcerpt:string;
+  preset:string;
+  compositionClass:string;
+  targetFiles:string[];
 };
 
 function stripMarkdown(value:string){
@@ -52,6 +56,22 @@ function firstContentLine(block:string){
   return "";
 }
 
+
+function targetFilesFromBlock(block:string){
+  const found:string[]=[];
+  const seen=new Set<string>();
+  const pattern=/\b([A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:jpe?g|png|webp|gif|avif))\b/gi;
+  for(const match of block.matchAll(pattern)){
+    const raw=clean(match[1]).replace(/\s+/g," ");
+    if(!raw)continue;
+    const normalized=raw.replace(/^["']|["']$/g,"");
+    const key=normalized.toLowerCase();
+    if(seen.has(key))continue;
+    seen.add(key);found.push(normalized);
+  }
+  return found.slice(0,20);
+}
+
 export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
   const normalized=String(content??"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
   const lines=normalized.split("\n");
@@ -76,6 +96,9 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
     const subject=field(block,"SUJEITO")||field(block,"SUBJECT")||field(block,"PERSONAGEM")||field(block,"PERSONAGEM PRINCIPAL");
     const concept=field(block,"CONCEITO")||field(block,"CONCEPT")||field(block,"IMAGEM")||field(block,"VISUAL");
     const reference=field(block,"REFERÊNCIA")||field(block,"REFERENCIA")||field(block,"REFERENCE")||field(block,"REFERÊNCIA VISUAL")||field(block,"REFERENCIA VISUAL");
+    const preset=field(block,"PRESET");
+    const compositionClass=field(block,"COMPOSITION_CLASS")||field(block,"COMPOSICAO")||field(block,"COMPOSIÇÃO")||field(block,"TIPO")||"CONTEXTUAL";
+    const targetFiles=targetFilesFromBlock(block);
     const inferred=firstContentLine(block);
     const title=explicitTitle||subject||concept||inferred||itemKey;
     scenes.push({
@@ -87,6 +110,9 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
       concept:concept||title,
       reference:reference||concept||title,
       scriptExcerpt:block.slice(0,6000),
+      preset,
+      compositionClass,
+      targetFiles,
     });
   }
   return scenes;
@@ -136,9 +162,24 @@ export async function materializeScenesFromProjectScript(env:Env,input:{projectI
       .bind(itemId,projectId,Number(project.active_version||1),scene.itemKey,scene.subject||scene.title,scene.scriptExcerpt,scene.universe||null,ts,ts,scene.reference||scene.concept||scene.title,strategyState));
   }
   for(let offset=0;offset<statements.length;offset+=50)await env.DB.batch(statements.slice(offset,offset+50));
+  const productionSeeds:ProductionSceneSeed[]=scenes.map(scene=>({
+    sceneKey:scene.itemKey,
+    number:scene.number,
+    title:scene.title,
+    universe:scene.universe,
+    subject:scene.subject,
+    concept:scene.concept,
+    reference:scene.reference,
+    scriptExcerpt:scene.scriptExcerpt,
+    preset:scene.preset,
+    context:scene.scriptExcerpt,
+    compositionClass:scene.compositionClass,
+    slots:scene.targetFiles.map(targetFile=>({targetFile,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass})),
+  }));
+  const production=await materializeProductionModel(env,{projectId,version:Number(project.active_version||1),scenes:productionSeeds});
   await env.DB.batch([
     env.DB.prepare(`UPDATE automatic_projects SET status='ACTIVE',pipeline_status='PROCESSANDO',next_action='DISPATCH',started_at=COALESCE(started_at,?),total_items=(SELECT COUNT(*) FROM automatic_project_items WHERE project_id=?),state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?`).bind(ts,projectId,ts,ts,projectId),
-    env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PARSED_SCENES","OK",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,sceneCount:scenes.length,created,updated,itemKeys:scenes.slice(0,200).map(scene=>scene.itemKey)}),ts),
+    env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PARSED_SCENES","OK",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,sceneCount:scenes.length,created,updated,production,itemKeys:scenes.slice(0,200).map(scene=>scene.itemKey)}),ts),
   ]);
-  return {ok:true,sceneCount:scenes.length,created,updated,projectStatus:"ACTIVE",pipelineStatus:"PROCESSANDO",nextAction:"DISPATCH",items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null}))};
+  return {ok:true,sceneCount:scenes.length,created,updated,production,projectStatus:"ACTIVE",pipelineStatus:"PROCESSANDO",nextAction:"DISPATCH",items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
 }
