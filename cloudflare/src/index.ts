@@ -35,6 +35,7 @@ import { executeFactoryZero, factoryZeroStatus } from "./core/factory-zero";
 import { maintenanceStatus, runPendingMaintenance } from "./core/maintenance";
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
+import { operationalCleanOnce } from "./core/operational-clean";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
@@ -64,11 +65,12 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.8", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.9", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    try {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
     const url = new URL(request.url);
 
@@ -114,7 +116,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.8",
+        version:"0.20.9",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -123,6 +125,7 @@ export default {
     else if (url.pathname === "/health" && request.method === "GET") { ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined)); response = json(await health(env)); }
     else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
     else if (url.pathname === "/control/apply-migrations" && request.method === "POST") response = json(await applyMigrationsFromApp(env));
+    else if (url.pathname === "/control/operational-clean-once" && request.method === "POST") response = json(await operationalCleanOnce(env));
     else if (url.pathname === "/control/rotate-app-key" && request.method === "POST") response = json(await rotateAppKey(env));
     else if (url.pathname === "/control/factory-zero/status" && request.method === "GET") response = json(await factoryZeroStatus(env));
     else if (url.pathname === "/control/factory-zero" && request.method === "POST") { const body=await request.json() as {confirm?:string}; response = json(await executeFactoryZero(env,String(body.confirm||""))); }
@@ -395,6 +398,11 @@ export default {
     }
     else response = json({ error: "NOT_FOUND" }, { status: 404 });
     return withCors(response, request);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error("CORE_REQUEST_FAILED", request.method, new URL(request.url).pathname, detail);
+      return withCors(json({ error:"CORE_REQUEST_FAILED", detail }, { status:500 }), request);
+    }
   },
 
   async queue(batch: MessageBatch<CorvoQueueJob>, env: Env) {

@@ -1,4 +1,13 @@
-# Corvo Library V2 0.20.8 — Clean Once
+# Corvo Library V2 0.20.9 — Dynamic Clean Recovery
+
+Esta versão corrige a exceção do Worker causada pela limpeza SQL fixa da
+0.20.8. O app atualiza o Core primeiro e usa um endpoint idempotente que descobre
+as tabelas realmente existentes no D1 antes de limpá-las. Instalações legadas
+com schemas diferentes não executam mais `DELETE` contra tabelas ausentes.
+
+Veja `RELEASE_0_20_9_DYNAMIC_CLEAN_RECOVERY.md`.
+
+# Histórico: Corvo Library V2 0.20.8 — Clean Once
 
 Esta versão limpa uma única vez todos os dados operacionais persistidos no D1
 (assets, projetos, execuções, filas e históricos), inclusive quando o bucket R2

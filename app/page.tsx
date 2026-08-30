@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.8";
+const EXPECTED_CORE_VERSION = "0.20.9";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -573,21 +573,52 @@ export default function Home() {
     setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
     setTotal(0); setNextCursor(null);
     try {
-      // Release 0.20.8 performs exactly one operational cleanup through the
-      // migration registry. Worker secrets, the browser connection and the
-      // persistent infrastructure tables are outside the cleanup scope.
-      const migrationResponse = await fetchWithNetworkRetry(
-        "/api/control/apply-migrations",
+      // The legacy Worker cannot safely clean heterogeneous D1 schemas. Update
+      // it first, tolerate the response being lost during redeploy, and only
+      // then call the idempotent dynamic cleanup endpoint from Core 0.20.9.
+      setReleaseGateMessage("Atualizando o Core seguro…");
+      let coreReady = false;
+      try {
+        const currentResponse = await fetch("/api/health", { cache:"no-store" });
+        const current = await currentResponse.json().catch(()=>({})) as any;
+        const version = current?.app === "ok" ? current?.core?.version : current?.version;
+        coreReady = version === EXPECTED_CORE_VERSION;
+      } catch { coreReady = false; }
+
+      if (!coreReady) {
+        try {
+          const updateResponse = await fetch("/api/control/update-core", { method:"POST", cache:"no-store" });
+          if (!updateResponse.ok && updateResponse.status < 500) {
+            const value = await updateResponse.json().catch(()=>({})) as any;
+            throw new Error(value?.detail || value?.error || `CORE_UPDATE_HTTP_${updateResponse.status}`);
+          }
+        } catch (error) {
+          if (!isTransientFetchError(error)) throw error;
+        }
+        for (let attempt=0; attempt<30; attempt+=1) {
+          await sleep(attempt===0 ? 900 : Math.min(2200,900+attempt*70));
+          try {
+            const probe = await fetch("/api/health", { cache:"no-store" });
+            if (!probe.ok) continue;
+            const raw = await probe.json() as any;
+            const version = raw?.app === "ok" ? raw?.core?.version : raw?.version;
+            if (version === EXPECTED_CORE_VERSION) { coreReady=true; break; }
+          } catch { /* Worker is restarting; keep polling. */ }
+        }
+      }
+      if (!coreReady) throw new Error(`CORE_UPDATE_TIMEOUT:${EXPECTED_CORE_VERSION}`);
+
+      setReleaseGateMessage("Limpando apenas os dados operacionais…");
+      const cleanResponse = await fetchWithNetworkRetry(
+        "/api/control/operational-clean-once",
         { method:"POST", cache:"no-store" },
         { attempts:4, baseDelayMs:600 },
       );
-      const migration = await migrationResponse.json().catch(()=>({})) as any;
-      if (!migrationResponse.ok) throw new Error(migration?.error || migration?.detail || `MIGRATION_HTTP_${migrationResponse.status}`);
-      if (String(migration?.targetVersion || "") !== "0.20.8" || String(migration?.schemaVersion || "") !== "2.15.0") {
-        throw new Error(`MIGRATION_SOURCE_STALE:${String(migration?.targetVersion || "unknown")}/${String(migration?.schemaVersion || "unknown")}`);
+      const clean = await cleanResponse.json().catch(()=>({})) as any;
+      if (!cleanResponse.ok) throw new Error(clean?.detail || clean?.error || `OPERATIONAL_CLEAN_HTTP_${cleanResponse.status}`);
+      if (Number(clean?.assets || 0) !== 0 || Number(clean?.projects || 0) !== 0) {
+        throw new Error(`OPERATIONAL_CLEAN_VERIFICATION_FAILED:${String(clean?.assets)}/${String(clean?.projects)}`);
       }
-      const executed = Array.isArray(migration?.executed) ? migration.executed.map(String) : [];
-      const cleanExecuted = executed.includes("9015_v2_operational_clean_once.sql");
 
       setReleaseGateMessage("Confirmando o D1 vazio…");
       const read = (path:string) => fetchWithNetworkRetry(path, { cache:"no-store" }, { attempts:4, baseDelayMs:500 });
@@ -622,8 +653,8 @@ export default function Home() {
         nextOperations = Array.isArray(operationValue?.items) ? operationValue.items as Operation[] : [];
       }
 
-      if (cleanExecuted && (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0)) {
-        throw new Error("OPERATIONAL_CLEAN_9015_VERIFICATION_FAILED");
+      if (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0) {
+        throw new Error("OPERATIONAL_CLEAN_FINAL_VERIFICATION_FAILED");
       }
 
       // React 18+ agrupa estes setters: o usuário recebe um snapshot final, nunca
@@ -637,7 +668,7 @@ export default function Home() {
       setProjects(nextProjects);
       setRecentOperations(nextOperations);
       setLoading(false);
-      setReleaseGateMessage(cleanExecuted ? "D1 limpo; configurações preservadas." : "D1 real confirmado.");
+      setReleaseGateMessage("D1 limpo; configurações preservadas.");
       setReleaseGateState("done");
     } catch (error) {
       setReleaseGateState("error");
