@@ -99,4 +99,9 @@ export type AssetExportJob = {
   exportId: string;
 };
 
-export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | PackageJob | CollectionJob | AssetExportJob;
+export type ImportZipJob = {
+  kind: "PROCESS_IMPORT_ZIP";
+  importId: string;
+};
+
+export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | PackageJob | CollectionJob | AssetExportJob | ImportZipJob;

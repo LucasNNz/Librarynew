@@ -25,7 +25,7 @@ import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getPa
 import { addProjectQaEvent, getProjectFileLink, listProjectFiles, readProjectFile, serveProjectFile } from "./core/project-files";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources, processCollectionJob } from "./core/collection";
-import { importZipByUrl, prepareZipUpload, processZipImport, syncR2Uncataloged } from "./core/imports-v2";
+import { importZipByUrl, prepareZipUpload, processZipImport, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
 import { reconcileR2Catalog } from "./core/r2-catalog-sync";
 import { addCandidatesToMaterializationItem, addMaterializationItems, assetsForQa, cancelMaterializationBatch, cleanMaterializationTemporaries, createContinuousMaterializationQueue, getMaterializationBatchStatus, getMaterializationItemStatus, materializeBatchCompat, registerMaterializationQa } from "./core/materialization-compat";
 import { getAssetExportLink, processAssetExportJob, queueAssetExport, serveAssetExport } from "./core/asset-exports";
@@ -65,7 +65,7 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.10", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.12", d1, r2, schema, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
 export default {
@@ -75,7 +75,8 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/mcp") {
-      if (request.method !== "OPTIONS" && !authorized(request, env)) return json({ error: "UNAUTHORIZED" }, { status: 401 });
+      // ChatGPT custom MCP endpoint: intentionally public / no auth.
+      // All non-MCP Core routes remain protected below by CORVO_APP_KEY.
       return handleMcp(request, env, ctx);
     }
 
@@ -116,7 +117,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.10",
+        version:"0.20.12",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -365,7 +366,7 @@ export default {
     else if (url.pathname === "/assets/pending/permanent-delete" && request.method === "POST") { const body=await request.json() as {assetIds?:string[];confirm?:boolean}; const value=await deletePendingAssetsPermanently(env,body.assetIds||[],Boolean(body.confirm)); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value); }
     else if (url.pathname === "/imports/zip/prepare" && request.method === "POST") { const body=await request.json() as {fileName?:string}; response=json(await prepareZipUpload(request,env,body.fileName||"importacao.zip"),{status:201}); }
     else if (url.pathname === "/imports/zip/url" && request.method === "POST") { const body=await request.json() as {url:string;fileName:string;manifestText?:string}; const value=await importZipByUrl(env,body); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:201}); }
-    else if (/^\/imports\/[^/]+\/process$/.test(url.pathname) && request.method === "POST") { const importId=decodeURIComponent(url.pathname.split("/")[2]); const value=await processZipImport(env,importId); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:500}):json(value); }
+    else if (/^\/imports\/[^/]+\/process$/.test(url.pathname) && request.method === "POST") { const importId=decodeURIComponent(url.pathname.split("/")[2]); const value=await queueZipImport(env,importId); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:500}):json(value,{status:value.httpStatus||202}); }
     else if (url.pathname === "/storage/sync-r2" && request.method === "GET") response=json(await syncR2Uncataloged(env,{prefix:url.searchParams.get("prefix")||undefined,limit:Number(url.searchParams.get("limit")||1000)}));
     else if (url.pathname === "/storage/sync-r2" && request.method === "POST") { const body=await request.json() as {repair?:boolean;maxObjects?:number;maxRepairs?:number}; response=json(await reconcileR2Catalog(env,body)); }
     else if (url.pathname === "/asset-exports" && request.method === "POST") { const body=await request.json() as {assetIds?:string[];name?:string;operationId?:string}; const value=await queueAssetExport(env,{assetIds:body.assetIds||[],name:body.name,operationId:body.operationId}); response="error" in value?json(value,{status:typeof value.status==="number"?value.status:400}):json(value,{status:202}); }
@@ -415,6 +416,11 @@ export default {
         else if (job.kind === "GENERATE_PACKAGE") { await processPackageJob(env,job); message.ack(); }
         else if (job.kind === "COLLECTION_TICK") { await processCollectionJob(env,job); message.ack(); }
         else if (job.kind === "EXPORT_ASSETS") { await processAssetExportJob(env,job); message.ack(); }
+        else if (job.kind === "PROCESS_IMPORT_ZIP") {
+          const result = await processZipImport(env, job.importId);
+          if (result && typeof result === "object" && "error" in result) console.error("IMPORT_ZIP_FAILED", job.importId, result.error);
+          message.ack();
+        }
         else { message.ack(); }
       } catch (error) {
         console.error("QUEUE_JOB_FAILED",job.kind,error);

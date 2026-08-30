@@ -1,0 +1,31 @@
+{
+  "checkpoint": "0.20.11",
+  "name": "Import Queue",
+  "generated_at": "2026-08-30T03:21:31.860670+00:00",
+  "source_checkpoint": "CORVO_LIBRARY_V2_CHECKPOINT_0_20_10_FK_ORDERED_CLEAN(1).zip",
+  "semantic_plugin_used": false,
+  "changes": [
+    "multi-selection now accumulates ZIP files across successive picker actions",
+    "visual queue processes selected files sequentially and continues after failures",
+    "HTTP import processing now enqueues PROCESS_IMPORT_ZIP and returns quickly",
+    "Cloudflare Queue consumer performs ZIP extraction/hash/catalog work",
+    "UI polls import status and shows the concrete failure reason",
+    "R2/D1 reconciliation remains after the queue finishes"
+  ],
+  "test_zip": {
+    "name": "CORVO_IMPORT_LOTE_001(1).zip",
+    "bytes": 14343233,
+    "entries": 41,
+    "media": 40,
+    "manifest_sections": 40,
+    "missing_manifest_sections": 0,
+    "sha256_mismatches": 0,
+    "zip_integrity": "PASS"
+  },
+  "gates": {
+    "frontend_structural_typescript": "PASS",
+    "worker_structural_typescript": "PASS",
+    "embedded_worker_node_check": "PASS",
+    "schema_migration_required": false
+  }
+}

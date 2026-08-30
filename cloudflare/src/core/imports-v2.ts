@@ -233,6 +233,23 @@ export async function importZipByUrl(env: Env, input: { url:string; fileName:str
   return { importId, status:"Recebido", r2Key:key };
 }
 
+export async function queueZipImport(env: Env, importId: string) {
+  const job = await env.DB.prepare("SELECT id,status FROM imports WHERE id=?").bind(importId).first<{id:string;status:string}>();
+  if (!job) return { error:"IMPORT_NOT_FOUND", status:404 } as const;
+  const current = clean(job.status);
+  if (["Concluído", "Concluído com avisos"].includes(current)) return { accepted:true, importId, status:current, idempotent:true, httpStatus:200 } as const;
+  if (["Na fila", "Processando"].includes(current)) return { accepted:true, importId, status:current, idempotent:true, httpStatus:202 } as const;
+  await env.DB.prepare("UPDATE imports SET status='Na fila' WHERE id=?").bind(importId).run();
+  try {
+    await env.MATERIALIZE_QUEUE.send({ kind:"PROCESS_IMPORT_ZIP", importId });
+    return { accepted:true, importId, status:"Na fila", httpStatus:202 } as const;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await env.DB.prepare("UPDATE imports SET status='Recebido',warnings=? WHERE id=?").bind(JSON.stringify([`QUEUE_SEND_FAILED: ${message}`]), importId).run().catch(() => undefined);
+    return { error:"IMPORT_QUEUE_FAILED", detail:message, status:500 } as const;
+  }
+}
+
 export async function processZipImport(env: Env, importId: string) {
   const job = await env.DB.prepare("SELECT * FROM imports WHERE id=?").bind(importId).first<Record<string,unknown>>();
   if (!job) return { error:"IMPORT_NOT_FOUND", status:404 } as const;

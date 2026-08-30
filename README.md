@@ -1,10 +1,10 @@
-# Corvo Library V2 0.20.10 — FK-Ordered Clean
+# Corvo Library V2 0.20.12 — Public ChatGPT MCP
 
 Corrige `D1_EXEC_ERROR` causado por `PRAGMA foreign_keys = OFF`. A limpeza não
 desabilita mais integridade referencial: o Core lê as foreign keys do D1 e
 apaga tabelas filhas antes das tabelas pai.
 
-Veja `RELEASE_0_20_10_FK_ORDERED_CLEAN.md`.
+Veja `RELEASE_0_20_11_FK_ORDERED_CLEAN.md`.
 
 # Histórico: Corvo Library V2 0.20.9 — Dynamic Clean Recovery
 
@@ -78,7 +78,7 @@ O bucket configurado permanece o mesmo. O Factory Zero agenda limpeza somente do
 
 ## MCP
 
-O botão `↗ MCP` permanece no topo da aplicação, com endpoint pronto, chave, copiar e `Revogar e gerar nova`.
+O botão `↗ MCP` permanece no topo da aplicação, com o endpoint público pronto para o ChatGPT e autenticação `Nenhuma`.
 
 ## Gates
 

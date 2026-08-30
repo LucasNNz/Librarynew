@@ -1,0 +1,12 @@
+{
+  "checkpoint": "0.20.12",
+  "mcp_endpoint": "https://<worker>.<subdomain>.workers.dev/mcp",
+  "mcp_authentication": "none",
+  "mcp_route_public": true,
+  "other_core_routes_authentication": "CORVO_APP_KEY",
+  "bearer_in_gpt_connection_ui": false,
+  "oauth_required": false,
+  "d1_migration": false,
+  "r2_change": false,
+  "queue_change": false
+}

@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.10";
+const EXPECTED_CORE_VERSION = "0.20.12";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -252,10 +252,7 @@ export default function Home() {
   const [autoSetupBusy, setAutoSetupBusy] = useState(false);
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
-  const [mcpShowKey, setMcpShowKey] = useState(false);
-  const [mcpCopied, setMcpCopied] = useState<""|"url"|"key"|"bundle">("");
-  const [mcpRotateBusy, setMcpRotateBusy] = useState(false);
-  const [mcpMessage, setMcpMessage] = useState("");
+  const [mcpCopied, setMcpCopied] = useState<""|"url"|"gpt">("");
   const [releaseGateState, setReleaseGateState] = useState<"idle"|"running"|"done"|"error">("idle");
   const [releaseGateMessage, setReleaseGateMessage] = useState("");
 
@@ -401,49 +398,91 @@ export default function Home() {
     }
   }
 
+  function appendImportFiles(files: File[]) {
+    setImportFiles(current => {
+      const seen = new Set(current.map(file => `${file.name}::${file.size}::${file.lastModified}`));
+      const next = [...current];
+      for (const file of files) {
+        const key = `${file.name}::${file.size}::${file.lastModified}`;
+        if (!seen.has(key)) { seen.add(key); next.push(file); }
+      }
+      return next;
+    });
+  }
+
+  async function waitForImport(importId:string, update:(state:string,detail:string)=>void) {
+    const started = Date.now();
+    while (Date.now() - started < 15 * 60_000) {
+      const response = await fetch(`/api/imports?limit=200&_=${Date.now()}`, { cache:"no-store" });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error || `IMPORT_STATUS_${response.status}`);
+      const row = (Array.isArray(value.items) ? value.items : []).find((item:Record<string,unknown>) => String(item.id) === importId) as Record<string,unknown> | undefined;
+      if (!row) { await new Promise(resolve=>setTimeout(resolve,1200)); continue; }
+      const status = String(row.status || "");
+      if (status === "Na fila" || status === "Recebido") update("NA FILA", `${importId} · aguardando Worker`);
+      else if (status === "Processando") update("PROCESSANDO", `${importId} · extraindo, verificando SHA-256 e catalogando`);
+      else if (status === "Concluído" || status === "Concluído com avisos") {
+        const warnings = (() => { try { const parsed=JSON.parse(String(row.warnings||"[]")); return Array.isArray(parsed)?parsed:[]; } catch { return []; } })();
+        update("CONCLUÍDO", warnings.length ? `${status} · ${warnings.length} aviso(s)` : status);
+        return row;
+      } else if (status === "Erro") {
+        let detail = "IMPORT_PROCESS_FAILED";
+        try { const parsed=JSON.parse(String(row.warnings||"[]")); if (Array.isArray(parsed)&&parsed.length) detail=String(parsed[parsed.length-1]); } catch {}
+        throw new Error(detail);
+      }
+      await new Promise(resolve=>setTimeout(resolve,1200));
+    }
+    throw new Error("IMPORT_QUEUE_TIMEOUT");
+  }
+
   async function importSelectedBatches() {
     if (!importFiles.length) { setImportMessage("Selecione um ou mais lotes ZIP."); return; }
-    const oversized = importFiles.filter(file => file.size > MAX_IMPORT_ZIP_BYTES);
+    const queuedFiles = [...importFiles];
+    const oversized = queuedFiles.filter(file => file.size > MAX_IMPORT_ZIP_BYTES);
     if (oversized.length) {
       setImportMessage(`Lote acima de 48 MB: ${oversized.map(file=>file.name).join(", ")}. Use os lotes preparados para a V2.`);
       return;
     }
     setImportBusy(true);
     setImportMessage("");
-    setImportProgress(importFiles.map(file => ({name:file.name,state:"AGUARDANDO",detail:formatBytes(file.size)})));
+    setImportProgress(queuedFiles.map(file => ({name:file.name,state:"AGUARDANDO",detail:formatBytes(file.size)})));
     let completed = 0;
     let failures = 0;
-    for (let index = 0; index < importFiles.length; index++) {
-      const file = importFiles[index];
+    const failureDetails:string[] = [];
+    for (let index = 0; index < queuedFiles.length; index++) {
+      const file = queuedFiles[index];
       const update = (state:string, detail:string) => setImportProgress(current => current.map((item,position)=>position===index?{...item,state,detail}:item));
       try {
-        update("PREPARANDO", "Criando upload direto para o R2");
+        update("PREPARANDO", `Posição ${index+1}/${queuedFiles.length} · criando upload direto para o R2`);
         const prepare = await fetch("/api/imports/zip/prepare", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({fileName:file.name}) });
         const ticket = await prepare.json();
         if (!prepare.ok) throw new Error(ticket.error || `PREPARE_${prepare.status}`);
         update("ENVIANDO", `${formatBytes(file.size)} → R2`);
         const upload = await fetch(String(ticket.uploadUrl), { method:"PUT", headers:{"content-type":"application/zip"}, body:file });
-        if (!upload.ok) throw new Error(`UPLOAD_${upload.status}`);
+        if (!upload.ok) { const detail=await upload.text().catch(()=>""); throw new Error(detail || `UPLOAD_${upload.status}`); }
         update("CONFIRMANDO", "Registrando lote no D1");
         const confirm = await fetch(`/api/uploads/${encodeURIComponent(String(ticket.uploadId))}/confirm`, { method:"POST" });
         const confirmed = await confirm.json();
         if (!confirm.ok) throw new Error(confirmed.error || `CONFIRM_${confirm.status}`);
         const importId = String(confirmed.importId || "");
         if (!importId) throw new Error("IMPORT_ID_MISSING");
-        update("PROCESSANDO", `${importId} · extraindo e catalogando`);
+        update("NA FILA", `${importId} · enviando para a Queue do Core`);
         const process = await fetch(`/api/imports/${encodeURIComponent(importId)}/process`, { method:"POST" });
-        const result = await process.json();
-        if (!process.ok) throw new Error(result.error || `PROCESS_${process.status}`);
+        const queued = await process.json();
+        if (!process.ok) throw new Error(queued.detail || queued.error || `QUEUE_${process.status}`);
+        await waitForImport(importId, update);
         completed++;
-        update("CONCLUÍDO", `${Number(result.assets_catalogados||0)} novos · ${Number(result.assets_atualizados||0)} atualizados · ${Number(result.aprovados||0)} catálogo · ${Number(result.pendentes||0)} pendentes`);
       } catch (error) {
         failures++;
-        update("ERRO", error instanceof Error ? error.message : "IMPORT_FAILED");
+        const detail = error instanceof Error ? error.message : "IMPORT_FAILED";
+        failureDetails.push(`${file.name}: ${detail}`);
+        update("ERRO", detail);
       }
     }
     await Promise.all([refreshRecords("Importações"), refreshStats()]);
     const sync = await runR2CatalogSync(true);
-    setImportMessage(`${completed}/${importFiles.length} lote(s) concluído(s)${failures?` · ${failures} falha(s)`:""}${sync?.ok?" · R2/D1 verificados":""}.`);
+    const base = `${completed}/${queuedFiles.length} lote(s) concluído(s)${failures?` · ${failures} falha(s)`:""}${sync?.ok?" · R2/D1 verificados":""}.`;
+    setImportMessage(failureDetails.length ? `${base} ${failureDetails.join(" | ")}` : base);
     if (!failures) setImportFiles([]);
     setImportBusy(false);
   }
@@ -575,7 +614,7 @@ export default function Home() {
     try {
       // The legacy Worker cannot safely clean heterogeneous D1 schemas. Update
       // it first, tolerate the response being lost during redeploy, and only
-      // then call the idempotent dynamic cleanup endpoint from Core 0.20.10.
+      // then call the idempotent dynamic cleanup endpoint from Core 0.20.12.
       setReleaseGateMessage("Atualizando o Core seguro…");
       let coreReady = false;
       try {
@@ -932,35 +971,19 @@ export default function Home() {
 
   function openMcpConnection() {
     setMcpCopied("");
-    setMcpMessage("");
-    setMcpShowKey(false);
     setMcpOpen(true);
   }
 
-  async function copyMcpValue(kind:"url"|"key"|"bundle") {
-    if (!localConnection) return;
-    const endpoint=`${localConnection.coreUrl.replace(/\/$/,"")}/mcp`;
-    const value=kind==="url"?endpoint:kind==="key"?localConnection.appKey:`MCP URL: ${endpoint}\nAuthorization: Bearer ${localConnection.appKey}`;
-    await navigator.clipboard.writeText(value);
-    setMcpCopied(kind);
-    window.setTimeout(()=>setMcpCopied(""),1800);
+  function mcpEndpoint(connection: BrowserConnection) {
+    return `${connection.coreUrl.replace(/\/$/,"")}/mcp`;
   }
 
-  async function rotateMcpKey() {
-    if (!localConnection || mcpRotateBusy) return;
-    setMcpRotateBusy(true); setMcpMessage("");
-    try {
-      const response=await fetch("/api/control/rotate-app-key",{method:"POST"});
-      const value=await response.json();
-      if(!response.ok || !value?.appKey) throw new Error(value?.error||`ROTATE_HTTP_${response.status}`);
-      const next={...localConnection,appKey:String(value.appKey),savedAt:Date.now()};
-      saveBrowserConnection(next);
-      setLocalConnection(next);
-      setMcpShowKey(true);
-      setMcpMessage("Chave anterior revogada. A nova chave já foi salva neste navegador e está pronta para copiar.");
-    } catch(error) {
-      setMcpMessage(error instanceof Error?error.message:"MCP_KEY_ROTATION_FAILED");
-    } finally { setMcpRotateBusy(false); }
+  async function copyMcpValue(kind:"url"|"gpt") {
+    if (!localConnection) return;
+    const endpoint=mcpEndpoint(localConnection);
+    await navigator.clipboard.writeText(endpoint);
+    setMcpCopied(kind);
+    window.setTimeout(()=>setMcpCopied(""),1800);
   }
 
   async function updateCoreFromApp() {
@@ -1114,9 +1137,9 @@ Tudo é configurado pela própria tela Configurações.
             </div>
             <div className="importGrid">
               <div className="importDropCard">
-                <label className="zipDrop"><input type="file" multiple accept=".zip,application/zip" onChange={(event:ChangeEvent<HTMLInputElement>)=>setImportFiles(Array.from(event.target.files||[]))}/><span className="zipIcon">ZIP</span><strong>Selecionar lotes de importação</strong><small>Use os lotes CORVO_IMPORT_LOTE_*.zip · máximo 48 MB por arquivo</small></label>
-                {importFiles.length>0&&<div className="selectedImportFiles">{importFiles.map(file=><div key={`${file.name}-${file.size}`}><span><b>{file.name}</b><small>{formatBytes(file.size)}</small></span><em className={file.size>MAX_IMPORT_ZIP_BYTES?"bad":"ok"}>{file.size>MAX_IMPORT_ZIP_BYTES?"ACIMA DO LIMITE":"PRONTO"}</em></div>)}</div>}
-                <div className="importActions"><button className="primary" disabled={importBusy||!importFiles.length} onClick={()=>void importSelectedBatches()}>{importBusy?"Importando lotes…":`Importar ${importFiles.length||""} lote(s)`}</button><button disabled={importBusy||!importFiles.length} onClick={()=>{setImportFiles([]);setImportProgress([]);setImportMessage("");}}>Limpar</button></div>
+                <label className="zipDrop"><input type="file" multiple accept=".zip,application/zip" onChange={(event:ChangeEvent<HTMLInputElement>)=>{appendImportFiles(Array.from(event.target.files||[]));event.target.value="";}}/><span className="zipIcon">ZIP</span><strong>Adicionar lotes à fila</strong><small>Você pode selecionar vários ZIPs ou adicionar novos em escolhas sucessivas · máximo 48 MB por arquivo</small></label>
+                {importFiles.length>0&&<div className="selectedImportFiles">{importFiles.map(file=><div key={`${file.name}-${file.size}`}><span><b>{file.name}</b><small>{formatBytes(file.size)} · fila #{importFiles.indexOf(file)+1}</small></span><em className={file.size>MAX_IMPORT_ZIP_BYTES?"bad":"ok"}>{file.size>MAX_IMPORT_ZIP_BYTES?"ACIMA DO LIMITE":"PRONTO"}</em></div>)}</div>}
+                <div className="importActions"><button className="primary" disabled={importBusy||!importFiles.length} onClick={()=>void importSelectedBatches()}>{importBusy?"Processando fila…":`Processar fila (${importFiles.length||0})`}</button><button disabled={importBusy||!importFiles.length} onClick={()=>{setImportFiles([]);setImportProgress([]);setImportMessage("");}}>Limpar</button></div>
                 {importMessage&&<div className={importMessage.includes("falha")||importMessage.includes("ERRO")||importMessage.includes("acima")?"formError":"setupMessage"}>{importMessage}</div>}
               </div>
               <div className="r2SyncCard">
@@ -1263,13 +1286,12 @@ Tudo é configurado pela própria tela Configurações.
 
         {mcpOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Conectar MCP">
           <div className="setupModal mcpModal">
-            <div className="setupModalHead"><div><span className="eyebrow">CONEXÃO MCP</span><h2>Conectar ao GPT</h2><p>Use o endpoint abaixo no plugin/cliente MCP do GPT. A chave é o segredo de acesso ao Core e pode ser revogada a qualquer momento.</p></div><button className="iconClose" onClick={()=>{setMcpOpen(false);setMcpMessage("");setMcpShowKey(false);}} aria-label="Fechar">×</button></div>
+            <div className="setupModalHead"><div><span className="eyebrow">MCP PARA CHATGPT</span><h2>Conectar ao GPT</h2><p>Cadastre o endpoint remoto abaixo no ChatGPT. Este MCP é público e deve ser configurado com autenticação <b>Nenhuma</b>.</p></div><button className="iconClose" onClick={()=>setMcpOpen(false)} aria-label="Fechar">×</button></div>
             {localConnection ? <>
-              <div className="mcpConnectionHero"><span className="eyebrow">ENDPOINT PRONTO</span><code>{`${localConnection.coreUrl.replace(/\/$/,"")}/mcp`}</code><div className="inlineActions"><button className="primary" onClick={()=>void copyMcpValue("url")}>{mcpCopied==="url"?"✓ Link copiado":"Copiar link MCP"}</button><button className="secondary" onClick={()=>void copyMcpValue("bundle")}>{mcpCopied==="bundle"?"✓ Conexão copiada":"Copiar conexão para GPT"}</button></div></div>
-              <div className="mcpKeyCard"><div><span className="eyebrow">CHAVE DE ACESSO</span><strong>{mcpShowKey?localConnection.appKey:`${localConnection.appKey.slice(0,8)}••••••••••••••••••••${localConnection.appKey.slice(-6)}`}</strong><small>Use como <b>Authorization: Bearer</b> quando o cliente solicitar autenticação.</small></div><div className="mcpKeyActions"><button className="secondary" onClick={()=>setMcpShowKey(value=>!value)}>{mcpShowKey?"Ocultar":"Mostrar"}</button><button className="secondary" onClick={()=>void copyMcpValue("key")}>{mcpCopied==="key"?"✓ Copiada":"Copiar chave"}</button></div></div>
-              <div className="mcpSecurityBox"><div><strong>Rotação de segurança</strong><span>Ao gerar outra chave, a atual é substituída no Worker. A antiga deixa de autenticar novas chamadas MCP.</span></div><button className="dangerGhost" disabled={mcpRotateBusy} onClick={()=>void rotateMcpKey()}>{mcpRotateBusy?"Gerando…":"Revogar e gerar nova"}</button></div>
-              {mcpMessage&&<div className={mcpMessage.startsWith("Chave anterior")?"notice compact":"formError"}>{mcpMessage}</div>}
-            </> : <div className="mcpDisconnected"><strong>Conexão local não encontrada</strong><p>A chave MCP nunca é salva no D1. Para recuperar o acesso com segurança, reconecte a infraestrutura usando seu API Token Cloudflare; uma nova chave será criada automaticamente.</p><button className="primary" onClick={()=>{setMcpOpen(false);openInfrastructureSetup(Boolean(infraProfile));}}>Reconectar infraestrutura</button></div>}
+              <div className="mcpConnectionHero"><span className="eyebrow">ENDPOINT MCP REMOTO</span><code>{mcpEndpoint(localConnection)}</code><div className="inlineActions"><button className="primary" onClick={()=>void copyMcpValue("url")}>{mcpCopied==="url"?"✓ Link copiado":"Copiar link MCP"}</button><button className="secondary" onClick={()=>void copyMcpValue("gpt")}>{mcpCopied==="gpt"?"✓ Link copiado":"Copiar para ChatGPT"}</button></div></div>
+              <div className="mcpKeyCard"><div><span className="eyebrow">AUTENTICAÇÃO</span><strong>Nenhuma</strong><small>No ChatGPT, informe somente o endpoint acima e selecione a opção sem autenticação. Não use Bearer, API key ou OAuth para este MCP.</small></div></div>
+              <div className="mcpSecurityBox"><div><strong>Rota pública dedicada</strong><span>Somente <code>/mcp</code> é pública para o ChatGPT. As demais rotas operacionais do Core continuam protegidas pela chave interna da Library.</span></div></div>
+            </> : <div className="mcpDisconnected"><strong>Worker ainda não identificado</strong><p>Reconecte a infraestrutura para a Library recuperar o endereço público do Worker. Nenhuma credencial MCP será criada ou solicitada.</p><button className="primary" onClick={()=>{setMcpOpen(false);openInfrastructureSetup(Boolean(infraProfile));}}>Reconectar infraestrutura</button></div>}
           </div>
         </div>}
 

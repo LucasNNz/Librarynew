@@ -1,4 +1,4 @@
-# Assistente de infraestrutura — Corvo Library V2 0.20.3
+# Assistente de infraestrutura — Corvo Library V2 0.20.12
 
 ## Objetivo
 
@@ -33,14 +33,12 @@ A atualização 0.20.3 aplica uma única migration **FACTORY_ZERO** para remover
 
 Abra **Configurações → Conectar MCP**. A tela mostra:
 
-- URL MCP pronta: `https://<worker>.workers.dev/mcp`;
-- chave de acesso `CORVO_APP_KEY` para usar como `Authorization: Bearer`;
+- URL MCP pública pronta: `https://<worker>.<subdominio>.workers.dev/mcp`;
+- autenticação no ChatGPT: **Nenhuma**;
 - botão **Copiar link MCP**;
-- botão **Copiar conexão para GPT**;
-- botão **Copiar chave**;
-- botão **Revogar e gerar nova**.
+- botão **Copiar para ChatGPT**.
 
-A rotação substitui o secret `CORVO_APP_KEY` no Worker. A chave anterior deixa de autenticar e a nova é salva somente no navegador atual. A Cloudflare Control API usada pelo Core exige `Workers Scripts Write` para atualizar o secret.
+O endpoint `/mcp` é público de propósito para o app personalizado do ChatGPT. `CORVO_APP_KEY` continua existindo apenas para proteger as demais rotas operacionais do Core e não deve ser informada ao ChatGPT.
 
 ## Persistência
 

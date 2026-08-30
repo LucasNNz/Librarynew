@@ -1,4 +1,4 @@
-# Development Status — Corvo Library V2 0.20.3
+# Development Status — Corvo Library V2 0.20.12
 
 ## Factory Zero
 
@@ -33,13 +33,12 @@ A 0.20.3 não depende mais apenas de uma migration antiga: o boot executa um gat
 ## MCP
 
 - botão visível `Configurações → Conectar MCP`;
-- endpoint pronto `${coreUrl}/mcp`;
-- copiar link MCP;
-- copiar chave Bearer;
-- copiar bloco completo para GPT;
-- mostrar/ocultar chave;
-- `Revogar e gerar nova`: substitui `CORVO_APP_KEY` no Worker e salva a nova chave no navegador;
-- chave MCP nunca é persistida no D1.
+- endpoint remoto pronto `https://<worker>.<subdominio>.workers.dev/mcp`;
+- `/mcp` público e sem autenticação;
+- ChatGPT deve ser configurado com autenticação **Nenhuma**;
+- copiar link MCP puro, sem prefixos ou headers;
+- nenhuma chave Bearer/OAuth é mostrada ou solicitada para o MCP;
+- `CORVO_APP_KEY` permanece exclusiva das demais rotas internas do Core.
 
 ## Gates
 
