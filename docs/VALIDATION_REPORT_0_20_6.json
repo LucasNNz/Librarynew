@@ -1,0 +1,299 @@
+{
+  "checkpoint": "0.20.6",
+  "validation": "PASS",
+  "duration_seconds": 2.494,
+  "restore": {
+    "path": "/mnt/data/CORVO_LIBRARY_V2_D1_CLEAN_BASELINE_0206.sql",
+    "sha256": "2ad1a201d382cd9b805240d04b6342e563e58c477461b1fd5e5a16c8735d8003",
+    "migrations": [
+      "9000_v2_core.sql",
+      "9001_v2_observability.sql",
+      "9002_v2_direct_upload.sql",
+      "9003_v2_control_plane.sql",
+      "9004_v2_archives.sql",
+      "9005_v2_delivery_hardening.sql",
+      "9006_v2_persistent_infrastructure.sql",
+      "9007_v2_migration_registry.sql",
+      "9008_v2_operational_cleanup_recovery.sql",
+      "9009_v2_runtime_heartbeats.sql",
+      "9010_v2_clean_zero_baseline.sql",
+      "9011_v2_purge_all_projects.sql",
+      "9012_v2_factory_zero_assets.sql",
+      "9013_v2_live_factory_zero_gate.sql",
+      "9014_v2_authoritative_factory_zero.sql"
+    ]
+  },
+  "database": {
+    "integrity_check": "ok",
+    "assets": 0,
+    "approved": 0,
+    "pending": 0,
+    "rejected": 0,
+    "approved_universes": 0,
+    "all_universes": 0,
+    "asset_usage": 0,
+    "assets_missing_r2_key": 0,
+    "duplicate_asset_r2_keys": 0,
+    "tables_total": 65,
+    "v2_tables": [
+      "v2_asset_exports",
+      "v2_collection_events",
+      "v2_control_jobs",
+      "v2_direct_uploads",
+      "v2_download_packages",
+      "v2_infrastructure_config_events",
+      "v2_infrastructure_profiles",
+      "v2_ingest_candidates",
+      "v2_ingest_events",
+      "v2_ingest_operations",
+      "v2_maintenance_state",
+      "v2_migrations_applied",
+      "v2_project_media",
+      "v2_project_titles",
+      "v2_recovery_events",
+      "v2_runtime_heartbeats",
+      "v2_schema_meta",
+      "v2_storage_audits"
+    ],
+    "schema_version": "2.14.0",
+    "sensitive_settings_rows": 0
+  },
+  "clean_zero_counts": {
+    "asset_consultations": 0,
+    "asset_usage": 0,
+    "assets": 0,
+    "automatic_project_events": 0,
+    "automatic_project_files": 0,
+    "automatic_project_items": 0,
+    "automatic_projects": 0,
+    "batch_assets": 0,
+    "batches": 0,
+    "collection_batches": 0,
+    "collection_candidates": 0,
+    "collection_source_runs": 0,
+    "collection_terms": 0,
+    "export_jobs": 0,
+    "imports": 0,
+    "materialization_batches": 0,
+    "materialization_candidates": 0,
+    "materialization_files": 0,
+    "materialization_host_health": 0,
+    "materialization_host_probes": 0,
+    "materialization_items": 0,
+    "materialization_logs": 0,
+    "mcp_audit": 0,
+    "operation_results": 0,
+    "operational_gaps": 0,
+    "operational_policy_events": 0,
+    "plan_branches": 0,
+    "project_runs": 0,
+    "queue_snapshots": 0,
+    "requests": 0,
+    "source_route_metrics": 0,
+    "source_routing_plans": 0,
+    "stage_metrics": 0,
+    "supervisor_config_events": 0,
+    "supervisor_decision_queue": 0,
+    "supervisor_executions": 0,
+    "supervisor_plans": 0,
+    "supervisor_project_candidates": 0,
+    "worker_events": 0,
+    "worker_sessions": 0,
+    "worker_work_items": 0,
+    "v2_ingest_candidates": 0,
+    "v2_ingest_events": 0,
+    "v2_ingest_operations": 0,
+    "v2_storage_audits": 0,
+    "v2_direct_uploads": 0,
+    "v2_control_jobs": 0,
+    "v2_download_packages": 0,
+    "v2_project_media": 0,
+    "v2_project_titles": 0,
+    "v2_collection_events": 0,
+    "v2_asset_exports": 0,
+    "v2_recovery_events": 0,
+    "v2_runtime_heartbeats": 0
+  },
+  "preserved_configuration_rows": {
+    "settings": 0,
+    "collection_sources": 0,
+    "source_profiles": 0,
+    "worker_capacity_limits": 0,
+    "operational_policies": 0
+  },
+  "historical_integrity": {
+    "total": 0,
+    "groups": {},
+    "clean_zero": true
+  },
+  "logical_integrity": {
+    "historical": {
+      "collectionTermsWithoutBatch": 0,
+      "collectionCandidatesWithoutBatch": 0,
+      "collectionCandidatesWithoutTerm": 0,
+      "workerItemsWithoutParent": 0,
+      "supervisorDecisionsWithoutItem": 0,
+      "operationalPolicyEventsWithoutItem": 0,
+      "supervisorCandidatesWithoutItem": 0,
+      "planBranchesWithoutItem": 0,
+      "sourceRoutingPlansWithoutItem": 0
+    },
+    "active_historical_risk": {
+      "readyOrLeasedWorkerItemsWithoutParent": 0,
+      "pendingSupervisorDecisionsWithoutItem": 0,
+      "actionableSupervisorCandidatesWithoutItem": 0
+    },
+    "v2": {
+      "candidatesWithoutOperation": 0,
+      "eventsWithoutOperation": 0,
+      "packagesWithoutProject": 0,
+      "projectMediaWithoutProject": 0,
+      "projectTitlesWithoutProject": 0,
+      "infrastructureEventsWithoutProfile": 0,
+      "operationHeartbeatsWithoutOperation": 0
+    },
+    "v2_orphans": 0
+  },
+  "operational_cleanup": {
+    "automatic_projects": 0,
+    "automatic_project_items": 0,
+    "automatic_project_files": 0,
+    "supervisor_plans": 0,
+    "worker_project_items": 0,
+    "v2_download_packages": 0,
+    "operational_policies": 0,
+    "factory_zero_marker": 1,
+    "factory_zero_r2_purge": 0,
+    "r2_purge_jobs": 0
+  },
+  "recovery_contract": {
+    "d1_structure_manifest": true,
+    "asset_sidecars": true,
+    "candidate_sidecars": true,
+    "import_sidecars": true,
+    "deletion_tombstones": true,
+    "delete_writes_tombstone": true,
+    "reconcile_refreshes_sidecar": true,
+    "missing_delete_requires_fresh_scan": true
+  },
+  "heartbeat_contract": {
+    "runtime_table_exists": true,
+    "worker_requires_execution_match": true,
+    "worker_does_not_revive_expired": true,
+    "worker_watchdog_expires_heartbeat": true,
+    "supervisor_requires_execution_match": true,
+    "supervisor_does_not_revive_expired": true,
+    "supervisor_watchdog_expires_heartbeat": true,
+    "operation_owner_execution_guard": true,
+    "operation_terminal_guard": true,
+    "generic_watchdog": true,
+    "mcp_tools_registered": true
+  },
+  "heartbeat_sql_smoke": {
+    "initial_claim": true,
+    "active_owner_conflict_blocked": true,
+    "same_owner_renewed": true,
+    "expired_not_revived_without_reclaim": true,
+    "explicit_reclaim_after_expiry": true
+  },
+  "configuration_persistence": {
+    "not_seeded_by_migrations": true,
+    "persistent_migration_is_idempotent": true,
+    "migration_profile_mutators": [],
+    "lock_state": "LOCKED",
+    "revision": 7,
+    "secret_like_columns": []
+  },
+  "worker_bundle_build": {
+    "generated_bundle_exports_widened": true,
+    "platform_browser_disabled": true,
+    "platform_neutral": true,
+    "node_builtins_externalized": true,
+    "worker_condition_present": true,
+    "browser_condition_removed": true,
+    "wrangler_compat_date": "2026-08-29",
+    "api_deploy_compat_date": "2026-08-29"
+  },
+  "self_sufficient_setup": {
+    "embedded_restore_exists": true,
+    "embedded_restore_matches_input": true,
+    "embedded_restore_sha256": "2ad1a201d382cd9b805240d04b6342e563e58c477461b1fd5e5a16c8735d8003",
+    "manual_setup_ui_hits": [],
+    "manual_setup_package_script": false,
+    "hosting_env_dependency": false,
+    "browser_stores_cloudflare_token": false,
+    "provision_moves_control_token_to_worker_secret": true,
+    "worker_has_self_update": true,
+    "core_bundle_endpoint_exists": true,
+    "migration_registry_exists": true,
+    "setup_route_exists": true,
+    "queue_consumer_reconciles_existing": true,
+    "queue_consumer_has_race_recovery": true
+  },
+  "mcp": {
+    "historical_total": 229,
+    "matrix_implemented": 227,
+    "matrix_substituted": 2,
+    "registered_total": 244,
+    "registered_unique": 244,
+    "historical_registered": 227,
+    "extras": [
+      "atualizar_manifesto_recuperacao_d1_r2",
+      "auditar_armazenamento_r2",
+      "auditar_integridade_d1",
+      "definir_politica_supervisor_livre",
+      "excluir_assets_permanentemente_em_lote",
+      "excluir_pendentes_nao_encontrados_r2",
+      "executar_watchdog_heartbeats",
+      "explorar_r2_fisico",
+      "heartbeat_operacao",
+      "heartbeat_supervisor",
+      "heartbeat_worker",
+      "obter_link_export_assets_zip",
+      "obter_status_export_assets_zip",
+      "obter_status_heartbeats",
+      "obter_status_upload_midia",
+      "reparar_pendentes_r2",
+      "vasculhar_r2"
+    ],
+    "duplicates": [],
+    "missing_implemented": [],
+    "incorrectly_registered_substitutes": [],
+    "substituted": [
+      "configurar_cloudflare",
+      "obter_configuracao_cloudflare"
+    ]
+  },
+  "source": {
+    "files_checked": 100,
+    "relative_imports_checked": 220,
+    "missing_relative_imports": [],
+    "forbidden_legacy_hits": {
+      "@libsql": [],
+      "TURSO_": [],
+      "production-recovery": [],
+      "secret_cloudflare_connection": []
+    }
+  },
+  "typecheck": {
+    "worker_structural": {
+      "status": "PASS",
+      "returncode": 0,
+      "output": ""
+    },
+    "frontend_structural": {
+      "status": "PASS",
+      "returncode": 0,
+      "output": ""
+    },
+    "real_next_build": {
+      "status": "EXTERNAL_GATE",
+      "reason": "Dependencies were not installed because registry access timed out in this execution."
+    },
+    "real_wrangler_build": {
+      "status": "EXTERNAL_GATE",
+      "reason": "Cloudflare dependencies/account are not provisioned in this execution."
+    }
+  },
+  "errors": []
+}

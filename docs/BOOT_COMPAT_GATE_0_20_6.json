@@ -1,0 +1,15 @@
+{
+  "test": "0.20.6 boot compatibility/static gate",
+  "checks": {
+    "no_bootstrap_endpoint_dependency": true,
+    "no_core_update_in_boot": true,
+    "uses_legacy_apply_migrations": true,
+    "legacy_0_19_supports_apply_migrations": true,
+    "requires_current_migration_source": true,
+    "loads_real_state_after_migration": true,
+    "clears_visible_state_before_io": true,
+    "no_update_button_in_boot_card": true,
+    "migration_9014_exists": true
+  },
+  "pass": true
+}

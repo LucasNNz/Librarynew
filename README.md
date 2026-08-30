@@ -1,4 +1,10 @@
-# Corvo Library V2 — Checkpoint 0.20.5
+# Corvo Library V2 0.20.6 — Legacy Core Compatible
+
+O boot não depende de atualizar o Worker. A UI fica vazia, aplica a migration 9014 pelo endpoint de migrations já presente no Core 0.19+, lê o D1 final e só então renderiza.
+
+Veja `RELEASE_0_20_6_LEGACY_CORE_COMPAT.md`.
+
+# Corvo Library V2 — Checkpoint 0.20.6
 
 ## Estado real, uma única resposta
 
@@ -26,7 +32,7 @@ Depois que o reset desta release termina, reloads normais **não exigem mais con
 
 O boot não publica o próprio Worker, não aplica uma cadeia de health → update → health → reset → refresh e não depende da queda/reconexão do endpoint para montar a tela.
 
-Se o frontend 0.20.5 encontrar um Core antigo que ainda não possui `/bootstrap`, ele mostra `CORE_BOOTSTRAP_UNAVAILABLE`. A atualização do Core é uma ação explícita; somente depois o boot autoritativo é repetido.
+Se o frontend 0.20.6 encontrar um Core antigo que ainda não possui `/bootstrap`, ele mostra `CORE_BOOTSTRAP_UNAVAILABLE`. A atualização do Core é uma ação explícita; somente depois o boot autoritativo é repetido.
 
 ## R2 e importação
 
@@ -38,7 +44,7 @@ O botão `↗ MCP` permanece no topo da aplicação, com endpoint pronto, chave,
 
 ## Gates
 
-- Checkpoint: 0.20.5;
+- Checkpoint: 0.20.6;
 - Schema: 2.13.0;
 - boot: single authoritative response;
 - seed/mock visual: proibido;

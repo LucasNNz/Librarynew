@@ -1,0 +1,30 @@
+{
+  "test": "0.20.6 migration 9014 against dirty pre-existing D1",
+  "before": {
+    "assets": 1,
+    "projects": 1,
+    "infra": 1
+  },
+  "after": {
+    "assets": 0,
+    "projects": 0,
+    "infra": 1,
+    "settings": 0,
+    "maintenance": 0
+  },
+  "infra_preserved": true,
+  "infra": [
+    "REAL-CONFIG",
+    4,
+    "LOCKED",
+    "corvo-library-v2",
+    "corvoquiz-prod"
+  ],
+  "markers": {
+    "factory_zero_release_0_20_5": "DONE",
+    "factory_zero_release_0_20_6": "DONE",
+    "schema_version": "2.14.0"
+  },
+  "foreign_key_violations": 0,
+  "pass": true
+}

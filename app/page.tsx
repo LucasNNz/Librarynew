@@ -47,7 +47,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.5";
+const EXPECTED_CORE_VERSION = "0.20.6";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 type UiIconName = "grid"|"assets"|"folder"|"play"|"chart"|"settings"|"layers"|"pulse"|"target"|"activity"|"search"|"bell"|"download"|"brain"|"spark";
@@ -566,39 +566,78 @@ export default function Home() {
   const loadAuthoritativeBootstrap = useCallback(async () => {
     if (!readBrowserConnection() || releaseGateState === "running") return;
     setReleaseGateState("running");
-    setReleaseGateMessage("Carregando o estado real do D1…");
+    setReleaseGateMessage("Preparando o D1 real…");
     setHealth(null);
     setLoading(true);
     setAssets([]); setProjects([]); setRequests([]); setBatches([]); setImports([]); setUniverses([]); setRecentOperations([]);
     setStats({ total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
     setTotal(0); setNextCursor(null);
     try {
-      // Uma única chamada autoritativa. O Worker conclui o Factory Zero, consulta o D1
-      // e devolve o snapshot final na MESMA resposta. Nada é renderizado antes disso.
-      const response = await fetch("/api/bootstrap", { method:"POST", cache:"no-store" });
-      const value = await response.json().catch(()=>({})) as any;
-      if (!response.ok) {
-        if (response.status === 404) throw new Error("CORE_BOOTSTRAP_UNAVAILABLE: atualize o Core explicitamente antes de carregar dados.");
-        throw new Error(value?.error || `BOOTSTRAP_HTTP_${response.status}`);
+      // Compatibilidade deliberada com o Core 0.19 já publicado.
+      // Nenhum auto-update do Worker acontece no boot. Primeiro aplicamos apenas
+      // migrations novas no D1; a UI continua vazia durante todo o processo.
+      const migrationResponse = await fetchWithNetworkRetry(
+        "/api/control/apply-migrations",
+        { method:"POST", cache:"no-store" },
+        { attempts:3, baseDelayMs:500 },
+      );
+      const migration = await migrationResponse.json().catch(()=>({})) as any;
+      if (!migrationResponse.ok) throw new Error(migration?.error || `MIGRATION_HTTP_${migrationResponse.status}`);
+      if (String(migration?.targetVersion || "") !== "0.20.6" || String(migration?.schemaVersion || "") !== "2.14.0") {
+        throw new Error(`MIGRATION_SOURCE_STALE:${String(migration?.targetVersion || "unknown")}/${String(migration?.schemaVersion || "unknown")}`);
       }
-      if (!value?.authoritative || value?.version !== EXPECTED_CORE_VERSION) throw new Error("BOOTSTRAP_NOT_AUTHORITATIVE");
-      const zero = value?.factoryZero?.status;
-      if (zero?.required) throw new Error("FACTORY_ZERO_NOT_CONFIRMED");
-      // Só exigimos contagem zero quando ESTE boot acabou de executar o reset.
-      // Depois que o usuário importar/criar dados reais, reloads normais devem preservá-los.
-      if (value?.factoryZero?.executed && (Number(zero?.counts?.assets||0)!==0 || Number(zero?.counts?.projects||0)!==0)) throw new Error("FACTORY_ZERO_RESET_VERIFICATION_FAILED");
+      const executed = Array.isArray(migration?.executed) ? migration.executed.map(String) : [];
+      const cleanExecuted = executed.includes("9014_v2_authoritative_factory_zero.sql");
 
-      setHealth(value.health as Health);
-      setStats(value.stats || { total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
-      setUniverses(Array.isArray(value.universes) ? value.universes : []);
-      const catalog = value.catalog || {};
-      setAssets(Array.isArray(catalog.items) ? catalog.items : []);
-      setTotal(Number(catalog.total || 0));
-      setNextCursor(catalog.nextCursor || null);
-      setProjects(Array.isArray(value?.projects?.items) ? value.projects.items : []);
-      setRecentOperations(Array.isArray(value.operations) ? value.operations : []);
+      setReleaseGateMessage("Lendo o estado final do D1…");
+      // Só depois da migration buscamos o snapshot real. Nada dessas respostas é
+      // aplicado isoladamente na tela: o commit visual acontece apenas no fim.
+      const [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse, operationsResponse] = await Promise.all([
+        fetch("/api/health", { cache:"no-store" }),
+        fetch("/api/catalog/stats", { cache:"no-store" }),
+        fetch("/api/catalog/universes", { cache:"no-store" }),
+        fetch("/api/assets?limit=48&status=APPROVED", { cache:"no-store" }),
+        fetch("/api/projects?limit=100", { cache:"no-store" }),
+        fetch("/api/operations?limit=25", { cache:"no-store" }),
+      ]);
+      const critical = [healthResponse, statsResponse, universeResponse, catalogResponse, projectResponse];
+      if (critical.some(response => !response.ok)) {
+        const failed = critical.find(response => !response.ok)!;
+        throw new Error(`REAL_STATE_HTTP_${failed.status}`);
+      }
+
+      const rawHealth = await healthResponse.json() as any;
+      const nextHealth: Health = rawHealth?.app === "ok" && rawHealth?.core
+        ? rawHealth as Health
+        : { app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:{ ...rawHealth, ok:Boolean(rawHealth?.ok) } };
+      const nextStats = await statsResponse.json() as CatalogStats;
+      const universeValue = await universeResponse.json() as any;
+      const nextUniverses = Array.isArray(universeValue?.universes) ? universeValue.universes as UniverseFacet[] : [];
+      const nextCatalog = await catalogResponse.json() as CatalogResponse;
+      const projectValue = await projectResponse.json() as any;
+      const nextProjects = Array.isArray(projectValue?.items) ? projectValue.items as AutomaticProject[] : [];
+      let nextOperations: Operation[] = [];
+      if (operationsResponse.ok) {
+        const operationValue = await operationsResponse.json().catch(()=>({})) as any;
+        nextOperations = Array.isArray(operationValue?.items) ? operationValue.items as Operation[] : [];
+      }
+
+      if (cleanExecuted && (Number(nextStats?.total || 0) !== 0 || nextProjects.length !== 0)) {
+        throw new Error("FACTORY_ZERO_9014_VERIFICATION_FAILED");
+      }
+
+      // React 18+ agrupa estes setters: o usuário recebe um snapshot final, nunca
+      // o estado anterior seguido de uma 'correção' visual.
+      setHealth(nextHealth);
+      setStats(nextStats || { total:0, approved:0, pending:0, rejected:0, universes:0, bytes:0, uses:0 });
+      setUniverses(nextUniverses);
+      setAssets(Array.isArray(nextCatalog?.items) ? nextCatalog.items : []);
+      setTotal(Number(nextCatalog?.total || 0));
+      setNextCursor(nextCatalog?.nextCursor || null);
+      setProjects(nextProjects);
+      setRecentOperations(nextOperations);
       setLoading(false);
-      setReleaseGateMessage("Estado real confirmado no D1.");
+      setReleaseGateMessage(cleanExecuted ? "D1 limpo e estado real confirmado." : "Estado real confirmado no D1.");
       setReleaseGateState("done");
     } catch (error) {
       setReleaseGateState("error");
@@ -996,7 +1035,7 @@ Tudo é configurado pela própria tela Configurações.
       <div className="content contentV18">
         {!connectionResolved && <section className="authoritativeBoot"><span className="eyebrow">FONTE ÚNICA</span><h2>Carregando conexão…</h2><p>Nenhum dado é exibido antes de confirmar a fonte real.</p></section>}
         {connectionResolved && !localConnection && <section className="authoritativeBoot"><span className="eyebrow">SEM FONTE DE DADOS</span><h2>Conecte a infraestrutura</h2><p>A Library não usa mock, cache recuperado ou conteúdo de demonstração. Conecte D1/R2 para carregar dados reais.</p><button className="primary" onClick={()=>openInfrastructureSetup(false)}>Configurar infraestrutura</button></section>}
-        {connectionResolved && localConnection && releaseGateState !== "done" && <section className={`authoritativeBoot ${releaseGateState}`}><span className="eyebrow">D1 AUTORITATIVO</span><h2>{releaseGateState === "error" ? "Não foi possível carregar o estado real" : "Carregando dados reais…"}</h2><p>{releaseGateMessage || "Aguardando uma única resposta do Core."}</p>{releaseGateState === "error" && <div className="inlineActions"><button className="primary" onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button><button className="secondary" disabled={coreUpdateBusy} onClick={()=>void (async()=>{await updateCoreFromApp();setReleaseGateState("idle");setReleaseGateMessage("");})()}>{coreUpdateBusy?"Atualizando Core…":"Atualizar Core explicitamente"}</button></div>}</section>}
+        {connectionResolved && localConnection && releaseGateState !== "done" && <section className={`authoritativeBoot ${releaseGateState}`}><span className="eyebrow">D1 REAL</span><h2>{releaseGateState === "error" ? "Não foi possível ler o D1" : "Carregando dados reais…"}</h2><p>{releaseGateMessage || "A interface permanece vazia até o D1 responder."}</p>{releaseGateState === "error" && <div className="inlineActions"><button className="primary" onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button></div>}</section>}
         {dataReady && <>
         {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <div className="titleActions"><button className="setupButton mcpConnectButton" onClick={openMcpConnection}>↗ Conectar MCP</button><button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button></div>}</div>}
 

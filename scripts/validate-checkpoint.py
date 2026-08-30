@@ -15,7 +15,7 @@ EXPECTED = {
     "all_universes": 0,
     "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.13.0",
+    "schema_version": "2.14.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
@@ -347,8 +347,8 @@ def main():
             if operational_cleanup[key] != 0: errors.append(f"operational_cleanup.{key}: expected 0, got {operational_cleanup[key]}")
         if operational_cleanup["operational_policies"] != 0: errors.append("operational policies must be empty at factory zero")
         if operational_cleanup["factory_zero_marker"] != 1: errors.append("factory-zero schema marker is missing")
-        if operational_cleanup["factory_zero_r2_purge"] != 1: errors.append("factory-zero R2 cleanup task is missing")
-        if operational_cleanup["r2_purge_jobs"] != 1: errors.append("exactly one factory-zero R2 purge job must be scheduled before first health maintenance run")
+        if operational_cleanup["factory_zero_r2_purge"] != 0: errors.append("0.20.6 must not schedule an R2 purge during boot")
+        if operational_cleanup["r2_purge_jobs"] != 0: errors.append("0.20.6 must have no pending R2 purge jobs")
 
         fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
         fk_groups = collections.Counter(f"{r[0]}->{r[2]}" for r in fk_rows)
