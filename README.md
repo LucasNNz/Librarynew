@@ -1,4 +1,12 @@
-# Corvo Library V2 0.20.9 — Dynamic Clean Recovery
+# Corvo Library V2 0.20.10 — FK-Ordered Clean
+
+Corrige `D1_EXEC_ERROR` causado por `PRAGMA foreign_keys = OFF`. A limpeza não
+desabilita mais integridade referencial: o Core lê as foreign keys do D1 e
+apaga tabelas filhas antes das tabelas pai.
+
+Veja `RELEASE_0_20_10_FK_ORDERED_CLEAN.md`.
+
+# Histórico: Corvo Library V2 0.20.9 — Dynamic Clean Recovery
 
 Esta versão corrige a exceção do Worker causada pela limpeza SQL fixa da
 0.20.8. O app atualiza o Core primeiro e usa um endpoint idempotente que descobre
