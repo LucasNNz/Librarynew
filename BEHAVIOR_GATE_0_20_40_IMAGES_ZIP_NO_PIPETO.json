@@ -1,0 +1,37 @@
+{
+  "checkpoint": "0.20.40",
+  "gate": "PROJECT_IMAGES_ZIP_NO_PIPETO",
+  "passed": 21,
+  "total": 21,
+  "status": "PASS",
+  "checks": {
+    "source_images_branch_no_pipeTo": true,
+    "source_images_branch_no_fixedLengthZipStream": true,
+    "source_uses_materialize_known_length": true,
+    "source_r2_put_uint8array": true,
+    "source_upload_mode_marker": true,
+    "source_pipeToUsed_false": true,
+    "source_bytes_ready_event": true,
+    "source_r2_verified_event": true,
+    "source_failed_terminal_cleanup": true,
+    "source_processing_clears_old_payload": true,
+    "bundle_active_images_branch_no_pipeTo": true,
+    "bundle_active_images_branch_no_fixedLength": true,
+    "bundle_active_uses_materialized_bytes": true,
+    "bundle_active_upload_mode_marker": true,
+    "bundle_active_pipeToUsed_false": true,
+    "bundle_active_bytes_ready_event": true,
+    "bundle_active_r2_verified_event": true,
+    "bundle_queue_uses_p37_worker": true,
+    "bundle_worker_node_check": true,
+    "version_02040": true,
+    "schema_preserved_2230": true
+  },
+  "smoke": {
+    "small_zip": "PASS",
+    "slots_102_44mb": "PASS",
+    "bytes_102_44mb": 44382058,
+    "pipeToUsed": false,
+    "unzip_t": "PASS"
+  }
+}

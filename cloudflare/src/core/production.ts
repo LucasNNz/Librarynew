@@ -107,6 +107,51 @@ export async function fixedLengthZipStream(env:Env,entries:ZipEntry[]){
   return{stream:fixed.readable,expectedSize,completion,sha256,getSize:()=>zipped.getSize()};
 }
 
+// PROJECT_IMAGES_ZIP intentionally uses this path instead of pipeTo()/tee()/DigestStream.
+// The archive size is known before generation, so we allocate the exact final byte buffer,
+// stream each source object into that buffer one at a time, then upload Uint8Array directly
+// to R2. This removes WritableStream compatibility from the Forma images hot path entirely.
+export async function materializeZipBytesKnownLength(env:Env,entries:ZipEntry[]){
+  const resolved=await resolveZipEntrySizes(env,entries);
+  const expectedSize=zipExpectedSize(resolved);
+  // Cloudflare Workers have bounded isolate memory. Forma's current production archive (~44 MB)
+  // is comfortably below this guard; larger archives fail explicitly instead of falling back
+  // to the old pipeTo path.
+  const maxBufferedBytes=96*1024*1024;
+  if(expectedSize>maxBufferedBytes)throw new Error(`PROJECT_IMAGES_ZIP_BUFFER_LIMIT_EXCEEDED:${expectedSize}:max=${maxBufferedBytes}`);
+  const encoder=new TextEncoder();
+  const out=new Uint8Array(expectedSize);
+  const central:Central[]=[];
+  let cursor=0;
+  const write=(part:Uint8Array)=>{
+    if(cursor+part.byteLength>out.byteLength)throw new Error(`ZIP_BUFFER_OVERFLOW:offset=${cursor}:chunk=${part.byteLength}:expected=${expectedSize}`);
+    out.set(part,cursor);cursor+=part.byteLength;
+  };
+  for(const entry of resolved){
+    const name=encoder.encode(entry.name);const {time,date}=dosDateTime();const offset=cursor;
+    write(concat([le32(0x04034b50),le16(20),le16(0x0808),le16(0),le16(time),le16(date),le32(0),le32(0),le32(0),le16(name.length),le16(0),name]));
+    let crc=0xffffffff,size=0;
+    const consume=(chunk:Uint8Array)=>{if(!chunk.byteLength)return;crc=crcUpdate(crc,chunk);size+=chunk.byteLength;write(chunk);};
+    const source=await entry.open();
+    if(source instanceof Uint8Array)consume(source);
+    else if(source){
+      const reader=source.getReader();
+      try{while(true){const {done,value}=await reader.read();if(done)break;if(value)consume(value);}}
+      finally{reader.releaseLock();}
+    }
+    if(size!==entry.sizeBytes)throw new Error(`ZIP_ENTRY_SIZE_MISMATCH:${entry.name}:expected=${entry.sizeBytes}:actual=${size}`);
+    crc=(~crc)>>>0;
+    write(concat([le32(0x08074b50),le32(crc),le32(size),le32(size)]));
+    central.push({name,crc,size,offset,time,date});
+  }
+  const centralOffset=cursor;
+  for(const c of central)write(concat([le32(0x02014b50),le16(20),le16(20),le16(0x0808),le16(0),le16(c.time),le16(c.date),le32(c.crc),le32(c.size),le32(c.size),le16(c.name.length),le16(0),le16(0),le16(0),le16(0),le32(0),le32(c.offset),c.name]));
+  const centralSize=cursor-centralOffset;
+  write(concat([le32(0x06054b50),le16(0),le16(0),le16(central.length),le16(central.length),le32(centralSize),le32(centralOffset),le16(0)]));
+  if(cursor!==expectedSize)throw new Error(`ZIP_FINAL_SIZE_MISMATCH:expected=${expectedSize}:actual=${cursor}`);
+  return{bytes:out,expectedSize};
+}
+
 function zipInfrastructureFailure(message:string){
   return /known length|FixedLengthStream|FIXED_LENGTH_STREAM|ZIP_ENTRY_SIZE_MISMATCH|ZIP_R2_SIZE_MISMATCH|pipeTo.*WritableStream/i.test(message);
 }
@@ -360,7 +405,7 @@ export async function queueFinalExports(env:Env,input:{projectId:string;types?:F
 export async function processPackageJob(env:Env,job:PackageJob){
   const ts=nowMs();const packageRow=await env.DB.prepare("SELECT * FROM v2_download_packages WHERE id=?").bind(job.packageId).first<Record<string,unknown>>();if(!packageRow)throw new Error("PACKAGE_NOT_FOUND");const type=clean(packageRow.type).toUpperCase();const isFinal=FINAL_ARTIFACT_TYPES.has(type as FinalArtifactType);
   await env.DB.batch([
-    env.DB.prepare("UPDATE v2_download_packages SET status='PROCESSING',error=NULL,updated_at=? WHERE id=?").bind(ts,job.packageId),
+    env.DB.prepare("UPDATE v2_download_packages SET status='PROCESSING',error=NULL,r2_key=NULL,size_bytes=0,sha256=NULL,ready_at=NULL,updated_at=? WHERE id=?").bind(ts,job.packageId),
     env.DB.prepare("UPDATE v2_ingest_operations SET status='PROCESSING',updated_at=? WHERE id=?").bind(ts,job.operationId),
     env.DB.prepare("UPDATE v2_control_jobs SET status='PROCESSING',attempts=attempts+1,updated_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(ts,job.operationId),
   ]);
@@ -370,7 +415,13 @@ export async function processPackageJob(env:Env,job:PackageJob){
     if(type==="PROJECT_SCRIPT_TXT"){
       const structure=await validateScriptStructure(env,job.projectId);const bytes=structure.script.bytes;fileName="roteiro.txt";r2Key=`projects/${job.projectId}/exports/${revisionHash}/roteiro.txt`;sha256=await sha256Hex(bytes);await env.MEDIA.put(r2Key,bytes,{httpMetadata:{contentType:"text/plain; charset=utf-8",contentDisposition:'attachment; filename="roteiro.txt"'},customMetadata:{projectId:job.projectId,artifactType:type,revisionHash,questions:String(structure.questions),imageRefs:String(structure.imageRefs.length)}});const head=await env.MEDIA.head(r2Key);actualSize=Number(head?.size||0);if(!head||actualSize!==bytes.length)throw new Error(`TXT_R2_SIZE_MISMATCH:expected=${bytes.length}:actual=${actualSize}`);resultMeta={...resultMeta,questions:structure.questions,imageRefs:structure.imageRefs.length,productionScenes:structure.sceneCount,utf8:true};
     }else if(type==="PROJECT_IMAGES_ZIP"){
-      const bundle=await finalImagesBundle(env,job.projectId);fileName="imagens.zip";r2Key=`projects/${job.projectId}/exports/${revisionHash}/imagens.zip`;const zipped=await fixedLengthZipStream(env,bundle.entries);const put=env.MEDIA.put(r2Key,zipped.stream,{httpMetadata:{contentType:"application/zip",contentDisposition:'attachment; filename="imagens.zip"'},customMetadata:{projectId:job.projectId,artifactType:type,revisionHash,knownLength:String(zipped.expectedSize),flat:"true",imageCount:String(bundle.expectedNames.length)}});const [, ,zipHash]=await Promise.all([put,zipped.completion,zipped.sha256]);sha256=zipHash;const head=await env.MEDIA.head(r2Key);actualSize=Number(head?.size||0);if(!head||actualSize!==zipped.expectedSize)throw new Error(`ZIP_R2_SIZE_MISMATCH:expected=${zipped.expectedSize}:actual=${actualSize}`);const indexed=await zipIndexNames(env,r2Key,actualSize);const expected=bundle.expectedNames.map(safeName);const missing=expected.filter(name=>!indexed.includes(name)),unexpected=indexed.filter(name=>!expected.includes(name)),duplicates=indexed.filter((name,i)=>indexed.indexOf(name)!==i);if(missing.length||unexpected.length||duplicates.length)throw new Error(`FORMA_ZIP_INDEX_MISMATCH:missing=${missing.length}:unexpected=${unexpected.length}:duplicates=${duplicates.length}`);resultMeta={...resultMeta,images:expected.length,productionSlots:bundle.slotsTotal,convertedFormats:bundle.converted,fixedLengthStream:true,flat:true,missing:0,unexpected:0,duplicateNames:0,invalidFormat:0};
+      const bundle=await finalImagesBundle(env,job.projectId);fileName="imagens.zip";r2Key=`projects/${job.projectId}/exports/${revisionHash}/imagens.zip`;
+      const materialized=await materializeZipBytesKnownLength(env,bundle.entries);
+      await env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),job.projectId,"FINAL_IMAGES_ZIP_BYTES_READY","PROCESSING",JSON.stringify({packageId:job.packageId,expectedSize:materialized.expectedSize,entries:bundle.entries.length,uploadMode:"KNOWN_LENGTH_UINT8ARRAY_NO_PIPETO",pipeToUsed:false}),nowMs()).run().catch(()=>undefined);
+      sha256=await sha256Hex(materialized.bytes);
+      await env.MEDIA.put(r2Key,materialized.bytes,{httpMetadata:{contentType:"application/zip",contentDisposition:'attachment; filename="imagens.zip"'},customMetadata:{projectId:job.projectId,artifactType:type,revisionHash,knownLength:String(materialized.expectedSize),flat:"true",imageCount:String(bundle.expectedNames.length),uploadMode:"KNOWN_LENGTH_UINT8ARRAY_NO_PIPETO"}});
+      const head=await env.MEDIA.head(r2Key);actualSize=Number(head?.size||0);if(!head||actualSize!==materialized.expectedSize)throw new Error(`ZIP_R2_SIZE_MISMATCH:expected=${materialized.expectedSize}:actual=${actualSize}`);
+      await env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),job.projectId,"FINAL_IMAGES_ZIP_R2_VERIFIED","PROCESSING",JSON.stringify({packageId:job.packageId,expectedSize:materialized.expectedSize,actualSize,r2Key}),nowMs()).run().catch(()=>undefined);const indexed=await zipIndexNames(env,r2Key,actualSize);const expected=bundle.expectedNames.map(safeName);const missing=expected.filter(name=>!indexed.includes(name)),unexpected=indexed.filter(name=>!expected.includes(name)),duplicates=indexed.filter((name,i)=>indexed.indexOf(name)!==i);if(missing.length||unexpected.length||duplicates.length)throw new Error(`FORMA_ZIP_INDEX_MISMATCH:missing=${missing.length}:unexpected=${unexpected.length}:duplicates=${duplicates.length}`);resultMeta={...resultMeta,images:expected.length,productionSlots:bundle.slotsTotal,convertedFormats:bundle.converted,uploadMode:"KNOWN_LENGTH_UINT8ARRAY_NO_PIPETO",pipeToUsed:false,flat:true,missing:0,unexpected:0,duplicateNames:0,invalidFormat:0};
     }else if(type==="PROJECT_PUBLICATION_ZIP"){
       const bundle=await finalPublicationBundle(env,job.projectId);fileName="thumbs_titulos.zip";r2Key=`projects/${job.projectId}/exports/${revisionHash}/thumbs_titulos.zip`;const zipped=await fixedLengthZipStream(env,bundle.entries);const put=env.MEDIA.put(r2Key,zipped.stream,{httpMetadata:{contentType:"application/zip",contentDisposition:'attachment; filename="thumbs_titulos.zip"'},customMetadata:{projectId:job.projectId,artifactType:type,revisionHash,knownLength:String(zipped.expectedSize)}});const [, ,zipHash]=await Promise.all([put,zipped.completion,zipped.sha256]);sha256=zipHash;const head=await env.MEDIA.head(r2Key);actualSize=Number(head?.size||0);if(!head||actualSize!==zipped.expectedSize)throw new Error(`ZIP_R2_SIZE_MISMATCH:expected=${zipped.expectedSize}:actual=${actualSize}`);const indexed=await zipIndexNames(env,r2Key,actualSize),expected=bundle.entries.map(entry=>entry.name),missing=expected.filter(name=>!indexed.includes(name)),unexpected=indexed.filter(name=>!expected.includes(name)),duplicates=indexed.filter((name,i)=>indexed.indexOf(name)!==i);if(missing.length||unexpected.length||duplicates.length)throw new Error(`PUBLICATION_ZIP_INDEX_MISMATCH:missing=${missing.length}:unexpected=${unexpected.length}:duplicates=${duplicates.length}`);resultMeta={...resultMeta,thumbs:bundle.thumbCount,titles:bundle.titleCount,fixedLengthStream:true,missing:0,unexpected:0,duplicateNames:0};
     }else{
@@ -388,7 +439,7 @@ export async function processPackageJob(env:Env,job:PackageJob){
   }catch(error){
     const message=error instanceof Error?error.message:String(error),done=nowMs(),infra=zipInfrastructureFailure(message);
     await env.DB.batch([
-      env.DB.prepare("UPDATE v2_download_packages SET status='FAILED',error=?,updated_at=? WHERE id=?").bind(message,done,job.packageId),
+      env.DB.prepare("UPDATE v2_download_packages SET status='FAILED',error=?,r2_key=NULL,size_bytes=0,sha256=NULL,ready_at=NULL,updated_at=? WHERE id=?").bind(message,done,job.packageId),
       env.DB.prepare("UPDATE v2_ingest_operations SET status='FAILED',failed=1,error=?,updated_at=? WHERE id=?").bind(message,done,job.operationId),
       env.DB.prepare("UPDATE v2_control_jobs SET status='FAILED',error=?,updated_at=?,completed_at=? WHERE operation_id=? AND kind='GENERATE_PACKAGE'").bind(message,done,done,job.operationId),
       env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),job.projectId,isFinal?"FINAL_ARTIFACT_FAILED":infra?"PACKAGE_EXPORT_BLOCKED":"PACKAGE_EXPORT_FAILED",isFinal?"FAILED":infra?"PACKAGE_BLOCKED_INFRASTRUCTURE":"FAILED",JSON.stringify({packageId:job.packageId,type,error:message,independent:isFinal}),done),

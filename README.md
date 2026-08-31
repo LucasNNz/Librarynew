@@ -1,3 +1,21 @@
+# Corvo Library V2 0.20.40 — Definitive Images ZIP No-PipeTo
+
+## Correções 0.20.40
+
+- `PROJECT_IMAGES_ZIP` não usa mais `pipeTo`, `tee`, `DigestStream` ou `FixedLengthStream` no hot path.
+- O ZIP final é materializado em um `Uint8Array` de tamanho exato, SHA-256 é calculado sobre os bytes finais e o R2 recebe corpo de comprimento conhecido diretamente.
+- O buffer é protegido por limite explícito de 96 MiB; acima disso a operação falha de forma clara, sem retornar ao caminho de streaming quebrado.
+- Início/retry limpa `r2_key`, `size_bytes`, `sha256` e `ready_at` antigos.
+- `FINAL_ARTIFACT_FAILED` persiste estado terminal `FAILED`, erro real e `size_bytes=0`.
+- Parser 72/72, 102/102 slots, FAST READ, tags persistentes e os três artefatos independentes permanecem inalterados.
+- Schema D1 permanece `2.23.0`.
+
+## Critério de pronto
+
+`PROJECT_IMAGES_ZIP` só é considerado resolvido no runtime quando retornar `READY_FOR_DOWNLOAD`, `size_bytes > 0` e `download_url != null`.
+
+---
+
 # Corvo Library V2 0.20.39 — Images ZIP Stream / Failure State / FAST READ Fix
 
 ## Correções 0.20.39
