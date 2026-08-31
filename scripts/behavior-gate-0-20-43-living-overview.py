@@ -1,5 +1,5 @@
 from pathlib import Path
-import json, subprocess, sys
+import json, subprocess, sys, re
 root=Path(__file__).resolve().parents[1]
 read=lambda p:(root/p).read_text(encoding='utf-8')
 page=read('app/page.tsx')
@@ -12,7 +12,7 @@ index=read('cloudflare/src/index.ts')
 projects=read('cloudflare/src/core/projects.ts')
 bundle_builder=read('scripts/build-core-bundle.mjs')
 checks={
-  'version_at_least_0_20_43':'const EXPECTED_CORE_VERSION = "0.20.45"' in page and 'version: "0.20.45"' in index,
+  'version_at_least_0_20_43':bool(re.search(r'const EXPECTED_CORE_VERSION = \"0\.20\.(?:4[3-9]|[5-9]\d+)\"', page)) and bool(re.search(r'version: \"0\.20\.(?:4[3-9]|[5-9]\d+)\"', index)),
   'schema_remains_2_25_no_new_migration':not (root/'cloudflare/migrations/9026_v2_project_profile.sql').exists(),
   'profile_reuses_project_media':"PROJECT_PROFILE" in profile and "v2_project_media" in profile,
   'profile_preserves_old_media':"PROFILE_REPLACED" in profile and "selected=0" in profile,

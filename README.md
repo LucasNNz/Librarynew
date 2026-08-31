@@ -1,3 +1,22 @@
+# Corvo Library V2 0.20.46 — Fechamento Pós-QA + Upload de Mídia MCP
+
+## Destaques 0.20.46
+- nova rota MCP `anexar_thumb_arquivo`: recebe o file object/anexo do ChatGPT e faz `arquivo → R2 → candidate MATERIALIZED → THUMB` sem ticket `PREPARED` nem PUT externo;
+- suporta bytes/base64/resource blob/File/Blob com `arrayBuffer()` e referência HTTPS reescrita pelo runtime;
+- `finalizar_qa_projeto` agora fecha também projetos legados já 100% FROZEN, reconcilia PITEMs pela verdade dos `PRODUCTION_SLOTs` e só libera entrega com zero gaps/tags de revisão;
+- `PRODUCTION_SLOT` é a fonte de verdade para os estados legados (`FROZEN`, `ASSIGNED_FOR_QA`, `RELINK_REQUIRED`, `COLLECTING`);
+- fechamento do QA ativa `QA_CONCLUIDO` e enfileira automaticamente `PROJECT_IMAGES_ZIP`;
+- nova rota MCP `validar_imagens_zip_projeto`;
+- `imagens.zip` é inspecionado internamente antes de `READY_FOR_DOWNLOAD`: `expected/found/missing/unexpected/duplicates/invalid/flat`;
+- o gate valida o índice ZIP e também a assinatura real de JPEG/PNG/WEBP em cada entrada;
+- `READY_FOR_DOWNLOAD / DOWNLOAD_IMAGES_ZIP` só é gravado depois do manifesto passar;
+- schema D1 permanece `2.26.0` (sem migration nova);
+- toda a lógica 0.20.42–0.20.45 permanece preservada.
+
+Consulte `RELEASE_0_20_46_POST_QA_CLOSURE_MEDIA_UPLOAD.md` e `VALIDATION_0_20_46_POST_QA_CLOSURE_MEDIA_UPLOAD.md`.
+
+---
+
 # Corvo Library V2 0.20.45 — Coletor Provisório + QA por Rejeição
 
 ## Destaques 0.20.45

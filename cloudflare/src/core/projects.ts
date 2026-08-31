@@ -2,7 +2,7 @@ import type { Env } from "../types";
 import { id, nowMs } from "./ids";
 import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
 import { materializeScenesFromProjectScript, parseProjectScriptScenes } from "./project-script-parser";
-import { productionCompletionGate } from "./production-model";
+import { productionCompletionGate, reconcileLegacyProjectItemsFromProduction } from "./production-model";
 import { resolveApplicablePolicies } from "./persistent-policies";
 
 function encodeCursor(updatedAt: number, projectId: string) {
@@ -89,12 +89,12 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
   };
 }
 
-const terminalItemStates = new Set(["APROVADO","APPROVED","CONCLUIDO","CONCLUÍDO","FROZEN","CONGELADO","FAILED","FALHOU","CANCELADO"]);
+const terminalItemStates = new Set(["APROVADO","APPROVED","CONCLUIDO","CONCLUÍDO","FROZEN","CONGELADO","ASSIGNED_FOR_QA","FAILED","FALHOU","CANCELADO"]);
 
 function workerStageForItem(statusValue: unknown) {
   const status = String(statusValue || "").toUpperCase();
   if (["MATERIALIZANDO","MATERIALIZING","MATERIALIZATION"].includes(status)) return { stage: "MATERIALIZATION", workerType: "MATERIALIZATION" };
-  if (["AGUARDANDO_QA","PARA_ANALISE","QA","WAITING_QA"].includes(status)) return { stage: "QA", workerType: "QA" };
+  if (["AGUARDANDO_QA","PARA_ANALISE","QA","WAITING_QA","ASSIGNED_FOR_QA"].includes(status)) return { stage: "QA", workerType: "QA" };
   if (["RELINK","RELINK_REQUIRED","RELINKAR"].includes(status)) return { stage: "RELINK", workerType: "RELINK" };
   if (["TECNICO","TECHNICAL","TECHNICAL_QA"].includes(status)) return { stage: "TECHNICAL", workerType: "TECHNICAL" };
   return { stage: "DISCOVERY", workerType: "DISCOVERY" };
@@ -155,6 +155,9 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
     return { project:await getAutomaticProject(env,projectId), counts:{total:0,approved:0,frozen:0,collecting:0,materializing:0,waitingQa:0,relink:0,technical:0,waitingSeed:0,failed:0,pending:0}, createdWorkItems:0, scriptRecovery };
   }
 
+  // PRODUCTION_SLOT is the source of truth for production progress. Reconcile stale legacy PITEMs
+  // before deriving project counters so a 102/102 FROZEN project cannot still look COLLECTING/RELINK_REQUIRED.
+  const legacyItemReconciliation=await reconcileLegacyProjectItemsFromProduction(env,projectId).catch(error=>({error:error instanceof Error?error.message:String(error),changed:0}));
   const itemsResult = await env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId).all<Record<string,unknown>>();
   const items = itemsResult.results || [];
   const counts = { total:items.length, approved:0, frozen:0, collecting:0, materializing:0, waitingQa:0, relink:0, technical:0, waitingSeed:0, failed:0, pending:0 };
@@ -166,7 +169,7 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
     else if (["FROZEN","CONGELADO"].includes(status)) counts.frozen++;
     else if (["COLETANDO","COLLECTING"].includes(status)) counts.collecting++;
     else if (["MATERIALIZANDO","MATERIALIZING","MATERIALIZATION"].includes(status)) counts.materializing++;
-    else if (["AGUARDANDO_QA","PARA_ANALISE","QA","WAITING_QA"].includes(status)) counts.waitingQa++;
+    else if (["AGUARDANDO_QA","PARA_ANALISE","QA","WAITING_QA","ASSIGNED_FOR_QA"].includes(status)) counts.waitingQa++;
     else if (["RELINK","RELINK_REQUIRED","RELINKAR"].includes(status)) counts.relink++;
     else if (["TECNICO","TECHNICAL","TECHNICAL_QA"].includes(status)) counts.technical++;
     else if (["WAITING_SEED","AGUARDANDO_SEED"].includes(status)) counts.waitingSeed++;
@@ -195,22 +198,25 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   const hasScript=Boolean(await env.DB.prepare("SELECT 1 ok FROM automatic_project_files WHERE project_id=? AND upper(role)='SCRIPT' LIMIT 1").bind(projectId).first().catch(()=>null));
   const productionRequired=hasScript||referenceOnly;
   const legacyCompleted=!productionRequired && counts.total>0 && counts.approved+counts.frozen>=counts.total;
-  const completed=hasProduction?Boolean(production?.can_complete):legacyCompleted;
-  const slotsResolved=Number(production?.production_slots_resolved||0),slotsTotal=Number(production?.production_slots_total||0),slotsAssignedForQa=Number(production?.production_slots_assigned_for_qa||0),slotsFrozen=Number(production?.production_slots_frozen||0),slotsRelink=Number(production?.production_slots_relink_required||0);
+  // Production projects remain ACTIVE after delivery is ready. Explicit user completion remains the lifecycle lock.
+  const completed=!hasProduction&&legacyCompleted;
+  const slotsResolved=Number(production?.production_slots_resolved||0),slotsTotal=Number(production?.production_slots_total||0),slotsAssignedForQa=Number(production?.production_slots_assigned_for_qa||0),slotsFrozen=Number(production?.production_slots_frozen||0),slotsRelink=Number(production?.production_slots_relink_required||0),slotsPending=Number(production?.production_slots_pending||0);
+  const qaComplete=hasProduction&&slotsTotal>0&&slotsFrozen>=slotsTotal&&slotsAssignedForQa===0&&slotsRelink===0&&slotsPending===0;
+  const deliveryReady=qaComplete&&Boolean(production?.images_ready);
   const nextAction=completed?null:hasProduction
-    ? (slotsAssignedForQa>0?"FINALIZE_QA_OR_REJECT_SLOTS":slotsRelink>0?"RELINK_PRODUCTION_SLOTS":slotsFrozen<slotsTotal?"ASSIGN_ASSETS_TO_SLOTS":production?.package_ready?"FINALIZE":"GENERATE_PACKAGE")
+    ? (slotsAssignedForQa>0?"FINALIZE_QA_OR_REJECT_SLOTS":slotsRelink>0?"RELINK_PRODUCTION_SLOTS":slotsPending>0||slotsFrozen<slotsTotal?"ASSIGN_ASSETS_TO_SLOTS":deliveryReady?"DOWNLOAD_IMAGES_ZIP":"GENERATE_AND_VALIDATE_IMAGES_ZIP")
     : productionRequired?"CREATE_PRODUCTION_SLOTS":"DISPATCH";
   const pipeline=completed?"CONCLUIDO":hasProduction
-    ? (slotsAssignedForQa>0?"QA_REVIEW_WORKING":slotsRelink>0||slotsFrozen<slotsTotal?"SLOT_ASSIGNMENT_WORKING":"PACKAGE_PENDING")
+    ? (slotsAssignedForQa>0?"QA_REVIEW_WORKING":slotsRelink>0||slotsPending>0||slotsFrozen<slotsTotal?"SLOT_ASSIGNMENT_WORKING":deliveryReady?"READY_FOR_DOWNLOAD":"QA_CONCLUIDO")
     : referenceOnly?"REFERENCE_STAGE_COMPLETE":hasScript?"INTERPRETANDO_ROTEIRO":counts.failed>0?"ATENCAO":"PROCESSANDO";
   const status=completed?"COMPLETED":String(project.status)==="WAITING_FILES"&&counts.total===0&&!hasProduction&&!productionRequired?"WAITING_FILES":"ACTIVE";
   await env.DB.batch<Record<string, unknown>>([
     env.DB.prepare(`UPDATE automatic_projects SET status=?,pipeline_status=?,next_action=?,total_items=?,approved_count=?,frozen_count=?,collecting_count=?,materializing_count=?,waiting_qa_count=?,relink_count=?,technical_count=?,waiting_seed_count=?,failed_count=?,pending_count=?,completed_at=?,state_version=state_version+1,updated_at=? WHERE id=?`)
       .bind(status,pipeline,nextAction,counts.total,counts.approved,counts.frozen,counts.collecting,counts.materializing,counts.waitingQa,counts.relink,counts.technical,counts.waitingSeed,counts.failed,counts.pending,completed?ts:null,ts,projectId),
     env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
-      .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,production,createdWorkItems:statements.length}),ts),
+      .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,production,legacyItemReconciliation,createdWorkItems:statements.length}),ts),
   ]);
-  return { project: await getAutomaticProject(env,projectId), counts, production, createdWorkItems: statements.length, scriptRecovery };
+  return { project: await getAutomaticProject(env,projectId), counts, production, legacyItemReconciliation, createdWorkItems: statements.length, scriptRecovery };
 }
 
 export async function processAutomaticProject(env: Env, projectId: string) {

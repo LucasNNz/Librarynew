@@ -82,7 +82,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.45";
+const EXPECTED_CORE_VERSION = "0.20.46";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
