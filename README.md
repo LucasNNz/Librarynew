@@ -1,19 +1,21 @@
-# Corvo Library V2 0.20.46 — Fechamento Pós-QA + Upload de Mídia MCP
+# Corvo Library V2 0.20.48 — Project List UX + Modern Scrollbars
 
-## Destaques 0.20.46
-- nova rota MCP `anexar_thumb_arquivo`: recebe o file object/anexo do ChatGPT e faz `arquivo → R2 → candidate MATERIALIZED → THUMB` sem ticket `PREPARED` nem PUT externo;
-- suporta bytes/base64/resource blob/File/Blob com `arrayBuffer()` e referência HTTPS reescrita pelo runtime;
-- `finalizar_qa_projeto` agora fecha também projetos legados já 100% FROZEN, reconcilia PITEMs pela verdade dos `PRODUCTION_SLOTs` e só libera entrega com zero gaps/tags de revisão;
-- `PRODUCTION_SLOT` é a fonte de verdade para os estados legados (`FROZEN`, `ASSIGNED_FOR_QA`, `RELINK_REQUIRED`, `COLLECTING`);
-- fechamento do QA ativa `QA_CONCLUIDO` e enfileira automaticamente `PROJECT_IMAGES_ZIP`;
-- nova rota MCP `validar_imagens_zip_projeto`;
-- `imagens.zip` é inspecionado internamente antes de `READY_FOR_DOWNLOAD`: `expected/found/missing/unexpected/duplicates/invalid/flat`;
-- o gate valida o índice ZIP e também a assinatura real de JPEG/PNG/WEBP em cada entrada;
-- `READY_FOR_DOWNLOAD / DOWNLOAD_IMAGES_ZIP` só é gravado depois do manifesto passar;
-- schema D1 permanece `2.26.0` (sem migration nova);
-- toda a lógica 0.20.42–0.20.45 permanece preservada.
+## Destaques 0.20.48
+- substitui scrollbars nativos claros por scrollbars finos, escuros, arredondados e coerentes com a identidade Corvo;
+- remove botões nativos das barras WebKit e esconde o scrollbar visual em navegações horizontais, mantendo o gesto de rolagem;
+- reserva gutter estável em listas verticais para a barra não cobrir checkbox, cards ou ações;
+- bloqueia overflow horizontal da página e mantém overflow horizontal apenas nos componentes que realmente precisam dele;
+- corrige o painel de ações em lote dos projetos para uma grade 2×2, eliminando a largura excedente que gerava barra horizontal e ocultava botões;
+- a tela Projetos abre por padrão em **Em andamento**;
+- projetos `COMPLETED` ficam exclusivamente na aba **Concluídos** e não aparecem em `Em andamento` nem em `Pendentes 24h`;
+- `Pendentes 24h` considera somente projetos `ACTIVE` atualizados nas últimas 24 horas;
+- seleção em lote é limpa ao trocar de grupo para impedir ações cruzadas entre ativos, concluídos e rejeitados;
+- ações `Concluir/Rejeitar` ficam fora das abas de concluídos/rejeitados;
+- inclui cabeçalho contextual da fila para deixar claro quando o usuário está operando pendentes, arquivo concluído ou rejeitados;
+- preserva integralmente o hotfix 0.20.47 de THUMB, o upload local, o QA por rejeição e o fechamento pós-QA;
+- schema D1 permanece `2.26.0` (sem migration nova).
 
-Consulte `RELEASE_0_20_46_POST_QA_CLOSURE_MEDIA_UPLOAD.md` e `VALIDATION_0_20_46_POST_QA_CLOSURE_MEDIA_UPLOAD.md`.
+Consulte `RELEASE_0_20_48_PROJECT_LIST_UX_SCROLLBARS.md` e `VALIDATION_0_20_48_PROJECT_LIST_UX_SCROLLBARS.md`.
 
 ---
 

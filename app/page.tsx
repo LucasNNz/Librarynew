@@ -82,7 +82,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.46";
+const EXPECTED_CORE_VERSION = "0.20.48";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -392,7 +392,7 @@ export default function Home() {
   const [projectProfileBusyId, setProjectProfileBusyId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectSearch, setProjectSearch] = useState("");
-  const [projectFilter, setProjectFilter] = useState<ProjectFilter>("24H");
+  const [projectFilter, setProjectFilter] = useState<ProjectFilter>("ACTIVE");
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectSlot, setProjectSlot] = useState<ProjectSlotSnapshot | null>(null);
@@ -1217,24 +1217,38 @@ export default function Home() {
   }).length,[projects]);
   const projectFilterCounts = useMemo(() => {
     const since=Date.now()-24*60*60*1000;
+    const active=projects.filter(project=>projectLifecycle(project)==="ACTIVE");
     return {
-      "24H":projects.filter(project=>Number(project.updated_at||project.created_at||0)>=since).length,
-      ACTIVE:projects.filter(project=>projectLifecycle(project)==="ACTIVE").length,
+      "24H":active.filter(project=>Number(project.updated_at||project.created_at||0)>=since).length,
+      ACTIVE:active.length,
       COMPLETED:projects.filter(project=>projectLifecycle(project)==="COMPLETED").length,
       REJECTED:projects.filter(project=>projectLifecycle(project)==="REJECTED").length,
-      ALL:projects.length,
+      // ALL is kept as a compatibility alias for the operational queue.
+      // Completed/rejected projects are intentionally isolated in their own views.
+      ALL:active.length,
     } as Record<ProjectFilter,number>;
   },[projects]);
   const filteredProjects = useMemo(() => {
     const since=Date.now()-24*60*60*1000;
     const query=projectSearch.trim().toLowerCase();
     return projects.filter(project=>{
-      const stageMatch=projectFilter==="24H"?Number(project.updated_at||project.created_at||0)>=since:projectFilter==="ALL"?true:projectLifecycle(project)===projectFilter;
+      const lifecycle=projectLifecycle(project);
+      const stageMatch=projectFilter==="24H"
+        ? lifecycle==="ACTIVE"&&Number(project.updated_at||project.created_at||0)>=since
+        : projectFilter==="ALL"
+          ? lifecycle==="ACTIVE"
+          : lifecycle===projectFilter;
       if(!stageMatch)return false;
       if(!query)return true;
       return [project.name,project.id,project.project_domain,project.pipeline_status].some(value=>String(value||"").toLowerCase().includes(query));
     });
   },[projects,projectFilter,projectSearch]);
+  const projectRailContext = useMemo(() => {
+    if(projectFilter==="COMPLETED")return {title:"Projetos concluídos",detail:"Arquivo de projetos encerrados · fora da fila operacional",tone:"completed"};
+    if(projectFilter==="REJECTED")return {title:"Projetos rejeitados",detail:"Projetos removidos da fila · histórico preservado",tone:"rejected"};
+    if(projectFilter==="24H")return {title:"Pendentes recentes",detail:"Somente projetos ativos atualizados nas últimas 24h",tone:"active"};
+    return {title:"Em andamento",detail:"Fila operacional · concluídos ficam em uma área separada",tone:"active"};
+  },[projectFilter]);
 
   useEffect(() => {
     if(currentView!=="Projetos")return;
@@ -1312,7 +1326,7 @@ export default function Home() {
     const value=await response.json().catch(()=>({}));
     if(response.ok){
       const createdId=String(value?.project?.id||"");
-      setProjectName("");setProjectFilter("24H");await refreshRecords("Projetos");
+      setProjectName("");setProjectFilter("ACTIVE");await refreshRecords("Projetos");
       if(createdId){setSelectedProjectId(createdId);void refreshProjectSlot(createdId);}
     } else setProjectMessage(String(value?.error||`HTTP_${response.status}`));
   }
@@ -1761,7 +1775,7 @@ Tudo é configurado pela própria tela Configurações.
           </header>
 
           <div className="projectKpiGrid">
-            <article className="projectKpi violet"><span className="projectKpiIcon"><UiIcon name="folder" size={19}/></span><div><strong>{projects.length}</strong><span>Projetos totais</span><small>{projectFilterCounts["24H"]} atualizados nas últimas 24h</small></div></article>
+            <article className="projectKpi violet"><span className="projectKpiIcon"><UiIcon name="folder" size={19}/></span><div><strong>{projects.length}</strong><span>Projetos totais</span><small>{projectFilterCounts["24H"]} pendentes atualizados nas últimas 24h</small></div></article>
             <article className="projectKpi blue"><span className="projectKpiIcon"><UiIcon name="play" size={19}/></span><div><strong>{projectFilterCounts.ACTIVE}</strong><span>Em execução</span><small>{activeProjects.filter(project=>(project.workflow_tags||[]).some(tag=>String(tag.tag).includes("WORKING"))).length} com agente ativo</small></div></article>
             <article className="projectKpi amber"><span className="projectKpiIcon"><UiIcon name="target" size={19}/></span><div><strong>{analysisProjectCount}</strong><span>Em análise</span><small>referência ou QA visual em andamento</small></div></article>
             <article className="projectKpi green"><span className="projectKpiIcon"><UiIcon name="download" size={19}/></span><div><strong>{projectFilterCounts.COMPLETED}</strong><span>Concluídos</span><small>MCP bloqueado até reabertura explícita</small></div></article>
@@ -1777,16 +1791,17 @@ Tudo é configurado pela própria tela Configurações.
 
           <div className="projectStudioBody">
             <aside className="projectRail">
-              <div className="projectRailTabs">
+              <div className="projectRailTabs" aria-label="Status dos projetos">
                 {([
-                  ["ALL","Todos"],["24H","24h"],["ACTIVE","Em execução"],["COMPLETED","Concluídos"],["REJECTED","Rejeitados"]
-                ] as Array<[ProjectFilter,string]>).map(([key,label])=><button key={key} className={projectFilter===key?"active":""} onClick={()=>setProjectFilter(key)}>{label}<b>{projectFilterCounts[key]}</b></button>)}
+                  ["ACTIVE","Em andamento"],["24H","Pendentes 24h"],["COMPLETED","Concluídos"],["REJECTED","Rejeitados"]
+                ] as Array<[ProjectFilter,string]>).map(([key,label])=><button key={key} className={projectFilter===key?"active":""} onClick={()=>{setProjectFilter(key);setSelectedProjectIds(new Set());}}>{label}<b>{projectFilterCounts[key]}</b></button>)}
               </div>
+              <div className={`projectRailContext ${projectRailContext.tone}`}><i/><div><strong>{projectRailContext.title}</strong><small>{projectRailContext.detail}</small></div></div>
               <div className="projectRailTools">
                 <span>{filteredProjects.length} projeto(s)</span>
                 <button disabled={!filteredProjects.length} onClick={()=>setSelectedProjectIds(new Set(filteredProjects.map(project=>project.id)))}>Selecionar visíveis</button>
               </div>
-              <div className="projectBulkBar projectBulkRail always"><span><b>{selectedProjectIds.size}</b> selecionado(s)</span><button disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("COMPLETE")}>Concluir</button><button className="reject" disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("REJECT")}>Rejeitar</button><button className="danger" disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("DELETE")}>Excluir permanentemente</button><button disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>setSelectedProjectIds(new Set())}>Limpar</button></div>
+              <div className="projectBulkBar projectBulkRail always"><span><b>{selectedProjectIds.size}</b> selecionado(s)</span>{projectFilter!=="COMPLETED"&&projectFilter!=="REJECTED"&&<button disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("COMPLETE")}>Concluir</button>}{projectFilter!=="COMPLETED"&&projectFilter!=="REJECTED"&&<button className="reject" disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("REJECT")}>Rejeitar</button>}<button className="danger" disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>void bulkProjectAction("DELETE")}>Excluir permanentemente</button><button disabled={projectBulkBusy||selectedProjectIds.size===0} onClick={()=>setSelectedProjectIds(new Set())}>Limpar</button></div>
               {recordLoading&&projects.length===0?<div className="projectEmpty">Carregando projetos…</div>:filteredProjects.length===0?<div className="projectEmpty">Nenhum projeto neste estágio.</div>:<div className="projectCardList">
                 {filteredProjects.map((item,index)=>{
                   const lifecycle=projectLifecycle(item),activeTags=item.workflow_tags||[],selected=selectedProjectId===item.id,locked=Boolean(item.mcp_locked)||lifecycle!=="ACTIVE",progress=progressForProject(item);
