@@ -15,6 +15,7 @@ import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, fa
 import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
 import { configureProjectSlotAccess, fillProjectImageSlot, fillProjectTextSlot, linkApprovedAssetToProjectSlot, listProjectSlotAccess } from "./core/project-slot-customization";
+import { clearProjectProfile, getProjectProfile, setProjectProfileFromAsset, setProjectProfileFromCandidate } from "./core/project-profile";
 import { appliedPolicies, createOperationalPolicy, detectOperationalGap, editOperationalPolicy, getOperationalGap, linkGapPolicy, listOperationalGaps, listOperationalPolicies, policyTelemetry, policyWorkspace, resolveGapAndLearn, rollbackPolicy, setPolicyStatus, testPolicy } from "./core/policies";
 import { backfillLegacyProjects, claimNextSupervisorWork, configureSupervisor, decideSupervisorCandidate, heartbeatSupervisor, listSourceProfiles, listSupervisorCandidatesWithLinks, listSupervisorDecisions, nightlySummary, relinkItem, relinkItems, resolveSupervisorDecision, saveSourceProfile, setDefaultSourceProfile, setHostBlocked, setItemProcessingState, setProjectProcessingState, setSourceProfileStatus, supervisorLeaseTelemetry, supervisorPanel, supervisorStatus, supervisorWatchdog, updateCollectionSettings, updateCollectionSource, updateItemSearch, updateSourceProfile } from "./core/supervisor";
 import { bindingStatus, listSafeSettings, updateSafeSetting } from "./core/settings";
@@ -47,7 +48,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.42" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.44" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -740,6 +741,28 @@ function createServer(env: Env, request: Request) {
     description:"Preenche um slot de imagem já aberto para MCP. Aceita URL remota ou candidate_id MATERIALIZED existente. THUMBS ocupa um dos 3 slots; CANDIDATES pode ser ligado a uma cena/item.",
     inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["thumbs","reference","candidates"]), url:z.string().url().optional(), candidate_id:z.string().optional(), item_id:z.string().optional(), target_candidates:z.number().int().min(1).max(100).optional(), required_approved:z.number().int().min(1).max(100).optional(), agente:z.string().optional() },
   }, async(v)=>output(await fillProjectImageSlot(env,{projectId:v.projeto_id,slotKey:v.slot,url:v.url,candidateId:v.candidate_id,itemId:v.item_id,targetCandidates:v.target_candidates,requiredApproved:v.required_approved,origin:v.agente||"MCP_SLOT",requireOpen:true})));
+  server.registerTool("anexar_thumb_projeto", {
+    description:"Anexa uma thumb ao projeto sem exigir abertura prévia do slot. Aceita URL externa (FAST PUSH assíncrono) ou candidate_id MATERIALIZED. É o caminho simples e preferencial para agentes MCP enviarem thumbs.",
+    inputSchema:{ projeto_id:z.string().min(1), url:z.string().url().optional(), candidate_id:z.string().optional(), agente:z.string().optional() },
+  }, async(v)=>output(await fillProjectImageSlot(env,{projectId:v.projeto_id,slotKey:"thumbs",url:v.url,candidateId:v.candidate_id,origin:v.agente||"MCP_THUMB_DIRECT",requireOpen:false})));
+  server.registerTool("definir_foto_perfil_projeto", {
+    description:"Define/troca a foto de perfil visual do projeto. Reutiliza AST aprovado sem copiar bytes, aceita candidate_id MATERIALIZED, ou URL externa via FAST PUSH direcionado ao PROJECT_PROFILE. Não altera o pipeline de produção.",
+    inputSchema:{ projeto_id:z.string().min(1), asset_id:z.string().optional(), candidate_id:z.string().optional(), url:z.string().url().optional(), agente:z.string().optional() },
+  }, async(v)=>{
+    if(v.asset_id)return output(await setProjectProfileFromAsset(env,{projectId:v.projeto_id,assetId:v.asset_id,origin:v.agente||"MCP_PROJECT_PROFILE"}));
+    if(v.candidate_id)return output(await setProjectProfileFromCandidate(env,{projectId:v.projeto_id,candidateId:v.candidate_id,origin:v.agente||"MCP_PROJECT_PROFILE"}));
+    if(v.url)return output(await enqueueFastPushItems(env,[{url:v.url,projectId:v.projeto_id,tags:["project-profile","project-card"]}],{type:"PROJECT_PROFILE_PUSH"}));
+    return output({error:"PROFILE_SOURCE_REQUIRED",accepted:["asset_id","candidate_id","url"]});
+  });
+  server.registerTool("obter_foto_perfil_projeto", {
+    description:"Retorna a foto de perfil atual do projeto com link temporário de preview e origem (biblioteca, candidata ou fonte externa).",
+    inputSchema:{ projeto_id:z.string().min(1) },
+  }, async(v)=>output(await getProjectProfile(request,env,v.projeto_id)));
+  server.registerTool("remover_foto_perfil_projeto", {
+    description:"Remove somente o vínculo visual da foto de perfil atual do projeto, preservando AST/candidata/R2 e histórico.",
+    inputSchema:{ projeto_id:z.string().min(1), agente:z.string().optional() },
+  }, async(v)=>output(await clearProjectProfile(env,v.projeto_id,v.agente||"MCP")));
+
   server.registerTool("preencher_slot_texto_projeto", {
     description:"Preenche slot textual já aberto para MCP. SCRIPT grava roteiro inline; REFERENCE grava o TXT de referências do Coletor; TITLES aceita até 3 linhas/opções.",
     inputSchema:{ projeto_id:z.string().min(1), slot:z.enum(["script","reference","titles"]), texto:z.string().min(1).max(2000000), agente:z.string().optional() },
@@ -978,7 +1001,7 @@ function createServer(env: Env, request: Request) {
   }, async(v)=>output(await upsertProductionSlots(env,{projectId:v.projeto_id,slots:v.slots.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,sceneKey:x.scene_key,subject:x.subject,universe:x.universe,reference:x.reference,preset:x.preset,context:x.context,compositionClass:x.composition_class,observation:x.observation}))})));
 
   server.registerTool("rejeitar_production_slots_lote", {
-    description:"Rejeita imagens no nível PRODUCTION_SLOT/PSLOT sem rejeitar a cena nem o AST global. Remove somente o vínculo ativo slot→asset, preserva R2/histórico e abre RELINK_REQUIRED. Até 500 slots; idempotente por estado e operation_id.",
+    description:"Rejeita imagens no nível PRODUCTION_SLOT/PSLOT sem rejeitar a cena nem o AST global. Remove somente o vínculo ativo slot→asset, preserva R2/histórico e abre RELINK_REQUIRED. Até 500 slots; operação D1 atômica (rollback integral em falha) e idempotente por operation_id.",
     inputSchema:{ projeto_id:z.string().min(1), slots:z.array(z.object({ slot_id:z.string().optional(), target_file:z.string().optional(), motivo:z.string().optional() }).refine((v:any)=>Boolean(v.slot_id||v.target_file),{message:"slot_id ou target_file obrigatório"})).min(1).max(500), operation_id:z.string().optional(), rejected_by:z.string().optional() }
   }, async(v:any)=>output(await rejectProductionSlotsBatch(env,{projectId:v.projeto_id,slots:v.slots.map((slot:any)=>({slotId:slot.slot_id,targetFile:slot.target_file,reason:slot.motivo})),operationId:v.operation_id,rejectedBy:v.rejected_by})));
 

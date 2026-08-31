@@ -3,6 +3,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
+const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+const bundleVersion = String(packageJson.version || "UNBUILT");
 const out = path.join(root, ".generated", "corvo-core-v2.mjs");
 await build({
   entryPoints: [path.join(root, "cloudflare", "src", "index.ts")],
@@ -23,5 +25,5 @@ await build({
 });
 const source = await readFile(out, "utf8");
 const target = path.join(root, "lib", "generated-core-bundle.ts");
-await writeFile(target, `// AUTO-GENERATED. DO NOT EDIT.\nexport const CORE_WORKER_BUNDLE_VERSION: string = \"0.20.41\";\nexport const CORE_WORKER_BUNDLE: string = ${JSON.stringify(source)};\n`, "utf8");
+await writeFile(target, `// AUTO-GENERATED. DO NOT EDIT.\nexport const CORE_WORKER_BUNDLE_VERSION: string = \"${bundleVersion}\";\nexport const CORE_WORKER_BUNDLE: string = ${JSON.stringify(source)};\n`, "utf8");
 console.log(`Core Worker bundle embedded: ${source.length} bytes`);

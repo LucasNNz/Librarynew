@@ -6,6 +6,8 @@ import { refreshProjectItemPipelineState } from "./project-pipeline-state";
 import { refreshRecoveryAfterWrite, writeCandidateRecoveryRecord, writeImportRecoveryRecord } from "./recovery-manifest";
 import { materializeScenesFromProjectScript } from "./project-script-parser";
 import { reconcileAutomaticProject } from "./projects";
+import { createProjectMediaFromCandidate } from "./production";
+import { setProjectProfileFromCandidate } from "./project-profile";
 
 function sanitizeFilename(value: string) {
   const clean=value.trim().replace(/[^a-zA-Z0-9._-]+/g,"-").replace(/^-+|-+$/g,"");
@@ -140,8 +142,15 @@ export async function confirmDirectUpload(env:Env,uploadId:string) {
     await writeCandidateRecoveryRecord(env,candidateId,"DIRECT_UPLOAD_CONFIRMED").catch(()=>undefined);
     await refreshRecoveryAfterWrite(env,"DIRECT_IMAGE_RECEIVED",candidateId);
     await refreshProjectItemPipelineState(env,claimed.project_id?String(claimed.project_id):null,claimed.item_id?String(claimed.item_id):null).catch(()=>undefined);
+    const directTags=normalizeTags((()=>{try{return JSON.parse(String(claimed.tags_json||"[]"));}catch{return [];}})()).map(tag=>tag.toLowerCase());
+    let projectMedia:unknown=null;
+    if(claimed.project_id && directTags.includes("project-profile")) {
+      projectMedia=await setProjectProfileFromCandidate(env,{projectId:String(claimed.project_id),candidateId,origin:"DIRECT_UPLOAD_PROJECT_PROFILE"}).catch(error=>({error:error instanceof Error?error.message:String(error)}));
+    } else if(claimed.project_id && directTags.includes("thumb")) {
+      projectMedia=await createProjectMediaFromCandidate(env,{candidateId,projectId:String(claimed.project_id),r2Key:String(claimed.r2_key),mimeType:String(claimed.actual_mime||claimed.expected_mime||"image/jpeg"),sizeBytes:Number(claimed.size_bytes||0),sourceUrl:`direct-upload://${uploadId}`,agentOrigin:"DIRECT_UPLOAD_THUMB"}).catch(error=>({error:error instanceof Error?error.message:String(error)}));
+    }
     await recordIngestEvent(env,operationId,candidateId,"DIRECT_UPLOAD_CONFIRMED","MATERIALIZED",String(claimed.r2_key),null);
-    return {ok:true,candidateId,operationId,r2Key:claimed.r2_key,status:200} as const;
+    return {ok:true,candidateId,operationId,r2Key:claimed.r2_key,projectMedia,status:200} as const;
   }catch(error){
     const message=error instanceof Error?error.message:String(error); const failedAt=nowMs();
     await env.DB.prepare("UPDATE v2_direct_uploads SET status='STORED',failure_reason=?,updated_at=? WHERE id=? AND status='CONFIRMING'").bind(message.slice(0,1000),failedAt,uploadId).run();

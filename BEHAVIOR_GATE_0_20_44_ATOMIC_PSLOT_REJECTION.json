@@ -1,0 +1,30 @@
+{
+  "version": "0.20.44",
+  "schema": "2.25.0",
+  "feature": "Atomic PRODUCTION_SLOT rejection + SQL cardinality hotfix",
+  "estimated_500_slot_transaction_statements": 598,
+  "checks": {
+    "forced_failure_happened": true,
+    "rollback_restored_all_slots": true,
+    "rollback_removed_history": true,
+    "corrected_history_insert_executes": true,
+    "history_values_exactly_12": true,
+    "old_13_value_history_shape_removed": true,
+    "single_transactional_d1_batch": true,
+    "no_mutating_run_before_batch": true,
+    "rollback_error_is_structured": true,
+    "operation_commit_marker_is_deterministic": true,
+    "operation_id_payload_conflict_guard": true,
+    "legacy_partial_operation_safe_recovery": true,
+    "preflight_is_all_or_nothing": true,
+    "concurrency_guard_inside_transaction": true,
+    "counts_inside_same_batch": true,
+    "exports_invalidated_inside_batch": true,
+    "global_ast_not_mutated": true,
+    "mcp_limit_500_preserved": true,
+    "d1_bound_parameter_guards": true,
+    "worst_case_transaction_statements_under_1000": true,
+    "mcp_description_declares_atomic": true
+  },
+  "pass": true
+}

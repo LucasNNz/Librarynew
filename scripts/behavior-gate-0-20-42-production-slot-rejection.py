@@ -109,7 +109,7 @@ def main():
         'b_still_untouched_after_relink': after_relink['b']==('AST-B','FROZEN'),
         'history_has_reject_and_relink': after_relink['history']==[('PRODUCTION_SLOT_REJECTED','AST-A',None),('PRODUCTION_SLOT_RELINKED','AST-A','AST-C')],
         'same_operation_retry_after_relink_preserves_new_asset': after_same_operation_replay['a']==('AST-C','FROZEN','AST-A') and after_same_operation_replay['resolved']==2 and after_same_operation_replay['relink_required']==0 and after_same_operation_replay['reject_history']==1,
-        'source_checks_operation_history_before_mutation': "event='PRODUCTION_SLOT_REJECTED' AND operation_id=? LIMIT 1" in source and source.index('const priorOperation=') < source.index('if(currentStatus==="RELINK_REQUIRED"'),
+        'source_checks_operation_history_before_mutation': "event='PRODUCTION_SLOT_REJECTED' AND operation_id=?" in source and 'priorOperationBySlot' in source and source.index('const priorOperation=') < source.index('if(currentStatus==="RELINK_REQUIRED"'),
         'source_invalidates_only_image_dependent_exports': "type IN ('PROJECT_IMAGES_ZIP','PROJECT_PRODUCTION_ZIP')" in source and "status='STALE'" in source and 'PROJECT_SCRIPT_TXT' not in source[source.index('export async function rejectProductionSlotsBatch'):source.index('export async function listProductionRelinkGaps')],
         'mcp_route_exact_name': 'registerTool("rejeitar_production_slots_lote"' in mcp,
         'batch_limit_500': '.slice(0,500)' in source and '.max(500)' in mcp,

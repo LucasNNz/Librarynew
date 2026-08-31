@@ -4,6 +4,7 @@ import { limitedStream, safeRemoteUrl, transientHttpStatus } from "./net";
 import { createSignedCandidateUrl } from "./auth";
 import { recordIngestEvent, updateHostHealth } from "./materialization";
 import { createProjectMediaFromCandidate } from "./production";
+import { setProjectProfileFromCandidate } from "./project-profile";
 import { refreshProjectItemPipelineState, summarizeOperationCollectionGoal } from "./project-pipeline-state";
 import { projectWriteGuard } from "./project-workflow";
 import { refreshRecoveryAfterWrite, writeAssetRecoveryRecord, writeCandidateRecoveryRecord } from "./recovery-manifest";
@@ -341,7 +342,10 @@ export async function materialize(message: Message<MaterializeJob>, env: Env) {
     await writeCandidateRecoveryRecord(env,job.candidateId,"CANDIDATE_MATERIALIZED").catch(() => undefined);
     await refreshRecoveryAfterWrite(env,"IMAGE_MATERIALIZED",job.candidateId);
     await updateHostHealth(env, remote.hostname.toLowerCase(), true);
-    if (job.projectId && (job.tags || []).some(tag => String(tag).toLowerCase() === "thumb")) {
+    const normalizedJobTags=(job.tags || []).map(tag=>String(tag).toLowerCase());
+    if (job.projectId && normalizedJobTags.includes("project-profile")) {
+      await setProjectProfileFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,origin:"FAST_PUSH_PROJECT_PROFILE"}).catch(()=>undefined);
+    } else if (job.projectId && normalizedJobTags.includes("thumb")) {
       await createProjectMediaFromCandidate(env,{candidateId:job.candidateId,projectId:job.projectId,r2Key,mimeType:mime,sizeBytes:Number(stored?.size || remoteBytes.byteLength || contentLength || 0),sourceUrl:job.url,agentOrigin:"FAST_PUSH"}).catch(()=>undefined);
     }
     const projectId = job.projectId || state.project_id, itemId = job.itemId || state.item_id;

@@ -1,0 +1,31 @@
+{
+  "version": "0.20.43",
+  "schema": "2.25.0",
+  "feature": "Living overview + project profile media + reliable thumb upload",
+  "checks": {
+    "version_at_least_0_20_43": true,
+    "schema_remains_2_25_no_new_migration": true,
+    "profile_reuses_project_media": true,
+    "profile_preserves_old_media": true,
+    "profile_from_asset_no_copy": true,
+    "profile_from_candidate": true,
+    "external_profile_fast_push": true,
+    "ingest_materialization_auto_profile": true,
+    "direct_upload_auto_profile": true,
+    "direct_upload_auto_thumb": true,
+    "mcp_easy_thumb": true,
+    "mcp_profile_set": true,
+    "mcp_profile_get": true,
+    "mcp_profile_clear": true,
+    "profile_rest_api": true,
+    "overview_profile_controls": true,
+    "completion_number_glow": true,
+    "success_kpi_glow": true,
+    "truthful_agent_stage_state": true,
+    "wire_loop_animation": true,
+    "smooth_microinteractions": true,
+    "projects_list_exposes_profile_id": true,
+    "bundle_version_from_package": true
+  },
+  "pass": true
+}

@@ -146,6 +146,7 @@ export type AutomaticProject = {
   closed_reason?: string | null;
   workflow_updated_at?: number | null;
   workflow_tags?: Array<{tag:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
+  profile_media_id?: string | null;
 };
 
 export type ProjectArtifact = {

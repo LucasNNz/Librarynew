@@ -304,6 +304,16 @@ export async function applyMigrationsFromApp(env: Env) {
     await registerMigration(env,finalExportsMigration,"APPLIED","schema_contract_reconciled");
     applied.add(finalExportsMigration.name);
   }
+  // 2.25.0 is also fully represented by reconcileCriticalSchema(). On an
+  // upgrade from 2.24.x the reconciliation adds previous_asset_id and the
+  // remaining relink columns/table before the migration loop. Replaying 9025
+  // afterwards would fail with D1_ERROR duplicate column name. Treat the
+  // migration as satisfied when the current contract is already READY.
+  const productionSlotRejectionMigration=items.find(item=>item.name==="9025_v2_production_slot_rejection.sql");
+  if(preSchemaContract?.ready&&productionSlotRejectionMigration&&!applied.has(productionSlotRejectionMigration.name)){
+    await registerMigration(env,productionSlotRejectionMigration,"APPLIED","schema_contract_reconciled");
+    applied.add(productionSlotRejectionMigration.name);
+  }
 
   for(const item of items){
     if(applied.has(item.name)) continue;

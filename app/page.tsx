@@ -61,6 +61,7 @@ type PersistentPolicy = OperationalPolicyContext & {
   previous_version_id?:string|null;
 };
 
+type ProjectProfileView = {mediaId?:string;previewUrl?:string;sourceType?:string;sourceId?:string|null;updatedAt?:number;loading?:boolean;error?:string};
 type PolicyDraft = {policyKey:string;title:string;scope:"GLOBAL"|"PRESET"|"PROJECT"|"SLOT";targetId:string;instruction:string;priority:string;assetRequirement:string};
 const emptyPolicyDraft:PolicyDraft={policyKey:"",title:"",scope:"GLOBAL",targetId:"",instruction:"",priority:"50",assetRequirement:""};
 
@@ -81,7 +82,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.42";
+const EXPECTED_CORE_VERSION = "0.20.44";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -210,28 +211,43 @@ function slotTagGlow(tagKey:string){
   return `hsla(${hash},78%,64%,.44)`;
 }
 
+type NetworkLaneState = "done"|"working"|"waiting";
+
+function projectAgentLaneState(project:AutomaticProject, agentName:string):NetworkLaneState {
+  if(projectLifecycle(project)==="COMPLETED")return "done";
+  const tags=new Set((project.workflow_tags||[]).map(tag=>String(tag.tag||"").toUpperCase()));
+  const progress=progressForProject(project);
+  if(agentName==="Roteirista")return tags.has("READ")||progress>=12?"done":"waiting";
+  if(agentName==="Coletor")return tags.has("COLLECTOR_FINISHED")?"done":tags.has("COLLECTOR_WORKING")?"working":"waiting";
+  if(agentName==="Analista")return tags.has("VISUAL_ANALYST_FINISHED")?"done":tags.has("VISUAL_ANALYST_WORKING")?"working":"waiting";
+  if(agentName==="Exportador")return tags.has("DOWNLOADER_COMPLETED")?"done":tags.has("DOWNLOADER_WORKING")?"working":"waiting";
+  if(agentName==="Supervisor")return progress>=100?"done":progress>0?"working":"waiting";
+  return "waiting";
+}
+
 function AgentProjectNetwork({projects, pending, queueBacklog, online}:{projects:AutomaticProject[]; pending:number; queueBacklog:number; online:boolean}) {
   const visible = projects.slice(0,5);
   const slots = Array.from({length:5},(_,index)=>visible[index] || null);
   const agents = [
     {name:"Coletor", icon:"search" as UiIconName, tone:"violet", detail:"captura e descoberta"},
     {name:"Analista", icon:"target" as UiIconName, tone:"blue", detail:`${pending} decisões pendentes`},
-    {name:"Roteirista", icon:"spark" as UiIconName, tone:"green", detail:"roteiros e requirements"},
+    {name:"Roteirista", icon:"spark" as UiIconName, tone:"green", detail:"roteiro e estrutura"},
     {name:"Exportador", icon:"download" as UiIconName, tone:"orange", detail:"ZIPs e pacotes"},
-    {name:"Supervisor", icon:"brain" as UiIconName, tone:"purple", detail:"políticas via MCP"},
+    {name:"Supervisor", icon:"brain" as UiIconName, tone:"purple", detail:"orquestra via MCP"},
   ];
   const ys=[128,166,204,242,280];
   const projectXs=[380,545,710,875,1040];
   const colors=["#8d5cff","#418cff","#35d99b","#ff9b4d","#b35cff"];
   return <div className="agentNetwork">
+    <div className="networkAmbientSweep" aria-hidden="true"/>
     <svg className="networkWires" viewBox="0 0 1160 338" preserveAspectRatio="none" aria-hidden="true">
       <defs>
         <filter id="wireGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        {colors.map((color,index)=><linearGradient id={`wire-${index}`} key={color} x1="0" x2="1"><stop offset="0" stopColor={color} stopOpacity=".08"/><stop offset=".14" stopColor={color} stopOpacity=".8"/><stop offset=".9" stopColor={color} stopOpacity=".55"/><stop offset="1" stopColor={color} stopOpacity=".08"/></linearGradient>)}
+        {colors.map((color,index)=><linearGradient id={`wire-${index}`} key={color} x1="0" x2="1"><stop offset="0" stopColor={color} stopOpacity=".04"/><stop offset=".14" stopColor={color} stopOpacity=".72"/><stop offset=".9" stopColor={color} stopOpacity=".46"/><stop offset="1" stopColor={color} stopOpacity=".03"/></linearGradient>)}
       </defs>
       {ys.map((y,row)=><g key={y}>
-        <path className="wirePath" d={`M 168 ${y} C 280 ${y-20}, 315 ${y+16}, 395 ${y} S 535 ${y-14}, 595 ${y} S 720 ${y+16}, 780 ${y} S 910 ${y-13}, 992 ${y} S 1080 ${y+10}, 1140 ${y}`} stroke={`url(#wire-${row})`} filter="url(#wireGlow)"/>
-        {projectXs.map((x,index)=><circle key={x} cx={x} cy={y} r="3.8" fill={colors[row]} opacity={slots[index]?1:.25} filter="url(#wireGlow)"/>)}
+        <path className={`wirePath wireFlow wireFlow${row+1}`} d={`M 168 ${y} C 280 ${y-20}, 315 ${y+16}, 395 ${y} S 535 ${y-14}, 595 ${y} S 720 ${y+16}, 780 ${y} S 910 ${y-13}, 992 ${y} S 1080 ${y+10}, 1140 ${y}`} stroke={`url(#wire-${row})`} filter="url(#wireGlow)"/>
+        {projectXs.map((x,index)=>{const project=slots[index];const state=project?projectAgentLaneState(project,agents[row].name):"waiting";return <circle className={`wireCheckpoint ${state}`} key={x} cx={x} cy={y} r={state==="working"?4.4:3.8} fill={colors[row]} opacity={state==="done"?1:state==="working"?.88:.18} filter={state!=="waiting"?"url(#wireGlow)":undefined}/>})}
       </g>)}
     </svg>
     <div className="networkLegend">
@@ -242,8 +258,8 @@ function AgentProjectNetwork({projects, pending, queueBacklog, online}:{projects
         const progress=project?progressForProject(project):0;
         return <div className={`networkProject ${project?"live":"idle"}`} key={project?.id || `slot-${index}`}>
           <div className="networkProjectHead"><strong>{project?.name || "Slot livre"}</strong><small>{project?String(project.pipeline_status||project.status||"ATIVO"):"Aguardando projeto"}</small></div>
-          <div className={`progressRing p${Math.round(progress/10)*10}`} style={{"--progress":`${progress*3.6}deg`} as any}><span>{project?`${progress}%`:"—"}</span></div>
-          <div className="projectWireNodes">{agents.map((agent,row)=><i key={agent.name} style={{"--node-color":colors[row]} as any}/>)}</div>
+          <div className={`progressRing p${Math.round(progress/10)*10}`} style={{"--progress":`${progress*3.6}deg`} as any}><span>{project?`${progress}%`:"—"}</span><em>{project?"concluído":""}</em></div>
+          <div className="projectWireNodes">{agents.map((agent,row)=>{const state=project?projectAgentLaneState(project,agent.name):"waiting";return <i className={state} key={agent.name} title={`${agent.name}: ${state==="done"?"concluído":state==="working"?"em andamento":"não iniciado"}`} style={{"--node-color":colors[row]} as any}/>})}</div>
         </div>;
       })}
     </div>
@@ -372,6 +388,8 @@ export default function Home() {
   const [batchName, setBatchName] = useState("");
   const [batchProject, setBatchProject] = useState("");
   const [projects, setProjects] = useState<AutomaticProject[]>([]);
+  const [projectProfiles, setProjectProfiles] = useState<Record<string,ProjectProfileView>>({});
+  const [projectProfileBusyId, setProjectProfileBusyId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectSearch, setProjectSearch] = useState("");
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>("24H");
@@ -1148,6 +1166,50 @@ export default function Home() {
   const dataReady = connectionResolved && Boolean(localConnection) && releaseGateState === "done";
   const selectedUniverse = useMemo(() => universes.find(item => item.name === universe), [universes, universe]);
   const activeProjects = useMemo(() => projects.filter(project => projectLifecycle(project)==="ACTIVE"), [projects]);
+
+  const loadProjectProfile = useCallback(async (projectId:string) => {
+    setProjectProfiles(current=>({...current,[projectId]:{...(current[projectId]||{}),loading:true,error:undefined}}));
+    try{
+      const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/profile-image`,{cache:"no-store"});
+      const value=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(value?.error||`HTTP_${response.status}`));
+      const profile=value?.profile||null;
+      setProjectProfiles(current=>({...current,[projectId]:profile?{mediaId:String(profile.media_id||""),previewUrl:String(profile.preview_url||""),sourceType:String(profile.source_type||"UNKNOWN"),sourceId:profile.source_id?String(profile.source_id):null,updatedAt:Number(profile.updated_at||0),loading:false}:{loading:false}}));
+    }catch(error){setProjectProfiles(current=>({...current,[projectId]:{...(current[projectId]||{}),loading:false,error:error instanceof Error?error.message:"PROFILE_LOAD_FAILED"}}));}
+  },[]);
+
+  const chooseProjectProfileFile = useCallback(async (projectId:string) => {
+    const file=await new Promise<File|null>(resolve=>{const input=document.createElement("input");input.type="file";input.accept="image/*";input.onchange=()=>resolve(input.files?.[0]||null);input.click();});
+    if(!file)return;
+    setProjectProfileBusyId(projectId);setProjectMessage("");
+    try{
+      const prepare=await fetch("/api/uploads/prepare",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({fileName:file.name,mimeType:file.type||"image/jpeg",maxBytes:Math.max(file.size,1024),uploadType:"CANDIDATE",projectId,tags:["project-profile","project-card"]})});
+      const ticket=await prepare.json().catch(()=>({}));if(!prepare.ok)throw new Error(String(ticket?.error||"PREPARE_FAILED"));
+      const upload=await fetch(String(ticket.uploadUrl),{method:"PUT",headers:{"content-type":file.type||"image/jpeg"},body:file});if(!upload.ok)throw new Error(`UPLOAD_${upload.status}`);
+      const confirm=await fetch(`/api/uploads/${encodeURIComponent(String(ticket.uploadId))}/confirm`,{method:"POST"});const confirmed=await confirm.json().catch(()=>({}));if(!confirm.ok)throw new Error(String(confirmed?.error||"CONFIRM_FAILED"));
+      if(confirmed?.candidateId){const link=await fetch(`/api/projects/${encodeURIComponent(projectId)}/profile-image`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({candidateId:confirmed.candidateId,origin:"UI_PROFILE_FILE"})});const linked=await link.json().catch(()=>({}));if(!link.ok)throw new Error(String(linked?.error||`PROFILE_LINK_${link.status}`));}
+      await loadProjectProfile(projectId);setProjectMessage("Foto do projeto atualizada.");
+    }catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_PROFILE_UPLOAD_FAILED");}finally{setProjectProfileBusyId(null);}
+  },[loadProjectProfile]);
+
+  const setProjectProfileSource = useCallback(async (projectId:string,source:"asset"|"url") => {
+    const promptLabel=source==="asset"?"Informe o AST-* aprovado da Biblioteca para usar como foto do projeto:":"Cole a URL externa da imagem para materializar via FAST PUSH:";
+    const value=String(window.prompt(promptLabel,"")??"").trim();if(!value)return;
+    setProjectProfileBusyId(projectId);setProjectMessage("");
+    try{
+      const body=source==="asset"?{assetId:value,origin:"UI_PROFILE_LIBRARY"}:{url:value,origin:"UI_PROFILE_URL"};
+      const response=await fetch(`/api/projects/${encodeURIComponent(projectId)}/profile-image`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(String(result?.error||`HTTP_${response.status}`));
+      if(source==="url"){
+        setProjectMessage("Imagem enviada ao FAST PUSH; o card atualizará após a materialização.");
+        [2200,5200,9500].forEach(delay=>window.setTimeout(()=>void loadProjectProfile(projectId),delay));
+      } else {await loadProjectProfile(projectId);setProjectMessage("Foto do projeto atualizada pela Biblioteca.");}
+    }catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_PROFILE_SOURCE_FAILED");}finally{setProjectProfileBusyId(null);}
+  },[loadProjectProfile]);
+
+  useEffect(()=>{
+    if(active!=="Visão geral"||releaseGateState!=="done")return;
+    for(const project of activeProjects.slice(0,5))if(project.profile_media_id)void loadProjectProfile(project.id);
+  },[active,releaseGateState,activeProjects.map(project=>`${project.id}:${project.profile_media_id||""}`).join("|"),loadProjectProfile]);
+
   const analysisProjectCount = useMemo(() => projects.filter(project=>{
     if(projectLifecycle(project)!=="ACTIVE")return false;
     const tags=new Set((project.workflow_tags||[]).map(tag=>String(tag.tag||"").toUpperCase()));
@@ -1583,7 +1645,7 @@ Tudo é configurado pela própria tela Configurações.
             <article className="kpiCard violet"><span className="kpiIcon"><UiIcon name="layers" size={25}/></span><div><strong>{activeWorkerCount}</strong><span>Agentes ativos</span><small><i className="miniDot green"/> {health?.core.ok ? `${activeWorkerCount} online` : "Core indisponível"}</small></div></article>
             <article className="kpiCard blue"><span className="kpiIcon"><UiIcon name="folder" size={25}/></span><div><strong>{activeProjects.length}</strong><span>Projetos em execução</span><small><i className="miniDot blue"/> {projects.length} registrados na V2</small></div></article>
             <article className="kpiCard green"><span className="kpiIcon"><UiIcon name="pulse" size={25}/></span><div><strong>{recentOperations.length}</strong><span>Execuções recentes</span><small><i className="miniArrow">↑</i> Queue: {health?.core.queueBacklog ?? 0}</small></div></article>
-            <article className="kpiCard violet"><span className="kpiIcon"><UiIcon name="target" size={25}/></span><div><strong>{operationSuccessRate}%</strong><span>Taxa de sucesso</span><small><i className="miniDot violet"/> {completedOps} concluídas</small></div></article>
+            <article className="kpiCard violet successKpi"><span className="kpiIcon"><UiIcon name="target" size={25}/></span><div><strong>{operationSuccessRate}%</strong><span>Taxa de sucesso</span><small><i className="miniDot violet"/> {completedOps} concluídas</small></div></article>
           </section>
 
           <article className="dashboardPanel agentsHeroPanel">
@@ -1593,10 +1655,26 @@ Tudo é configurado pela própria tela Configurações.
           </article>
 
           <article className="dashboardPanel projectsHeroPanel">
-            <header><div><h2>Projetos em execução</h2></div><button className="panelButton" onClick={()=>{setActive("Projetos");setProjectView("Projetos");}}>Ver todos os projetos</button></header>
-            <div className="projectStrip">{Array.from({length:5},(_,index)=>activeProjects[index] || null).map((project,index)=>{const progress=project?progressForProject(project):0;return <div className={`projectTile ${project?"live":"idle"}`} key={project?.id || `project-slot-${index}`}><span className={`projectCover cover${index+1}`}>{project?.name?.slice(0,1).toUpperCase() || "+"}</span><div className="projectTileBody"><strong>{project?.name || "Slot livre"}</strong><small>{project?String(project.pipeline_status||project.status||"EM EXECUÇÃO"):"Aguardando projeto"}</small><span className="projectState"><i className={project?"live":""}/>{project?"Em execução":"Disponível"}</span><div className="projectTileProgress"><i style={{width:`${progress}%`}}/></div></div><b>{project?`${progress}%`:"—"}</b></div>})}</div>
+            <header><div><h2>Projetos em execução</h2><p>Fotos de projeto podem vir da Biblioteca, FAST PUSH ou upload manual.</p></div><button className="panelButton" onClick={()=>{setActive("Projetos");setProjectView("Projetos");}}>Ver todos os projetos</button></header>
+            <div className="projectStrip">{Array.from({length:5},(_,index)=>activeProjects[index] || null).map((project,index)=>{
+              const progress=project?progressForProject(project):0;
+              const profile=project?projectProfiles[project.id]:undefined;
+              const busy=Boolean(project&&projectProfileBusyId===project.id);
+              return <div className={`projectTile ${project?"live":"idle"}`} key={project?.id || `project-slot-${index}`}>
+                <div className={`projectCoverShell ${profile?.previewUrl?"hasImage":""}`}>
+                  <button className={`projectCover cover${index+1}`} type="button" disabled={!project||busy} onClick={()=>project&&void chooseProjectProfileFile(project.id)} title={project?"Clique para trocar a foto manualmente":"Slot livre"}>
+                    {profile?.previewUrl?<img src={profile.previewUrl} alt={`Foto de ${project?.name||"projeto"}`} loading="lazy" decoding="async" onError={(event:{currentTarget:HTMLImageElement})=>{event.currentTarget.style.display="none";}}/>:<span>{project?projectInitials(project.name):"+"}</span>}
+                    {project&&<><i className="profileSlotBadge">FOTO</i><em className="profileHoverAction">{busy?"Enviando…":"Trocar"}</em></>}
+                  </button>
+                  {project&&<div className="projectCoverActions"><button type="button" disabled={busy} title="Usar AST da Biblioteca" onClick={()=>void setProjectProfileSource(project.id,"asset")}>◇</button><button type="button" disabled={busy} title="Buscar/materializar por URL externa" onClick={()=>void setProjectProfileSource(project.id,"url")}>↗</button></div>}
+                </div>
+                <div className="projectTileBody"><strong>{project?.name || "Slot livre"}</strong><small>{project?String(project.pipeline_status||project.status||"EM EXECUÇÃO"):"Aguardando projeto"}</small><span className="projectState"><i className={project?"live":""}/>{project?"Em execução":"Disponível"}</span><div className="projectTileProgress"><i style={{width:`${progress}%`}}/></div>{project&&<span className="projectImageSource">{profile?.previewUrl?`${profile.sourceType==="ASSET"?"Biblioteca":profile.sourceType==="CANDIDATE"?"Materializada":"Imagem"}`:"Foto disponível via MCP"}</span>}</div>
+                <b className="projectCompletionNumber">{project?`${progress}%`:"—"}</b>
+              </div>;
+            })}</div>
+            <div className="projectMediaHint"><span><UiIcon name="spark" size={12}/> Perfil do projeto</span><span>Biblioteca ou fonte externa</span><span>Upload manual e MCP</span></div>
+            {projectMessage&&<div className="overviewProjectMessage">{projectMessage}</div>}
           </article>
-
           <article className="activityBar">
             <div className="activityBarTitle"><strong>Atividade recente</strong></div>
             <div className="activityBarItems">{recentOperations.length===0?<div className="activityCompact emptyActivity"><span className="activityIcon violet"><UiIcon name="activity" size={15}/></span><div><strong>Sistema aguardando atividade</strong><small>FAST PUSH, análises e exports aparecerão aqui.</small></div></div>:recentOperations.slice(0,4).map((item,index)=>{const state=String(item.status||"PROCESSING"); const icons:[UiIconName,string][]=[["layers","violet"],["target","blue"],["spark","green"],["download","orange"]];const [icon,tone]=icons[index%icons.length];return <div className="activityCompact" key={String(item.id||index)}><span className={`activityIcon ${tone}`}><UiIcon name={icon} size={15}/></span><div><strong>{String(item.type||item.operation_type||"Operação")}</strong><small>{state} · {String(item.id||"").slice(0,12)}</small></div></div>})}</div>

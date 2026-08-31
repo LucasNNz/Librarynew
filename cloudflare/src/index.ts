@@ -4,7 +4,7 @@ import { authorized } from "./core/auth";
 import { catalogStats, getAsset, listAssets, listUniverses } from "./core/assets";
 import { approvePendingAssets, catalogAsset, deleteAssetPermanently, deleteAssetsPermanently, deletePendingAssetsPermanently, getAssetHistory, registerAssetUsage, rejectAsset, restoreAsset, updateAssetMetadata } from "./core/asset-ops";
 import { corsHeaders, json, withCors } from "./core/http";
-import { approveCandidate, fastPush, getOperation, listCandidates, materialize, rejectCandidate } from "./core/ingest";
+import { approveCandidate, enqueueFastPushItems, fastPush, getOperation, listCandidates, materialize, rejectCandidate } from "./core/ingest";
 import { integritySample, r2Inventory, serveCandidateFile, serveFile, serveSupervisorCandidateFile } from "./core/storage";
 import { exploreR2 } from "./core/r2-explorer";
 import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from "./core/pending-r2-reconcile";
@@ -12,6 +12,7 @@ import { addAssetsToBatch, createBatch, createRequest, generateBatchManifest, ge
 import { configureAutomaticProject, createAutomaticProject, getAutomaticProjectDetails, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
 import { configureProjectSlotAccess, fillProjectImageSlot, fillProjectTextSlot, linkApprovedAssetToProjectSlot, listProjectSlotAccess } from "./core/project-slot-customization";
+import { clearProjectProfile, getProjectProfile, setProjectProfileFromAsset, setProjectProfileFromCandidate } from "./core/project-profile";
 import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
@@ -75,17 +76,17 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.42", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.44", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
-const FAST_READ_CACHE_NAMESPACE = "0.20.42";
+const FAST_READ_CACHE_NAMESPACE = "0.20.44";
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
   const started=Date.now();
   const keyUrl=new URL(request.url);
   keyUrl.searchParams.delete("_");
   // Cache API entries can survive a Worker deployment. Namespace every fast
-  // read by the running Core release so an older snapshot can never satisfy a 0.20.42
+  // read by the running Core release so an older snapshot can never satisfy a 0.20.44
   // health/schema gate after self-update.
   keyUrl.searchParams.set("__corvo_release",FAST_READ_CACHE_NAMESPACE);
   const cacheKey=new Request(keyUrl.toString(),{method:"GET"});
@@ -161,7 +162,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.42",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.44",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -187,7 +188,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.42",
+        version:"0.20.44",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -255,6 +256,19 @@ export default {
     }
     else if (/^\/projects\/[^/]+\/slot$/.test(url.pathname) && request.method === "GET") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getProjectSlot(env,projectId); response=value?json(value):json({error:"NOT_FOUND"},{status:404});
+    }
+    else if (/^\/projects\/[^/]+\/profile-image$/.test(url.pathname) && request.method === "GET") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await getProjectProfile(request,env,projectId); response="error" in value?json(value,{status:Number(value.status||404)}):json(value);
+    }
+    else if (/^\/projects\/[^/]+\/profile-image$/.test(url.pathname) && request.method === "POST") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {assetId?:string;candidateId?:string;url?:string;origin?:string};
+      if(body.assetId){const value=await setProjectProfileFromAsset(env,{projectId,assetId:String(body.assetId),origin:body.origin||"UI_LIBRARY"});response="error" in value?json(value,{status:Number(value.status||400)}):json(value);}
+      else if(body.candidateId){const value=await setProjectProfileFromCandidate(env,{projectId,candidateId:String(body.candidateId),origin:body.origin||"UI_CANDIDATE"});response="error" in value?json(value,{status:Number(value.status||400)}):json(value);}
+      else if(body.url && /^https?:\/\//i.test(String(body.url))){const result=await enqueueFastPushItems(env,[{url:String(body.url),projectId,tags:["project-profile","project-card"]}],{type:"PROJECT_PROFILE_PUSH"});response="error" in result?json(result,{status:Number(result.status||400)}):json({ok:true,projectId,queued:true,...result},{status:202});}
+      else response=json({error:"PROFILE_SOURCE_REQUIRED",accepted:["assetId","candidateId","url"]},{status:400});
+    }
+    else if (/^\/projects\/[^/]+\/profile-image$/.test(url.pathname) && request.method === "DELETE") {
+      const projectId=decodeURIComponent(url.pathname.split("/")[2]); const value=await clearProjectProfile(env,projectId,"UI_MANUAL"); response="error" in value?json(value,{status:Number(value.status||400)}):json(value);
     }
     else if (/^\/projects\/[^/]+\/slot-access$/.test(url.pathname) && request.method === "GET") {
       const projectId=decodeURIComponent(url.pathname.split("/")[2]); response=json(await listProjectSlotAccess(env,projectId,false));

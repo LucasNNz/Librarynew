@@ -21,9 +21,13 @@ export async function listAutomaticProjects(env: Env, limit=50, cursorValue?: st
   const rows=result.results||[]; const hasMore=rows.length>safe; const items=rows.slice(0,safe); const last=items[items.length-1];
   if(items.length){
     const placeholders=items.map(()=>"?").join(",");
-    const tagRows=await env.DB.prepare(`SELECT project_id,tag,owner_id,execution_id,last_seen_at,lease_expires_at FROM v2_project_workflow_tags WHERE status='ACTIVE' AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...items.map(row=>row.id)).all<Record<string,unknown>>();
+    const [tagRows,profileRows]=await Promise.all([
+      env.DB.prepare(`SELECT project_id,tag,owner_id,execution_id,last_seen_at,lease_expires_at FROM v2_project_workflow_tags WHERE status='ACTIVE' AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...items.map(row=>row.id)).all<Record<string,unknown>>(),
+      env.DB.prepare(`SELECT project_id,id,updated_at FROM v2_project_media WHERE kind='PROJECT_PROFILE' AND selected=1 AND status='PROFILE_ACTIVE' AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...items.map(row=>row.id)).all<Record<string,unknown>>().catch(()=>({results:[]} as any)),
+    ]);
     const byProject=new Map<string,Record<string,unknown>[]>(); for(const row of tagRows.results||[]){const key=String(row.project_id);byProject.set(key,[...(byProject.get(key)||[]),row]);}
-    for(const item of items)(item as any).workflow_tags=byProject.get(String(item.id))||[];
+    const profileByProject=new Map<string,Record<string,unknown>>();for(const row of profileRows.results||[]){const key=String(row.project_id);if(!profileByProject.has(key))profileByProject.set(key,row);}
+    for(const item of items){(item as any).workflow_tags=byProject.get(String(item.id))||[];const profile=profileByProject.get(String(item.id));if(profile)(item as any).profile_media_id=String(profile.id||"");}
   }
   return {items,nextCursor:hasMore&&last?encodeCursor(Number(last.updated_at),String(last.id)):null};
 }

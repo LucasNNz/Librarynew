@@ -162,6 +162,7 @@ const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
   "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql", "2.19.0":"9019_v2_project_slots_workflow.sql",
+  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
@@ -212,6 +213,14 @@ async function applyPendingMigrations(token: string, accountId: string, database
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[collectorMigration.name,checksum,now]);
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[collectorMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
     applied.add(collectorMigration.name);
+  }
+  const productionSlotRejectionMigration=files.find(item=>item.name==="9025_v2_production_slot_rejection.sql");
+  if(preSchemaContract?.ready && productionSlotRejectionMigration && !applied.has(productionSlotRejectionMigration.name)){
+    const checksum=createHash("sha256").update(productionSlotRejectionMigration.sql).digest("hex");
+    const now=Date.now();
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[productionSlotRejectionMigration.name,checksum,now]);
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[productionSlotRejectionMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
+    applied.add(productionSlotRejectionMigration.name);
   }
 
   for (const item of files) {

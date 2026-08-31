@@ -1,3 +1,32 @@
+# Corvo Library V2 0.20.44 — Rejeição Atômica de PRODUCTION_SLOT
+
+## Hotfix 0.20.44
+- corrige `D1_ERROR: 13 values for 12 columns` no evento `PRODUCTION_SLOT_REJECTED`;
+- `rejeitar_production_slots_lote` agora faz preflight completo e mutação **all-or-nothing**;
+- update do PSLOT, histórico, eventos, invalidação dos exports e contagens executam no mesmo `D1.batch()` transacional;
+- qualquer erro SQL/conflito concorrente retorna `PRODUCTION_SLOT_REJECTION_ROLLED_BACK` com `mutation_applied=false`;
+- `operation_id` ganhou commit marker determinístico + fingerprint do payload; replay concluído não toca em asset relinkado posteriormente;
+- estado parcial legado da versão quebrada pode ser completado com segurança quando o mesmo `operation_id` e escopo são reapresentados;
+- lote continua aceitando até 500 PSLOTs e respeita o limite de 100 bindings por statement do D1;
+- AST global, R2, histórico e exports anteriores continuam preservados;
+- schema D1 permanece `2.25.0` (sem migration nova).
+
+Consulte `RELEASE_0_20_44_ATOMIC_PSLOT_REJECTION.md` e `VALIDATION_0_20_44_ATOMIC_PSLOT_REJECTION.md`.
+
+---
+
+# Corvo Library V2 0.20.43 — Living Overview + Project Profile Media
+
+## Destaques 0.20.43
+- tela inicial refinada com progresso luminoso e animações smooth;
+- estado de cada agente por projeto acompanha tags reais (`waiting/working/done`);
+- foto persistente de projeto via Biblioteca, FAST PUSH, candidata ou upload manual;
+- MCP: `definir_foto_perfil_projeto`, `obter_foto_perfil_projeto`, `remover_foto_perfil_projeto`, `anexar_thumb_projeto`;
+- Direct Upload de thumb agora cria o THUMB do projeto automaticamente;
+- schema D1 permanece em 2.25.0.
+
+---
+
 # Corvo Library V2 0.20.42 — Rejeição Individual de PRODUCTION_SLOT
 
 ## Destaques 0.20.42

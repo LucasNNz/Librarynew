@@ -161,42 +161,164 @@ export async function rejectProductionSlotsBatch(env:Env,input:{projectId:string
   const guard=await projectWriteGuard(env,input.projectId); if(!guard.ok)return guard;
   const project=guard.project as Record<string,unknown>,version=Number(project.active_version||1);
   const operationId=clean(input.operationId)||id("OP"),rejectedBy=clean(input.rejectedBy)||"MCP_SUPERVISOR";
-  const requested=(input.slots||[]).map(slot=>({slotId:clean(slot.slotId),targetFile:clean(slot.targetFile),reason:clean(slot.reason)})).filter(slot=>slot.slotId||slot.targetFile).slice(0,500);
-  if(!requested.length)return {error:"NO_PRODUCTION_SLOTS",status:400} as const;
-  const ts=nowMs(),results:Record<string,unknown>[]=[];let rejected=0,alreadyRelinkRequired=0,notFound=0,stateChanged=0;
-  for(const selector of requested){
-    const slot=await env.DB.prepare("SELECT * FROM v2_production_slots WHERE project_id=? AND version=? AND (id=? OR target_file=?) ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1")
-      .bind(input.projectId,version,selector.slotId,selector.targetFile,selector.slotId).first<Record<string,unknown>>();
-    if(!slot){notFound++;results.push({slot_id:selector.slotId||null,target_file:selector.targetFile||null,error:"PRODUCTION_SLOT_NOT_FOUND"});continue;}
-    const slotId=clean(slot.id),targetFile=clean(slot.target_file),currentStatus=upper(slot.status),currentAsset=clean(slot.asset_id);
-    const priorOperation=operationId?await env.DB.prepare("SELECT previous_asset_id,created_at FROM v2_production_slot_history WHERE project_id=? AND slot_id=? AND event='PRODUCTION_SLOT_REJECTED' AND operation_id=? LIMIT 1").bind(input.projectId,slotId,operationId).first<Record<string,unknown>>():null;
-    if(priorOperation){alreadyRelinkRequired++;results.push({slot_id:slotId,target_file:targetFile,status:currentStatus,asset_id:currentAsset||null,idempotent:true,idempotent_operation:true,previous_asset_id:clean(priorOperation.previous_asset_id)||null});continue;}
-    if(currentStatus==="RELINK_REQUIRED"&&!currentAsset){alreadyRelinkRequired++;results.push({slot_id:slotId,target_file:targetFile,status:"RELINK_REQUIRED",already_relink_required:true,idempotent:true,previous_asset_id:clean(slot.previous_asset_id)||null});continue;}
-    if(!currentAsset){alreadyRelinkRequired++;await env.DB.prepare("UPDATE v2_production_slots SET status='RELINK_REQUIRED',relink_required_at=COALESCE(relink_required_at,?),relink_reason=COALESCE(NULLIF(?,''),relink_reason),rejected_by=COALESCE(NULLIF(?,''),rejected_by),rejected_operation_id=COALESCE(NULLIF(?,''),rejected_operation_id),updated_at=? WHERE id=?")
-      .bind(ts,selector.reason,rejectedBy,operationId,ts,slotId).run();stateChanged++;results.push({slot_id:slotId,target_file:targetFile,status:"RELINK_REQUIRED",already_unresolved:true,idempotent:true});continue;}
-    await env.DB.prepare("UPDATE v2_production_slots SET previous_asset_id=?,asset_id=NULL,status='RELINK_REQUIRED',relink_required_at=?,relink_reason=?,rejected_by=?,rejected_operation_id=?,observation=COALESCE(NULLIF(?,''),observation),updated_at=? WHERE id=?")
-      .bind(currentAsset,ts,selector.reason||null,rejectedBy,operationId,selector.reason,ts,slotId).run();
-    const histId=await stableId("PSH",`${input.projectId}\n${version}\n${slotId}\nPRODUCTION_SLOT_REJECTED\n${operationId}`,12);
-    await env.DB.prepare(`INSERT OR IGNORE INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,reason,operation_id,actor,created_at)
-      VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?,?)`)
-      .bind(histId,input.projectId,version,slotId,targetFile||null,currentAsset,selector.reason||null,operationId,rejectedBy,ts).run();
-    await env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
-      .bind(id("PEV"),input.projectId,"PRODUCTION_SLOT_REJECTED","RELINK_REQUIRED",JSON.stringify({project_id:input.projectId,slot_id:slotId,target_file:targetFile||null,previous_asset_id:currentAsset,motivo:selector.reason||null,operation_id:operationId,rejected_at:ts,rejected_by:rejectedBy}),ts).run().catch(()=>undefined);
-    rejected++;stateChanged++;results.push({slot_id:slotId,target_file:targetFile,previous_asset_id:currentAsset,status:"RELINK_REQUIRED",asset_id:null});
+  const requested=(input.slots||[]).map((slot,index)=>({index,slotId:clean(slot.slotId),targetFile:clean(slot.targetFile),reason:clean(slot.reason)})).filter(slot=>slot.slotId||slot.targetFile).slice(0,500);
+  if(!requested.length)return {error:"NO_PRODUCTION_SLOTS",status:400,mutation_applied:false} as const;
+
+  // operation_id is bound to the normalized request payload. A completed batch is
+  // represented by one deterministic project event that only survives if the
+  // entire D1 batch commits. Replays never touch a newly relinked asset.
+  const fingerprintRows=requested.map(slot=>({slot_id:slot.slotId||null,target_file:slot.targetFile||null,motivo:slot.reason||null})).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const requestFingerprint=await stableId("PSRB",`${input.projectId}\n${JSON.stringify(fingerprintRows)}`,16);
+  const commitEventId=await stableId("PEV",`${input.projectId}\nPRODUCTION_SLOT_REJECTION_BATCH_COMMITTED\n${operationId}`,12);
+  const readCommittedOperation=async()=>env.DB.prepare("SELECT detail,created_at FROM automatic_project_events WHERE id=? AND project_id=? AND event='PRODUCTION_SLOT_REJECTION_BATCH_COMMITTED' LIMIT 1").bind(commitEventId,input.projectId).first<Record<string,unknown>>();
+  const priorBatch=await readCommittedOperation();
+  if(priorBatch){
+    let detail:Record<string,unknown>={};try{detail=JSON.parse(clean(priorBatch.detail)||"{}");}catch{}
+    if(clean(detail.request_fingerprint)!==requestFingerprint)return {error:"OPERATION_ID_CONFLICT",status:409,project_id:input.projectId,operation_id:operationId,mutation_applied:false,committed_operation:true,expected_request_fingerprint:clean(detail.request_fingerprint)||null,received_request_fingerprint:requestFingerprint} as const;
+    const counts=await productionModelCounts(env,input.projectId);
+    return {project_id:input.projectId,operation_id:operationId,requested:requested.length,rejected:Number(detail.rejected||0),already_relink_required:Number(detail.already_relink_required||0),not_found:0,results:[],counts,idempotent:true,idempotent_operation:true,already_committed:true,mutation_applied:false,collector_eligible_status:"RELINK_REQUIRED",next_action:counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":"ASSIGN_ASSETS_TO_SLOTS",preserved_ast:true,preserved_r2:true,preserved_history:true,previous_exports_preserved:true};
   }
-  const counts=await productionModelCounts(env,input.projectId);
-  if(stateChanged>0){
-    const statements=[
-      env.DB.prepare("UPDATE automatic_projects SET status='ACTIVE',pipeline_status='SLOT_ASSIGNMENT_WORKING',next_action='RELINK_PRODUCTION_SLOTS',state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,input.projectId),
-    ];
-    if(rejected>0){
-      statements.push(env.DB.prepare("UPDATE v2_download_packages SET status='STALE',error='PRODUCTION_SLOT_REJECTED_REGENERATE_IMAGES',updated_at=? WHERE project_id=? AND type IN ('PROJECT_IMAGES_ZIP','PROJECT_PRODUCTION_ZIP') AND status IN ('READY_FOR_DOWNLOAD','COMPLETED','DOWNLOADED')").bind(ts,input.projectId));
-      const invalidationEventId=await stableId("PEV",`${input.projectId}\nFINAL_ARTIFACTS_INVALIDATED_BY_SLOT_REJECTION\n${operationId}`,12);
-      statements.push(env.DB.prepare("INSERT OR IGNORE INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(invalidationEventId,input.projectId,"FINAL_ARTIFACTS_INVALIDATED_BY_SLOT_REJECTION","STALE",JSON.stringify({operation_id:operationId,rejected,production_slots_relink_required:counts.production_slots_relink_required,preserved_previous_exports:true,stale_types:["PROJECT_IMAGES_ZIP","PROJECT_PRODUCTION_ZIP"]}),ts));
+
+  // Preflight is read-only. Resolve the full logical batch first so malformed,
+  // missing or conflicting selectors cannot produce a partially mutated lot.
+  const uniqueIds=[...new Set(requested.map(x=>x.slotId).filter(Boolean))];
+  const uniqueTargets=[...new Set(requested.map(x=>x.targetFile).filter(Boolean))];
+  const slotRows=new Map<string,Record<string,unknown>>();
+  const targetRows=new Map<string,Record<string,unknown>>();
+  const fetchSlots=async(column:"id"|"target_file",values:string[])=>{
+    for(let offset=0;offset<values.length;offset+=90){
+      const chunk=values.slice(offset,offset+90),marks=chunk.map(()=>"?").join(",");
+      const rows=await env.DB.prepare(`SELECT * FROM v2_production_slots WHERE project_id=? AND version=? AND ${column} IN (${marks})`).bind(input.projectId,version,...chunk).all<Record<string,unknown>>();
+      for(const row of rows.results||[]){
+        const sid=clean(row.id),target=clean(row.target_file);if(sid)slotRows.set(sid,row);if(target)targetRows.set(target,row);
+      }
     }
-    await env.DB.batch(statements);
+  };
+  await fetchSlots("id",uniqueIds);await fetchSlots("target_file",uniqueTargets);
+
+  const preflightErrors:Record<string,unknown>[]=[];
+  const resolvedBySlot=new Map<string,{selector:{index:number;slotId:string;targetFile:string;reason:string};slot:Record<string,unknown>}>();
+  for(const selector of requested){
+    let slot=selector.slotId?slotRows.get(selector.slotId):undefined;
+    if(!slot&&selector.targetFile)slot=targetRows.get(selector.targetFile);
+    if(!slot){preflightErrors.push({index:selector.index,slot_id:selector.slotId||null,target_file:selector.targetFile||null,error:"PRODUCTION_SLOT_NOT_FOUND"});continue;}
+    const slotId=clean(slot.id),targetFile=clean(slot.target_file);
+    if(selector.slotId&&selector.targetFile&&selector.slotId===slotId&&selector.targetFile!==targetFile){preflightErrors.push({index:selector.index,slot_id:selector.slotId,target_file:selector.targetFile,resolved_target_file:targetFile,error:"PRODUCTION_SLOT_SELECTOR_MISMATCH"});continue;}
+    const prior=resolvedBySlot.get(slotId);
+    if(prior){
+      if(prior.selector.reason!==selector.reason)preflightErrors.push({index:selector.index,slot_id:slotId,target_file:targetFile,error:"DUPLICATE_SLOT_REASON_CONFLICT",first_reason:prior.selector.reason||null,second_reason:selector.reason||null});
+      continue;
+    }
+    resolvedBySlot.set(slotId,{selector,slot});
   }
-  return {project_id:input.projectId,operation_id:operationId,requested:requested.length,rejected,already_relink_required:alreadyRelinkRequired,not_found:notFound,results,counts,collector_eligible_status:"RELINK_REQUIRED",next_action:counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":"ASSIGN_ASSETS_TO_SLOTS",preserved_ast:true,preserved_r2:true,preserved_history:true,previous_exports_preserved:true};
+  if(preflightErrors.length)return {error:"PRODUCTION_SLOT_BATCH_PREFLIGHT_FAILED",status:409,project_id:input.projectId,operation_id:operationId,requested:requested.length,mutation_applied:false,rollback:false,errors:preflightErrors} as const;
+
+  const resolved=[...resolvedBySlot.values()];
+  const resolvedIds=resolved.map(x=>clean(x.slot.id));
+  const resolvedIdSet=new Set(resolvedIds);
+  const priorOperationBySlot=new Map<string,Record<string,unknown>>();
+  const priorOperationRows=await env.DB.prepare("SELECT slot_id,previous_asset_id,created_at FROM v2_production_slot_history WHERE project_id=? AND event='PRODUCTION_SLOT_REJECTED' AND operation_id=? LIMIT 501").bind(input.projectId,operationId).all<Record<string,unknown>>();
+  for(const row of priorOperationRows.results||[])priorOperationBySlot.set(clean(row.slot_id),row);
+  const foreignLegacySlots=[...priorOperationBySlot.keys()].filter(slotId=>!resolvedIdSet.has(slotId));
+  if(foreignLegacySlots.length)return {error:"OPERATION_ID_LEGACY_SCOPE_CONFLICT",status:409,project_id:input.projectId,operation_id:operationId,requested:requested.length,mutation_applied:false,legacy_slots_outside_request:foreignLegacySlots.slice(0,20)} as const;
+
+  type MutationPlan={slotId:string;targetFile:string;reason:string;currentStatus:string;currentAsset:string;previousAsset:string;expectedUpdatedAt:number;historyId?:string;eventId?:string};
+  const mutationPlans:MutationPlan[]=[],historyPlans:MutationPlan[]=[],results:Record<string,unknown>[]=[];
+  let rejected=0,alreadyRelinkRequired=0,stateChanged=0;
+  for(const item of resolved){
+    const slot=item.slot,selector=item.selector,slotId=clean(slot.id),targetFile=clean(slot.target_file),currentStatus=upper(slot.status),currentAsset=clean(slot.asset_id),previousAsset=currentAsset||clean(slot.previous_asset_id),expectedUpdatedAt=Number(slot.updated_at||0);
+    const priorOperation=priorOperationBySlot.get(slotId);
+    if(priorOperation){alreadyRelinkRequired++;results.push({slot_id:slotId,target_file:targetFile,status:currentStatus,asset_id:currentAsset||null,idempotent:true,idempotent_operation:true,legacy_partial_operation:true,previous_asset_id:clean(priorOperation.previous_asset_id)||null});continue;}
+    if(currentStatus==="RELINK_REQUIRED"&&!currentAsset){alreadyRelinkRequired++;results.push({slot_id:slotId,target_file:targetFile,status:"RELINK_REQUIRED",already_relink_required:true,idempotent:true,previous_asset_id:clean(slot.previous_asset_id)||null});continue;}
+    const plan:MutationPlan={slotId,targetFile,reason:selector.reason,currentStatus,currentAsset,previousAsset,expectedUpdatedAt};
+    if(currentAsset){
+      plan.historyId=await stableId("PSH",`${input.projectId}\n${version}\n${slotId}\nPRODUCTION_SLOT_REJECTED\n${operationId}`,12);
+      plan.eventId=await stableId("PEV",`${input.projectId}\n${slotId}\nPRODUCTION_SLOT_REJECTED\n${operationId}`,12);
+      historyPlans.push(plan);rejected++;
+    }else alreadyRelinkRequired++;
+    mutationPlans.push(plan);stateChanged++;
+  }
+
+  const ts=nowMs(),statements:D1PreparedStatement[]=[];
+  const commitDetail={operation_id:operationId,request_fingerprint:requestFingerprint,requested:requested.length,resolved_unique_slots:resolved.length,rejected,already_relink_required:alreadyRelinkRequired,state_changed:stateChanged,atomic:true,rollback_on_error:true};
+  // This deterministic insert doubles as the operation claim. If a concurrent
+  // replay wins first, the UNIQUE failure aborts this whole transaction and the
+  // catch path converts it into an idempotent replay response.
+  statements.push(env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?, 'PRODUCTION_SLOT_REJECTION_BATCH_COMMITTED','COMMITTED',?,?)").bind(commitEventId,input.projectId,JSON.stringify(commitDetail),ts));
+
+  // Optimistic guards run inside the same D1 transaction. A stale preflight row
+  // deliberately violates a NOT NULL constraint, forcing D1 to rollback every
+  // statement in the batch instead of committing a mixed old/new slot state.
+  for(let offset=0;offset<mutationPlans.length;offset+=24){
+    const chunk=mutationPlans.slice(offset,offset+24),clauses:string[]=[],binds:unknown[]=[];
+    for(const plan of chunk){clauses.push("NOT EXISTS(SELECT 1 FROM v2_production_slots WHERE id=? AND COALESCE(asset_id,'')=? AND COALESCE(status,'')=? AND COALESCE(updated_at,0)=?)");binds.push(plan.slotId,plan.currentAsset,plan.currentStatus,plan.expectedUpdatedAt);}
+    const guardId=await stableId("PSG",`${input.projectId}\n${operationId}\n${offset}`,12);
+    statements.push(env.DB.prepare(`INSERT INTO v2_production_slot_history(id,project_id,project_version,slot_id,event,created_at) SELECT ?,NULL,0,?,'ATOMIC_GUARD',? WHERE ${clauses.join(" OR ")}`).bind(guardId,"__ATOMIC_GUARD__",ts,...binds));
+  }
+
+  for(const plan of mutationPlans){
+    if(plan.currentAsset){
+      statements.push(env.DB.prepare("UPDATE v2_production_slots SET previous_asset_id=?,asset_id=NULL,status='RELINK_REQUIRED',relink_required_at=?,relink_reason=?,rejected_by=?,rejected_operation_id=?,observation=COALESCE(NULLIF(?,''),observation),updated_at=? WHERE id=? AND COALESCE(updated_at,0)=?")
+        .bind(plan.currentAsset,ts,plan.reason||null,rejectedBy,operationId,plan.reason,ts,plan.slotId,plan.expectedUpdatedAt));
+    }else{
+      statements.push(env.DB.prepare("UPDATE v2_production_slots SET status='RELINK_REQUIRED',relink_required_at=COALESCE(relink_required_at,?),relink_reason=COALESCE(NULLIF(?,''),relink_reason),rejected_by=COALESCE(NULLIF(?,''),rejected_by),rejected_operation_id=COALESCE(NULLIF(?,''),rejected_operation_id),updated_at=? WHERE id=? AND COALESCE(updated_at,0)=?")
+        .bind(ts,plan.reason,rejectedBy,operationId,ts,plan.slotId,plan.expectedUpdatedAt));
+    }
+  }
+
+  // Correct 12-column history INSERT: 10 bound values + literal event + NULL
+  // new_asset_id. Chunks of 10 stay inside D1's 100-bound-parameter/query limit.
+  for(let offset=0;offset<historyPlans.length;offset+=10){
+    const chunk=historyPlans.slice(offset,offset+10),values=chunk.map(()=>"(?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?)").join(","),binds:unknown[]=[];
+    for(const plan of chunk)binds.push(plan.historyId!,input.projectId,version,plan.slotId,plan.targetFile||null,plan.currentAsset,plan.reason||null,operationId,rejectedBy,ts);
+    statements.push(env.DB.prepare(`INSERT INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,reason,operation_id,actor,created_at) VALUES ${values}`).bind(...binds));
+  }
+
+  // Keep the project activity feed, but bulk the per-slot events so 500-slot
+  // batches stay comfortably below the D1 per-invocation query ceiling.
+  for(let offset=0;offset<historyPlans.length;offset+=25){
+    const chunk=historyPlans.slice(offset,offset+25),values=chunk.map(()=>"(?,?,'PRODUCTION_SLOT_REJECTED','RELINK_REQUIRED',?,?)").join(","),binds:unknown[]=[];
+    for(const plan of chunk)binds.push(plan.eventId!,input.projectId,JSON.stringify({project_id:input.projectId,slot_id:plan.slotId,target_file:plan.targetFile||null,previous_asset_id:plan.currentAsset,motivo:plan.reason||null,operation_id:operationId,rejected_at:ts,rejected_by:rejectedBy}),ts);
+    statements.push(env.DB.prepare(`INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES ${values}`).bind(...binds));
+  }
+
+  if(stateChanged>0)statements.push(env.DB.prepare("UPDATE automatic_projects SET status='ACTIVE',pipeline_status='SLOT_ASSIGNMENT_WORKING',next_action='RELINK_PRODUCTION_SLOTS',state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,input.projectId));
+  if(rejected>0){
+    statements.push(env.DB.prepare("UPDATE v2_download_packages SET status='STALE',error='PRODUCTION_SLOT_REJECTED_REGENERATE_IMAGES',updated_at=? WHERE project_id=? AND type IN ('PROJECT_IMAGES_ZIP','PROJECT_PRODUCTION_ZIP') AND status IN ('READY_FOR_DOWNLOAD','COMPLETED','DOWNLOADED')").bind(ts,input.projectId));
+    const invalidationEventId=await stableId("PEV",`${input.projectId}\nFINAL_ARTIFACTS_INVALIDATED_BY_SLOT_REJECTION\n${operationId}`,12);
+    statements.push(env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(invalidationEventId,input.projectId,"FINAL_ARTIFACTS_INVALIDATED_BY_SLOT_REJECTION","STALE",JSON.stringify({operation_id:operationId,rejected,state_changed:stateChanged,preserved_previous_exports:true,stale_types:["PROJECT_IMAGES_ZIP","PROJECT_PRODUCTION_ZIP"]}),ts));
+  }
+
+  // Counts are selected inside the same transaction. Therefore a SQL failure in
+  // rejection, history, events, invalidation or counters rolls the whole batch back.
+  const poolsIndex=statements.length;
+  statements.push(env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status IN ('READY','COMPLETE','QA_COMPLETE') OR EXISTS (SELECT 1 FROM v2_production_slots ps WHERE ps.reference_pool_id=v2_reference_pools.id AND ps.asset_id IS NOT NULL) THEN 1 ELSE 0 END) ready FROM v2_reference_pools WHERE project_id=? AND version=?").bind(input.projectId,version));
+  const scenesIndex=statements.length;
+  statements.push(env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status IN ('READY','COMPLETE') THEN 1 ELSE 0 END) ready FROM v2_production_scenes WHERE project_id=? AND version=?").bind(input.projectId,version));
+  const slotsIndex=statements.length;
+  statements.push(env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) resolved,SUM(CASE WHEN status='RELINK_REQUIRED' THEN 1 ELSE 0 END) relink_required,SUM(CASE WHEN target_file IS NOT NULL AND target_file<>'' THEN 1 ELSE 0 END) with_target,SUM(CASE WHEN target_file IS NULL OR target_file='' THEN 1 ELSE 0 END) missing_target FROM v2_production_slots WHERE project_id=? AND version=?").bind(input.projectId,version));
+
+  let batchResults:D1Result<Record<string,unknown>>[];
+  try{batchResults=await env.DB.batch<Record<string,unknown>>(statements);}
+  catch(error){
+    // Concurrent same-operation replay: the deterministic commit marker may have
+    // been inserted by the winner after our preflight. Return idempotently if so.
+    const committed=await readCommittedOperation().catch(()=>null);
+    if(committed){
+      let detail:Record<string,unknown>={};try{detail=JSON.parse(clean(committed.detail)||"{}");}catch{}
+      if(clean(detail.request_fingerprint)===requestFingerprint){
+        const counts=await productionModelCounts(env,input.projectId);
+        return {project_id:input.projectId,operation_id:operationId,requested:requested.length,rejected:Number(detail.rejected||0),already_relink_required:Number(detail.already_relink_required||0),not_found:0,results:[],counts,idempotent:true,idempotent_operation:true,already_committed:true,mutation_applied:false,collector_eligible_status:"RELINK_REQUIRED",next_action:counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":"ASSIGN_ASSETS_TO_SLOTS",preserved_ast:true,preserved_r2:true,preserved_history:true,previous_exports_preserved:true};
+      }
+    }
+    return {error:"PRODUCTION_SLOT_REJECTION_ROLLED_BACK",status:409,project_id:input.projectId,operation_id:operationId,requested:requested.length,mutation_applied:false,rollback:true,atomic:true,cause:error instanceof Error?error.message:String(error)} as const;
+  }
+
+  const row=(index:number)=>batchResults[index]?.results?.[0]||{};
+  const p=row(poolsIndex),s=row(scenesIndex),sl=row(slotsIndex),total=Number(sl.total||0),resolvedCount=Number(sl.resolved||0);
+  const counts={reference_pools_total:Number(p.total||0),reference_pools_ready:Number(p.ready||0),production_scenes_total:Number(s.total||0),production_scenes_ready:Number(s.ready||0),production_slots_total:total,production_slots_resolved:resolvedCount,production_slots_relink_required:Number(sl.relink_required||0),production_slots_with_target:Number(sl.with_target||0),production_slots_missing_target:Number(sl.missing_target||0),complete:total>0&&resolvedCount>=total};
+  for(const plan of mutationPlans)results.push({slot_id:plan.slotId,target_file:plan.targetFile,previous_asset_id:plan.currentAsset||plan.previousAsset||null,status:"RELINK_REQUIRED",asset_id:null,rejected:Boolean(plan.currentAsset),already_unresolved:!plan.currentAsset});
+  return {project_id:input.projectId,operation_id:operationId,requested:requested.length,rejected,already_relink_required:alreadyRelinkRequired,not_found:0,results,counts,atomic:true,committed:true,mutation_applied:stateChanged>0,collector_eligible_status:"RELINK_REQUIRED",next_action:counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":"ASSIGN_ASSETS_TO_SLOTS",preserved_ast:true,preserved_r2:true,preserved_history:true,previous_exports_preserved:true};
 }
 
 export async function listProductionRelinkGaps(env:Env,projectId:string,limit=500){
