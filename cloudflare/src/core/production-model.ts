@@ -324,7 +324,7 @@ export async function productionCompletionGate(env:Env,projectId:string){
   const latest=new Map<string,Record<string,unknown>>();for(const row of rows.results||[]){const type=upper(row.type);if(!latest.has(type))latest.set(type,row);}
   const ready=(type:string)=>["READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(upper(latest.get(type)?.status));
   const artifacts={images:ready("PROJECT_IMAGES_ZIP"),script:ready("PROJECT_SCRIPT_TXT"),publication:ready("PROJECT_PUBLICATION_ZIP")};
-  const packageReady=artifacts.images&&artifacts.script&&artifacts.publication;
+  const packageReady=artifacts.images&&artifacts.script;
   const deliveryReady=counts.production_slots_total>0&&counts.complete&&artifacts.images;
-  return {...counts,images_ready:artifacts.images,delivery_ready:deliveryReady,package_ready:packageReady,final_artifacts_ready:artifacts,package_status:artifacts.images?"READY_FOR_DOWNLOAD":counts.complete?"PACKAGE_PENDING":"WAITING_QA",package_id:latest.get("PROJECT_IMAGES_ZIP")?.id||null,can_complete:counts.production_slots_total>0&&counts.complete&&packageReady};
+  return {...counts,images_ready:artifacts.images,delivery_ready:deliveryReady,package_ready:packageReady,publication_optional:true,final_artifacts_ready:artifacts,package_status:artifacts.images?"READY_FOR_DOWNLOAD":counts.complete?"PACKAGE_PENDING":"WAITING_QA",package_id:latest.get("PROJECT_IMAGES_ZIP")?.id||null,can_complete:counts.production_slots_total>0&&counts.complete&&packageReady};
 }

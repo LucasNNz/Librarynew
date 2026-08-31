@@ -48,7 +48,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.48" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.49" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -787,7 +787,7 @@ function createServer(env: Env, request: Request) {
   }, async (v) => output(await heartbeatProjectWorkflow(env,{projectId:v.projeto_id,tags:v.tags,ownerId:v.owner_id,executionId:v.execution_id,ttlSeconds:v.ttl_segundos})));
 
   server.registerTool("concluir_projetos", {
-    description: "Conclui um ou vários projetos e bloqueia novas mutações MCP. Só reabrir_projeto_concluido, por comando explícito do usuário, remove o bloqueio.",
+    description: "Conclui um ou vários projetos e bloqueia novas mutações MCP. Em projetos de produção, THUMB e TÍTULO/publicação são opcionais: o fechamento exige produção resolvida + imagens.zip + roteiro.txt. Só reabrir_projeto_concluido, por comando explícito do usuário, remove o bloqueio.",
     inputSchema: { projeto_ids:z.array(z.string()).min(1).max(200), motivo:z.string().optional() },
   }, async (v) => output(await setProjectLifecycle(env,{projectIds:v.projeto_ids,action:"COMPLETE",reason:v.motivo})));
 

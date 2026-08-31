@@ -1,3 +1,19 @@
+# Corvo Library V2 0.20.49 — Project List Geometry + Optional Publication
+
+## Destaques 0.20.49
+- corrige a regressão que achatava os cards da lista de projetos quando havia muitos registros;
+- cards não encolhem mais dentro do rail: o painel passa a rolar verticalmente mantendo a geometria normal;
+- preserva scrollbars modernos e a separação Em andamento / Concluídos / Rejeitados;
+- permite concluir projetos sem thumb e sem título;
+- para produção, o fechamento exige somente PSLOTs resolvidos + `imagens.zip` + `roteiro.txt`;
+- `thumbs_titulos.zip` passa a ser artefato opcional e pode ser criado depois;
+- API de arquivos finais expõe `required_for_completion`/`optional`;
+- schema D1 permanece `2.26.0` (sem migration nova).
+
+Consulte `RELEASE_0_20_49_PROJECT_LIST_FIX_OPTIONAL_PUBLICATION.md` e `VALIDATION_0_20_49_PROJECT_LIST_FIX_OPTIONAL_PUBLICATION.md`.
+
+---
+
 # Corvo Library V2 0.20.48 — Project List UX + Modern Scrollbars
 
 ## Destaques 0.20.48

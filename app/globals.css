@@ -357,3 +357,11 @@ html,body{overflow-x:hidden;scrollbar-color:#514168 #08111b;scrollbar-width:thin
 .projectListName,.projectListContent{min-width:0}
 
 @media(max-width:1080px){.projectRail{overflow:visible}.projectCardList{overflow-y:auto!important;overflow-x:hidden!important;padding-right:8px}}
+
+/* 0.20.49 — restore project card geometry + optional publication bundle */
+.projectCardList>.projectListCard{flex:0 0 auto!important;min-height:78px;content-visibility:visible!important;contain:none!important}
+.projectCardList>.projectListCard .projectListContent{align-self:center}
+.projectCardList{align-content:start}
+.projectFinalFileCard.optional{border-style:dashed;opacity:.88}
+.projectFinalFileCard.optional .projectFinalFileBody>span:after{content:" · opcional";color:#83769b;font-size:.78em;font-weight:700;text-transform:none;letter-spacing:0}
+.projectSummaryOptional{color:#7e718f!important;font-size:.86em!important}
