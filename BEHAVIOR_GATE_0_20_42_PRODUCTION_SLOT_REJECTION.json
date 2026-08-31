@@ -1,0 +1,95 @@
+{
+  "version": "0.20.42",
+  "schema": "2.25.0",
+  "scenario": "A/B reject A then relink A to C",
+  "checks": {
+    "before_2_of_2": true,
+    "reject_total_unchanged": true,
+    "reject_resolved_down_exactly_one": true,
+    "reject_relink_count_one": true,
+    "a_link_removed_only": true,
+    "b_untouched": true,
+    "ast_a_preserved": true,
+    "ast_b_preserved": true,
+    "old_export_preserved": true,
+    "old_images_export_marked_stale_not_deleted": true,
+    "repeat_reject_no_duplicate_invalidation_event": true,
+    "repeat_reject_no_duplicate_history": true,
+    "relink_resolved_back_to_two": true,
+    "relink_required_back_to_zero": true,
+    "a_relinked_to_c": true,
+    "b_still_untouched_after_relink": true,
+    "history_has_reject_and_relink": true,
+    "same_operation_retry_after_relink_preserves_new_asset": true,
+    "source_checks_operation_history_before_mutation": true,
+    "source_invalidates_only_image_dependent_exports": true,
+    "mcp_route_exact_name": true,
+    "batch_limit_500": true,
+    "does_not_reject_global_asset": true,
+    "does_not_call_item_rejection": true,
+    "collector_exposes_only_relink_gaps": true,
+    "assignment_emits_relinked_event": true,
+    "counts_expose_relink_required": true
+  },
+  "pass": true,
+  "after_reject": {
+    "total": 2,
+    "resolved": 1,
+    "relink_required": 1,
+    "a": [
+      null,
+      "RELINK_REQUIRED",
+      "AST-A"
+    ],
+    "b": [
+      "AST-B",
+      "FROZEN"
+    ],
+    "ast_a": [
+      "Aprovado",
+      "assets/AST-A.jpg"
+    ],
+    "ast_b": [
+      "Aprovado",
+      "assets/AST-B.jpg"
+    ],
+    "old_package_preserved": true,
+    "old_package_stale": true
+  },
+  "after_relink": {
+    "total": 2,
+    "resolved": 2,
+    "relink_required": 0,
+    "a": [
+      "AST-C",
+      "FROZEN",
+      "AST-A"
+    ],
+    "b": [
+      "AST-B",
+      "FROZEN"
+    ],
+    "history": [
+      [
+        "PRODUCTION_SLOT_REJECTED",
+        "AST-A",
+        null
+      ],
+      [
+        "PRODUCTION_SLOT_RELINKED",
+        "AST-A",
+        "AST-C"
+      ]
+    ]
+  },
+  "after_same_operation_replay": {
+    "a": [
+      "AST-C",
+      "FROZEN",
+      "AST-A"
+    ],
+    "resolved": 2,
+    "relink_required": 0,
+    "reject_history": 1
+  }
+}

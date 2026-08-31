@@ -179,17 +179,38 @@ export type ProjectArtifactInventory = {
   links_ttl_seconds?:number;
 };
 
+export type OperationalPolicyContext = {
+  id:string;
+  policy_id?:string;
+  policy_key:string;
+  title:string;
+  description?:string|null;
+  scope:"GLOBAL"|"PRESET"|"PROJECT"|"SLOT"|string;
+  target_id?:string|null;
+  instruction:string;
+  priority:number;
+  active:boolean;
+  created_by?:string|null;
+  created_at?:number|null;
+  updated_at?:number|null;
+  version?:number;
+  asset_requirement?:string|null;
+  asset_requirements?:Record<string,string>|null;
+  applies_to?:string[];
+  linked_to_project?:boolean;
+};
+
 export type ProjectSlotSnapshot = {
   project: AutomaticProject;
   activeTags: Array<{tag:string;status:string;owner_id?:string|null;execution_id?:string|null;last_seen_at?:number|null;lease_expires_at?:number|null}>;
-  slots: Array<{key:string;label:string;state:string;summary:string;progress:number;mcpOpen?:boolean;instruction?:string|null;openedBy?:string|null;openedAt?:number|null;tags?:Array<{id:string;project_id:string;slot_id:string;tag_key:string;emoji:string;label:string;note?:string|null;created_by?:string|null;created_at:number;updated_at:number;active:boolean}>}>;
+  slots: Array<{key:string;label:string;state:string;summary:string;progress:number;mcpOpen?:boolean;instruction?:string|null;openedBy?:string|null;openedAt?:number|null;tags?:Array<{id:string;project_id:string;slot_id:string;tag_key:string;emoji:string;label:string;note?:string|null;created_by?:string|null;created_at:number;updated_at:number;active:boolean}>;policies?:OperationalPolicyContext[];assetRequirement?:string|null;policyRevision?:string|null}>;
   progress: number;
   script?: Record<string,unknown>|null;
   referenceBrief?: Record<string,unknown>|null;
   thumbs: {count:number;selected:number;max:number};
   titles: {count:number;selected:number;max:number};
   items: Record<string,unknown>;
-  production?: {reference_pools_total:number;production_scenes_total:number;production_slots_total:number;production_slots_resolved:number};
+  production?: {reference_pools_total:number;production_scenes_total:number;production_slots_total:number;production_slots_resolved:number;production_slots_relink_required?:number};
   candidates: Record<string,unknown>;
   package?: Record<string,unknown>|null;
   finalArtifacts?: {imagens?:Record<string,unknown>|null;roteiro?:Record<string,unknown>|null;publicacao?:Record<string,unknown>|null};

@@ -1,0 +1,1016 @@
+ESPECIFICACAO_POLITICAS_OPERACIONAIS_PERSISTENTES_V1
+=====================================================
+
+OBJETIVO
+========
+Criar na Biblioteca um sistema persistente de POLÍTICAS OPERACIONAIS.
+
+A política serve como memória operacional do sistema.
+
+Ela não representa um estado temporário como uma TAG.
+Ela representa uma REGRA que deve acompanhar automaticamente o contexto onde estiver aplicada.
+
+Exemplos:
+
+TAG:
+🎯 MAIS_CANDIDATAS
+→ informa o que está acontecendo AGORA naquele slot.
+
+POLÍTICA:
+CENTRAL_2 exige assets transparentes
+→ informa COMO aquele tipo de slot deve SEMPRE ser tratado.
+
+
+=====================================================
+PRINCÍPIO CENTRAL
+=====================================================
+
+A IA NÃO DEVE DEPENDER DE MEMÓRIA OU DE PROMPT PARA SABER REGRAS IMPORTANTES.
+
+Quando um agente/MCP consultar ou operar um slot, o backend deve entregar automaticamente:
+
+- dados do slot;
+- preset;
+- tags ativas;
+- políticas aplicáveis;
+- políticas herdadas;
+- instruções operacionais relevantes.
+
+Assim, a regra fica persistida no sistema e acompanha o trabalho.
+
+
+=====================================================
+O QUE A POLÍTICA DEVE PERMITIR
+=====================================================
+
+A política deve poder ser:
+
+- criada manualmente pela UI;
+- criada pelo MCP;
+- editada manualmente;
+- editada pelo MCP;
+- ativada/desativada;
+- removida/apagada;
+- vinculada a um ou mais contextos;
+- aplicada a projetos;
+- aplicada a presets;
+- aplicada a slots;
+- futuramente aplicada a itens semânticos/universos/tipos;
+- consultada automaticamente pelos agentes.
+
+Não exigir deploy para criar uma política nova.
+
+
+=====================================================
+DIFERENÇA ENTRE TAG E POLÍTICA
+=====================================================
+
+TAG
+---
+Estado ou necessidade atual.
+
+Exemplos:
+🎯 MAIS_CANDIDATAS
+👁️ REVISAR
+⚠️ SCRIPT_MISMATCH
+📤 THUMBS_UPLOAD_REQUIRED
+
+Normalmente temporária.
+
+
+POLÍTICA
+--------
+Regra persistente de operação.
+
+Exemplos:
+- QUAL_VOCE_PREFERE usa imagens crop-safe 4:3.
+- CENTRAL_2 exige PNG/transparência real.
+- EMOJI usa pistas isoladas, não uma cena completa.
+- Nunca aprovar preview não materializado.
+
+Normalmente persistente.
+
+
+=====================================================
+ESCOPO DAS POLÍTICAS
+=====================================================
+
+V1 recomendada:
+
+GLOBAL
+PRESET
+PROJECT
+SLOT
+
+Futuro opcional:
+
+UNIVERSE
+SEMANTIC_ITEM
+ASSET_TYPE
+WORK_TYPE
+
+
+=====================================================
+PRIORIDADE / HERANÇA
+=====================================================
+
+Quando mais de uma política for aplicável:
+
+SLOT
+>
+PROJECT
+>
+PRESET
+>
+GLOBAL
+
+A política mais específica prevalece em caso de conflito.
+
+Políticas sem conflito são acumulativas.
+
+
+=====================================================
+MODELO MÍNIMO DE DADOS
+=====================================================
+
+Tabela sugerida:
+
+operational_policies
+
+Campos:
+
+id
+policy_key
+title
+description
+scope
+target_id
+instruction
+priority
+active
+created_by
+created_at
+updated_at
+deleted_at
+
+Opcional:
+
+metadata_json
+
+
+Exemplo:
+
+{
+  "id": "POL-001",
+  "policy_key": "PRESET_CENTRAL_2_TRANSPARENCY",
+  "title": "CENTRAL + 2 exige transparência",
+  "scope": "PRESET",
+  "target_id": "CENTRAL_2",
+  "instruction": "Imagem principal e opções devem ser assets isolados com fundo transparente real.",
+  "priority": 50,
+  "active": true,
+  "created_by": "SYSTEM_SEED"
+}
+
+
+=====================================================
+ASSOCIAÇÃO COM PROJETOS
+=====================================================
+
+Uma política pode ser aplicada diretamente a um projeto.
+
+Exemplo:
+
+scope: PROJECT
+target_id: PROJ-ABC123
+
+Quando qualquer agente entrar em qualquer slot daquele projeto,
+essa política deve aparecer no payload.
+
+Também deve ser possível criar políticas específicas para um slot:
+
+scope: SLOT
+target_id: <project_id>:<slot_id>
+
+
+=====================================================
+LEITURA AUTOMÁTICA NO SLOT
+=====================================================
+
+Toda leitura de slot pelo MCP deve retornar algo semelhante a:
+
+{
+  "slot_id": "scene-05-image-a",
+  "preset": "QUAL_VOCE_PREFERE",
+
+  "tags": [
+    {
+      "tag_key": "MAIS_CANDIDATAS",
+      "emoji": "🎯"
+    }
+  ],
+
+  "policies": [
+    {
+      "policy_key": "PRESET_QUAL_VOCE_PREFERE_4X3",
+      "scope": "PRESET",
+      "instruction": "As duas imagens devem funcionar em crop 4:3 e preencher bem o card."
+    },
+    {
+      "policy_key": "PROJECT_VISUAL_QUALITY",
+      "scope": "PROJECT",
+      "instruction": "Evitar sujeitos pequenos ou com excesso de área vazia."
+    }
+  ]
+}
+
+O agente não deve precisar fazer uma segunda consulta para descobrir as políticas básicas.
+
+A leitura passiva é obrigatória.
+
+
+=====================================================
+CRUD MCP MÍNIMO
+=====================================================
+
+criar_politica
+--------------
+Entrada:
+policy_key
+title
+scope
+target_id
+instruction
+priority opcional
+metadata opcional
+
+
+editar_politica
+---------------
+Entrada:
+policy_id
+campos alterados
+
+
+remover_politica
+----------------
+Entrada:
+policy_id
+
+Preferência:
+soft delete ou desativação preservando histórico.
+
+
+ativar_politica
+---------------
+Entrada:
+policy_id
+
+
+desativar_politica
+------------------
+Entrada:
+policy_id
+
+
+listar_politicas
+----------------
+Filtros opcionais:
+scope
+target_id
+active
+policy_key
+
+
+obter_politicas_aplicaveis
+--------------------------
+Entrada:
+project_id
+slot_id opcional
+preset opcional
+
+Saída:
+políticas já resolvidas por herança/prioridade.
+
+
+aplicar_politica_projeto
+------------------------
+Permite vincular uma política reutilizável a um projeto.
+
+
+remover_politica_projeto
+------------------------
+Remove o vínculo sem apagar a política global.
+
+
+=====================================================
+CRUD NA UI
+=====================================================
+
+Criar uma área simples:
+
+POLÍTICAS
+
+Ações:
+
+[ Nova política ]
+[ Editar ]
+[ Ativar / Desativar ]
+[ Excluir ]
+[ Aplicar a projeto ]
+[ Remover do projeto ]
+
+Filtros:
+
+- Todas
+- Global
+- Preset
+- Projeto
+- Slot
+- Ativas
+- Inativas
+
+
+Não transformar isso em um editor de workflow complexo.
+
+O objetivo é simples:
+
+CRIAR
+EDITAR
+APLICAR
+REMOVER
+CONSULTAR
+
+
+=====================================================
+APRENDIZADO OPERACIONAL
+=====================================================
+
+A IA/MCP pode criar uma nova política quando detectar uma regra recorrente útil.
+
+Exemplo:
+
+Depois de vários projetos, a IA percebe:
+
+"Retratos muito estreitos funcionam mal em QUAL_VOCE_PREFERE."
+
+Ela pode criar:
+
+policy_key:
+QUAL_VOCE_PREFERE_AVOID_NARROW_PORTRAIT
+
+scope:
+PRESET
+
+target:
+QUAL_VOCE_PREFERE
+
+instruction:
+"Evitar assets verticalmente estreitos; preferir enquadramento que aceite crop 4:3 sem reduzir demais o sujeito."
+
+
+A política passa a existir para os próximos projetos.
+
+Isso cria aprendizado persistente sem depender de memória da conversa.
+
+
+=====================================================
+CONTROLE DE SEGURANÇA DO APRENDIZADO
+=====================================================
+
+A IA pode criar políticas livremente,
+mas toda política deve guardar:
+
+created_by
+created_at
+scope
+target
+instruction
+
+E a UI sempre deve permitir:
+
+- visualizar;
+- editar;
+- desativar;
+- excluir.
+
+Assim, o usuário continua com controle total.
+
+
+=====================================================
+SEED INICIAL OBRIGATÓRIO — POLÍTICAS DOS PRESETS
+=====================================================
+
+No ato da implementação, criar automaticamente as políticas abaixo.
+
+Elas devem nascer como:
+
+created_by = SYSTEM_SEED
+active = true
+
+
+-----------------------------------------------------
+1. 3_OPCOES
+-----------------------------------------------------
+
+policy_key:
+PRESET_3_OPCOES_4X3
+
+scope:
+PRESET
+
+target_id:
+3_OPCOES
+
+instruction:
+"A imagem contextual principal deve funcionar em quadro 4:3. Imagens maiores podem ser cortadas. Evitar retrato vertical estreito, sujeito pequeno ou excesso de vazio. O crop não pode destruir o sujeito principal."
+
+asset_requirement:
+raster_4x3
+
+
+POLÍTICA DE RESULTADO:
+
+policy_key:
+PRESET_3_OPCOES_RESULT_4X3
+
+instruction:
+"Quando a etapa de resultado apresentar imagem, usar imagem de resultado compatível com 4:3, com boa ocupação do quadro."
+
+
+-----------------------------------------------------
+2. VERDADEIRO_FALSO
+-----------------------------------------------------
+
+policy_key:
+PRESET_VF_4X3
+
+scope:
+PRESET
+
+target_id:
+VERDADEIRO_FALSO
+
+instruction:
+"A imagem contextual deve funcionar em 4:3. Pode cortar uma imagem maior. Evitar retrato estreito e composição com muito espaço vazio."
+
+asset_requirement:
+raster_4x3
+
+
+POLÍTICA DE RESULTADO:
+
+policy_key:
+PRESET_VF_RESULT_4X3
+
+instruction:
+"Quando houver imagem de resultado, usar imagem 4:3 ou crop-safe para 4:3."
+
+
+-----------------------------------------------------
+3. QUAL_VOCE_PREFERE
+-----------------------------------------------------
+
+policy_key:
+PRESET_PREFERE_4X3
+
+scope:
+PRESET
+
+target_id:
+QUAL_VOCE_PREFERE
+
+instruction:
+"As duas imagens A/B devem funcionar em cards 4:3. Podem ser cortadas a partir de imagens maiores. Evitar retratos estreitos, sujeitos pequenos e enquadramentos que criem grandes áreas vazias."
+
+asset_requirement:
+raster_4x3
+
+Aplicar a:
+IMAGEM_A
+IMAGEM_B
+
+
+POLÍTICA DE RESULTADO:
+
+policy_key:
+PRESET_PREFERE_RESULT_4X3
+
+instruction:
+"Se a etapa de resultado usar imagem, validar também o resultado separadamente e usar composição compatível com 4:3."
+
+
+-----------------------------------------------------
+4. LOGO
+-----------------------------------------------------
+
+policy_key:
+PRESET_LOGO_4X3
+
+scope:
+PRESET
+
+target_id:
+LOGO
+
+instruction:
+"A imagem usada pelo preset deve ser compatível com área 4:3. Imagens maiores podem ser cortadas desde que o logo/elemento principal permaneça inteiro e legível."
+
+asset_requirement:
+raster_4x3
+
+
+-----------------------------------------------------
+5. LOGO_RESULTADO / LOGO ✓
+-----------------------------------------------------
+
+policy_key:
+PRESET_LOGO_RESULT_4X3
+
+scope:
+PRESET
+
+target_id:
+LOGO_RESULTADO
+
+instruction:
+"A imagem de revelação/resultado deve funcionar em 4:3 e manter o elemento principal legível."
+
+asset_requirement:
+raster_4x3
+
+
+-----------------------------------------------------
+6. CENTRAL_2 / CENTRAL + 2
+-----------------------------------------------------
+
+policy_key:
+PRESET_CENTRAL_2_TRANSPARENT
+
+scope:
+PRESET
+
+target_id:
+CENTRAL_2
+
+instruction:
+"A imagem principal central e as duas opções devem ser assets isolados com transparência real. Não usar cena contextual completa com fundo. Pode remover somente fundo simples quando a referência estiver correta. Não criar composição artificial."
+
+asset_requirements:
+
+IMAGEM_PRINCIPAL:
+transparent_subject
+
+IMAGEM_1:
+transparent_option
+
+IMAGEM_2:
+transparent_option
+
+
+EXEMPLO OPERACIONAL:
+
+Pergunta:
+"Qual a arma do Sasuke?"
+
+IMAGEM_PRINCIPAL:
+Sasuke isolado em PNG/transparência.
+
+IMAGEM_1:
+arma opção A isolada em PNG.
+
+IMAGEM_2:
+arma opção B isolada em PNG.
+
+
+Essa regra se aplica a qualquer variação semântica do preset,
+não apenas personagem + arma.
+
+
+-----------------------------------------------------
+7. FOCO_4 / FOCO + 4
+-----------------------------------------------------
+
+policy_key:
+PRESET_FOCO_4_TRANSPARENT
+
+scope:
+PRESET
+
+target_id:
+FOCO_4
+
+instruction:
+"A imagem principal e as quatro opções devem ser assets isolados com transparência real. Não usar cena completa com fundo. Não compor localmente. Quando necessário, remover apenas fundo simples de uma referência semanticamente correta."
+
+asset_requirements:
+
+IMAGEM_PRINCIPAL:
+transparent_subject
+
+IMAGEM_1:
+transparent_option
+
+IMAGEM_2:
+transparent_option
+
+IMAGEM_3:
+transparent_option
+
+IMAGEM_4:
+transparent_option
+
+
+-----------------------------------------------------
+8. EMOJI_QUIZ / EMOJIS
+-----------------------------------------------------
+
+policy_key:
+PRESET_EMOJI_HINTS_TRANSPARENT
+
+scope:
+PRESET
+
+target_id:
+EMOJI_QUIZ
+
+instruction:
+"As imagens da etapa de pistas não são cenas completas. Devem ser dicas visuais isoladas, simples e reconhecíveis, preferencialmente com transparência real. Cada pista deve representar um elemento útil para a adivinhação."
+
+asset_requirement:
+transparent_hint
+
+
+POLÍTICA DE RESULTADO:
+
+policy_key:
+PRESET_EMOJI_RESULT_4X3
+
+instruction:
+"A etapa de resultado normalmente pode apresentar uma imagem completa do personagem, obra, objeto ou resposta. Usar imagem 4:3 ou crop-safe para 4:3, salvo política mais específica."
+
+
+-----------------------------------------------------
+9. EMOJI_RESULTADO / EMOJI ✓
+-----------------------------------------------------
+
+policy_key:
+PRESET_EMOJI_RESULT_REVEAL
+
+scope:
+PRESET
+
+target_id:
+EMOJI_RESULTADO
+
+instruction:
+"A revelação deve apresentar a resposta visual de forma clara. Por padrão, usar raster 4:3/crop-safe; as pistas anteriores continuam sendo transparent_hint."
+
+asset_requirement:
+raster_4x3
+
+
+-----------------------------------------------------
+10. FILME
+-----------------------------------------------------
+
+policy_key:
+PRESET_FILME_HINTS_TRANSPARENT
+
+scope:
+PRESET
+
+target_id:
+FILME
+
+instruction:
+"As imagens de pista devem ser elementos visuais isolados e reconhecíveis, não uma cena completa do filme. Preferir assets com transparência real. As pistas devem ajudar o jogador a inferir a obra sem revelar diretamente a resposta."
+
+asset_requirement:
+transparent_hint
+
+
+POLÍTICA DE RESULTADO:
+
+policy_key:
+PRESET_FILME_RESULT_4X3
+
+instruction:
+"A etapa de resultado pode apresentar imagem completa da obra/resposta em 4:3 ou crop-safe para 4:3."
+
+
+-----------------------------------------------------
+11. FILME_RESULTADO / FILME ✓
+-----------------------------------------------------
+
+policy_key:
+PRESET_FILME_RESULT_REVEAL
+
+scope:
+PRESET
+
+target_id:
+FILME_RESULTADO
+
+instruction:
+"A imagem de revelação deve representar claramente o filme/resposta e funcionar em raster 4:3, salvo regra específica do projeto."
+
+asset_requirement:
+raster_4x3
+
+
+=====================================================
+REGRA GERAL DE RESULTADOS
+=====================================================
+
+Criar também uma política GLOBAL inicial:
+
+policy_key:
+RESULT_IMAGE_MUST_BE_VALIDATED_SEPARATELY
+
+scope:
+GLOBAL
+
+instruction:
+"Imagens de resultado são slots visuais independentes e também passam por QA. Não considerar a pergunta aprovada apenas porque a imagem principal está correta. Quando houver resultado visual, validar referência, enquadramento, formato e compatibilidade com o preset."
+
+active:
+true
+
+
+=====================================================
+REGRA GLOBAL DE CROP 4:3
+=====================================================
+
+policy_key:
+RASTER_4X3_CROP_ALLOWED
+
+scope:
+GLOBAL
+
+instruction:
+"Para slots raster_4x3, uma imagem maior ou em proporção diferente pode ser usada quando existir crop seguro para 4:3. O crop é ajuste técnico permitido. Não aceitar crop que corte rosto, sujeito principal, objeto essencial ou torne a composição ruim."
+
+active:
+true
+
+
+=====================================================
+REGRA GLOBAL DE TRANSPARÊNCIA
+=====================================================
+
+policy_key:
+TRANSPARENCY_REAL_REQUIRED
+
+scope:
+GLOBAL
+
+instruction:
+"Quando o slot exigir transparent_subject, transparent_option ou transparent_hint, a transparência deve ser real. Rejeitar checkerboard incorporado, fundo branco fingindo transparência, halo forte, fragmentos de fundo ou bordas contaminadas."
+
+active:
+true
+
+
+=====================================================
+REGRA GLOBAL DE NÃO COMPOSIÇÃO
+=====================================================
+
+policy_key:
+NO_VISUAL_COMPOSITION_FALLBACK
+
+scope:
+GLOBAL
+
+instruction:
+"Quando a representação correta não existir pronta, não montar, combinar, adicionar objetos ou fabricar composição como fallback. Procurar outra referência/candidata ou relinkar."
+
+active:
+true
+
+
+=====================================================
+TIPOS VISUAIS PADRONIZADOS
+=====================================================
+
+Usar inicialmente:
+
+raster_4x3
+transparent_subject
+transparent_option
+transparent_hint
+result_4x3
+
+Esses tipos devem poder ser ampliados posteriormente sem alterar a arquitetura.
+
+
+=====================================================
+QA GUIADO POR POLÍTICA
+=====================================================
+
+O QA deve receber automaticamente o asset_requirement do slot.
+
+Exemplo:
+
+preset:
+CENTRAL_2
+
+slot:
+IMAGEM_PRINCIPAL
+
+requirement:
+transparent_subject
+
+
+O QA valida:
+
+- semântica correta;
+- referência correta;
+- requisito visual do preset;
+- transparência quando exigida;
+- crop 4:3 quando aplicável;
+- ocupação do quadro;
+- ausência de watermark/logo/texto indevido;
+- resultado visual, quando existir.
+
+
+Se falhar apenas no fit do preset:
+
+NÃO APROVAR PARA AQUELE SLOT.
+
+O asset pode continuar válido para outro uso compatível.
+
+
+=====================================================
+COLETOR GUIADO POR POLÍTICA
+=====================================================
+
+O Coletor também deve receber o requirement.
+
+Exemplo:
+
+CENTRAL_2:
+buscar "Sasuke PNG transparent render"
+
+em vez de:
+buscar "Sasuke"
+
+Exemplo:
+
+QUAL_VOCE_PREFERE:
+buscar imagem com composição/crop compatível com 4:3.
+
+Exemplo:
+
+FILME:
+buscar objeto/pista visual isolada,
+não screenshot completo da cena.
+
+
+=====================================================
+RELINK GUIADO POR POLÍTICA
+=====================================================
+
+O Relinker deve considerar:
+
+SEMÂNTICA
++
+PRESET
++
+ASSET_REQUIREMENT
+
+Nunca relinkar um transparent_option para um raster contextual só porque o objeto está correto.
+
+
+=====================================================
+POLÍTICAS APLICADAS AO PROJETO
+=====================================================
+
+Quando um projeto for criado ou receber roteiro:
+
+1. identificar presets usados;
+2. resolver automaticamente políticas PRESET aplicáveis;
+3. aplicar políticas GLOBAL;
+4. aplicar políticas PROJECT específicas;
+5. aplicar políticas SLOT específicas;
+6. disponibilizar tudo no payload dos agentes.
+
+Não é necessário copiar fisicamente as políticas para cada projeto.
+
+Pode ser herança dinâmica.
+
+Se quiser congelar versão histórica da política usada,
+registrar policy_id + policy_version na execução/QA.
+
+
+=====================================================
+VERSIONAMENTO RECOMENDADO
+=====================================================
+
+Opcional, mas recomendado:
+
+version
+supersedes_policy_id
+
+Ao editar uma política importante,
+preservar histórico da versão anterior.
+
+Assim é possível saber qual regra estava ativa quando um projeto foi produzido.
+
+
+=====================================================
+POLÍTICA CRIADA PELA IA
+=====================================================
+
+A IA pode propor/criar políticas quando detectar aprendizado recorrente.
+
+Exemplo:
+
+policy_key:
+AVOID_FULL_BODY_IN_SMALL_4X3_CARD
+
+scope:
+PRESET
+
+target:
+3_OPCOES
+
+instruction:
+"Quando o card final for pequeno, evitar corpo inteiro estreito se o sujeito ficar pequeno demais após crop."
+
+created_by:
+ChatGPT Supervisor
+
+
+A UI permite editar/desativar/excluir depois.
+
+
+=====================================================
+UI DO SLOT
+=====================================================
+
+No slot, mostrar discretamente:
+
+🏷 Tags: 2
+📜 Políticas: 3
+
+Ao clicar em Políticas:
+
+- Global — Crop 4:3 permitido
+- Preset — QUAL_VOCE_PREFERE usa 4:3
+- Projeto — Evitar sujeito pequeno
+
+Não poluir o card principal.
+
+
+=====================================================
+REGRA DE OURO
+=====================================================
+
+TAG diz:
+"O que está acontecendo?"
+
+POLÍTICA diz:
+"Como devo operar aqui?"
+
+PRESET diz:
+"Qual estrutura visual este slot exige?"
+
+
+A IA recebe tudo isso automaticamente.
+
+
+=====================================================
+RESULTADO ESPERADO
+=====================================================
+
+Com essa implementação:
+
+- a IA não precisa lembrar regras de presets;
+- novos agentes herdam o conhecimento;
+- regras aprendidas podem virar políticas persistentes;
+- o usuário mantém controle manual total;
+- MCP pode criar, editar, aplicar, desativar e remover;
+- projetos recebem automaticamente as políticas relevantes;
+- QA, Coletor e Relinker trabalham com o mesmo contrato;
+- novas políticas podem ser adicionadas sem deploy;
+- o sistema acumula aprendizado operacional ao longo do tempo.
+
+
+=====================================================
+CHECKLIST V1
+=====================================================
+
+[ ] tabela operational_policies
+[ ] escopos GLOBAL / PRESET / PROJECT / SLOT
+[ ] herança e prioridade
+[ ] CRUD manual na UI
+[ ] CRUD pelo MCP
+[ ] políticas retornadas em toda leitura de slot
+[ ] filtros/listagem de políticas
+[ ] aplicação/remover política de projeto
+[ ] seed inicial dos presets acima
+[ ] políticas globais iniciais
+[ ] asset_requirement exposto ao Coletor/QA/Relinker
+[ ] possibilidade de criar novas políticas sem deploy
+[ ] usuário pode editar, desativar ou excluir qualquer política

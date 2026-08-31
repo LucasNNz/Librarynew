@@ -1,4 +1,42 @@
-# Corvo Library V2 0.20.40 — Definitive Images ZIP No-PipeTo
+# Corvo Library V2 0.20.42 — Rejeição Individual de PRODUCTION_SLOT
+
+## Destaques 0.20.42
+
+- nova ferramenta MCP `rejeitar_production_slots_lote` (até 500 PSLOTs);
+- rejeição remove somente o vínculo ativo PSLOT → AST e coloca o slot em `RELINK_REQUIRED`;
+- AST global e arquivo físico no R2 permanecem intactos;
+- histórico próprio `PRODUCTION_SLOT_REJECTED` / `PRODUCTION_SLOT_RELINKED`;
+- `operation_id` idempotente inclusive contra retry atrasado após relink;
+- Coletor enxerga somente os gaps `RELINK_REQUIRED`, sem reabrir slots FROZEN;
+- `assign_assets_to_slots` relinka e fecha o gap sem duplicar bytes no R2;
+- `PROJECT_IMAGES_ZIP`/pacote de produção anterior é preservado, mas marcado `STALE` para regeneração;
+- `production_slots_relink_required` entra nas contagens;
+- schema D1 `2.25.0`;
+- Worker autoatualizável sincronizado;
+- exportador `PROJECT_IMAGES_ZIP` no-pipeTo do 0.20.40 preservado.
+
+Consulte `RELEASE_0_20_42_PRODUCTION_SLOT_REJECTION.md` e `VALIDATION_0_20_42_PRODUCTION_SLOT_REJECTION.md`.
+
+---
+
+# Corvo Library V2 0.20.41 — Políticas Operacionais Persistentes
+
+## Destaques 0.20.41
+
+- memória operacional persistente separada das tags temporárias;
+- escopos GLOBAL / PRESET / PROJECT / SLOT;
+- herança SLOT > PROJECT > PRESET > GLOBAL;
+- CRUD completo por UI e MCP;
+- leitura passiva das políticas em cada slot;
+- `asset_requirement` entregue ao Coletor, QA e Relinker;
+- seed obrigatório com 20 políticas SYSTEM_SEED (16 PRESET + 4 GLOBAL);
+- schema D1 2.24.0;
+- Worker autoatualizável sincronizado com o fonte;
+- exportador `PROJECT_IMAGES_ZIP` sem `pipeTo()` preservado.
+
+Consulte `RELEASE_0_20_41_PERSISTENT_OPERATIONAL_POLICIES.md` e `VALIDATION_0_20_41_PERSISTENT_OPERATIONAL_POLICIES.md`.
+
+---
 
 ## Correções 0.20.40
 

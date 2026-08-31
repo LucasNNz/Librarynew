@@ -16,6 +16,7 @@ export type ParsedProjectScene = {
   preset:string;
   compositionClass:string;
   targetFiles:string[];
+  targetSlots:Array<{targetFile:string;visualRole:string}>;
 };
 
 function stripMarkdown(value:string){
@@ -73,6 +74,20 @@ function targetFilesFromBlock(block:string){
   return found.slice(0,20);
 }
 
+function targetSlotsFromBlock(block:string){
+  const found:Array<{targetFile:string;visualRole:string}>=[];
+  const seen=new Set<string>();
+  const linePattern=/^\s*(?:[-*+]\s*)?((?:IMAGEM|IMAGE)(?:_PRINCIPAL|_RESULTADO|_[AB]|_[1-4]|[1-4])?)\s*[:=-]\s*([^\s]+\.(?:jpe?g|png|webp|gif|avif))\s*$/gim;
+  for(const match of block.matchAll(linePattern)){
+    const targetFile=clean(match[2]).replace(/^["']|["']$/g,"");if(!targetFile)continue;
+    const key=targetFile.toLowerCase();if(seen.has(key))continue;seen.add(key);
+    const visualRole=clean(match[1]).toUpperCase().replace(/^IMAGE/,"IMAGEM");
+    found.push({targetFile,visualRole});
+  }
+  for(const targetFile of targetFilesFromBlock(block)){const key=targetFile.toLowerCase();if(seen.has(key))continue;seen.add(key);found.push({targetFile,visualRole:"IMAGEM"});}
+  return found.slice(0,20);
+}
+
 function targetSceneNumber(line:string){
   // Production target files are authoritative evidence for scene numbering when a
   // human-written heading uses an unexpected style. Example: 061-tomoro.jpg.
@@ -123,7 +138,8 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
     const reference=field(block,"REFERÊNCIA")||field(block,"REFERENCIA")||field(block,"REFERENCE")||field(block,"REFERÊNCIA VISUAL")||field(block,"REFERENCIA VISUAL");
     const preset=field(block,"PRESET");
     const compositionClass=field(block,"COMPOSITION_CLASS")||field(block,"COMPOSICAO")||field(block,"COMPOSIÇÃO")||field(block,"TIPO")||"CONTEXTUAL";
-    const targetFiles=targetFilesFromBlock(block);
+    const targetSlots=targetSlotsFromBlock(block);
+    const targetFiles=targetSlots.map(slot=>slot.targetFile);
     const inferred=firstContentLine(block);
     const title=explicitTitle||subject||concept||inferred||itemKey;
     scenes.push({
@@ -138,6 +154,7 @@ export function parseProjectScriptScenes(content:string):ParsedProjectScene[]{
       preset,
       compositionClass,
       targetFiles,
+      targetSlots,
     });
   }
   return scenes;
@@ -158,7 +175,7 @@ export async function materializeScenesFromProjectScript(env:Env,input:{projectI
   }
 
   if(input.productionOnly){
-    const productionSeeds:ProductionSceneSeed[]=scenes.map(scene=>({sceneKey:scene.itemKey,number:scene.number,title:scene.title,universe:scene.universe,subject:scene.subject,concept:scene.concept,reference:scene.reference,scriptExcerpt:scene.scriptExcerpt,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass,slots:scene.targetFiles.map(targetFile=>({targetFile,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass}))}));
+    const productionSeeds:ProductionSceneSeed[]=scenes.map(scene=>({sceneKey:scene.itemKey,number:scene.number,title:scene.title,universe:scene.universe,subject:scene.subject,concept:scene.concept,reference:scene.reference,scriptExcerpt:scene.scriptExcerpt,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass,slots:scene.targetSlots.map(slot=>({targetFile:slot.targetFile,visualRole:slot.visualRole,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass}))}));
     const production=await materializeProductionModel(env,{projectId,version:Number(project.active_version||1),scenes:productionSeeds});
     await env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PRODUCTION_RECONCILED","OK",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,sceneCount:scenes.length,productionOnly:true,production}),ts).run().catch(()=>undefined);
     return {ok:true,sceneCount:scenes.length,created:0,updated:0,production,productionOnly:true,projectStatus:project.status,pipelineStatus:project.pipeline_status,nextAction:null,items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
@@ -206,7 +223,7 @@ export async function materializeScenesFromProjectScript(env:Env,input:{projectI
     preset:scene.preset,
     context:scene.scriptExcerpt,
     compositionClass:scene.compositionClass,
-    slots:scene.targetFiles.map(targetFile=>({targetFile,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass})),
+    slots:scene.targetSlots.map(slot=>({targetFile:slot.targetFile,visualRole:slot.visualRole,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass})),
   }));
   const production=await materializeProductionModel(env,{projectId,version:Number(project.active_version||1),scenes:productionSeeds});
   await env.DB.batch([

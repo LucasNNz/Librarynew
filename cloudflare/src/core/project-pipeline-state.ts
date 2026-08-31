@@ -50,14 +50,15 @@ export async function configureProjectItemPipeline(env: Env, projectId: string, 
   if (!project) return null;
   const ref = pipelineClean(itemRef);
   if (!ref) return null;
-  const universe = pipelineClean(input.universe);
-  const subject = pipelineClean(input.subject);
-  const concept = pipelineClean(input.concept);
-  const reference = pipelineClean(input.reference);
-  const scriptExcerpt = pipelineClean(input.scriptExcerpt);
+  const productionGap=!item?await env.DB.prepare(`SELECT * FROM v2_production_slots WHERE project_id=? AND status='RELINK_REQUIRED' AND (id=? OR slot_key=? OR target_file=?) ORDER BY updated_at DESC LIMIT 1`).bind(projectId,ref,ref,ref).first<Record<string,unknown>>().catch(()=>null):null;
+  const universe = pipelineClean(input.universe)||pipelineClean(productionGap?.universe);
+  const subject = pipelineClean(input.subject)||pipelineClean(productionGap?.subject);
+  const concept = pipelineClean(input.concept)||pipelineClean(productionGap?.semantic_reference)||subject;
+  const reference = pipelineClean(input.reference)||pipelineClean(productionGap?.semantic_reference)||subject;
+  const scriptExcerpt = pipelineClean(input.scriptExcerpt)||pipelineClean(productionGap?.context);
   if (!item) {
     const ts=nowMs();
-    const itemId=await stableId("PITEM",`PROJECT_SCENE\n${projectId}\n${ref}`,12);
+    const itemId=await stableId("PITEM",`${productionGap?"PRODUCTION_SLOT_RELINK":"PROJECT_SCENE"}\n${projectId}\n${ref}`,12);
     const target=Math.max(1,Math.min(Number(input.targetCandidates??8),100));
     const required=Math.max(1,Math.min(Number(input.requiredApproved??1),target));
     const strategyState = JSON.stringify({
@@ -68,9 +69,9 @@ export async function configureProjectItemPipeline(env: Env, projectId: string, 
       collectorUniverse: universe || undefined,
     });
     await env.DB.prepare(`INSERT OR IGNORE INTO automatic_project_items
-      (id,project_id,version,item_key,term,context,kind,universe,status,priority,created_at,updated_at,target_candidates,required_approved,collection_status,qa_status,stage,semantic_reference,strategy_state,composition_class)
-      VALUES (?,?,?,?,?,?,'contextual',?,'COLLECTING',1,?,?,?,?,'EMPTY','WAITING_COLLECTION','DISCOVERY',?,?,'CONTEXTUAL')`)
-      .bind(itemId,projectId,Number(project.active_version||1),ref,subject||concept||ref,scriptExcerpt||null,universe||null,ts,ts,target,required,reference||concept||null,strategyState).run();
+      (id,project_id,version,item_key,term,context,kind,universe,status,priority,created_at,updated_at,target_candidates,required_approved,collection_status,qa_status,stage,semantic_reference,strategy_state,composition_class,target_file)
+      VALUES (?,?,?,?,?,?,?,?,'COLLECTING',1,?,?,?,?,'EMPTY','WAITING_COLLECTION','DISCOVERY',?,?,?,?)`)
+      .bind(itemId,projectId,Number(project.active_version||1),ref,subject||concept||ref,scriptExcerpt||null,productionGap?'production_slot_relink':'contextual',universe||null,ts,ts,target,required,reference||concept||null,JSON.stringify({...JSON.parse(strategyState),productionSlotId:productionGap?.id||undefined,relinkOnly:Boolean(productionGap)}),pipelineClean(productionGap?.composition_class)||'CONTEXTUAL',pipelineClean(productionGap?.target_file)||null).run();
     item=await resolveProjectItem(env,projectId,ref);
   }
   if (!item) return null;

@@ -1,0 +1,18 @@
+{
+  "version": "0.20.42",
+  "checks": {
+    "version": true,
+    "mcp_tool_once": true,
+    "schema_2_25": true,
+    "slot_history": true,
+    "reject_event": true,
+    "relink_event": true,
+    "stale_images_only": true,
+    "idempotent_invalidation": true,
+    "strong_op_retry": true,
+    "collector_gap": true,
+    "relink_count": true,
+    "no_global_asset_reject": true
+  },
+  "pass": true
+}

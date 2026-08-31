@@ -16,7 +16,7 @@ const CONTENT_TABLES = [
   "worker_events","worker_sessions","worker_work_items","settings","collection_sources","source_profiles",
   "worker_capacity_limits","operational_policies","semantic_stock_policies","v2_ingest_candidates","v2_ingest_events",
   "v2_ingest_operations","v2_storage_audits","v2_direct_uploads","v2_control_jobs","v2_download_packages",
-  "v2_project_media","v2_project_titles","v2_project_slot_access","v2_collection_events","v2_asset_exports","v2_recovery_events","v2_runtime_heartbeats"
+  "v2_project_media","v2_project_titles","v2_project_slot_access","v2_production_slot_history","v2_collection_events","v2_asset_exports","v2_recovery_events","v2_runtime_heartbeats"
 ] as const;
 
 const R2_PREFIXES = ["assets/","imports/","projects/","incoming/","batches/","exports/","corvo-core/recovery/"];

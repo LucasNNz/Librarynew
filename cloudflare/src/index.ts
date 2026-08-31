@@ -43,6 +43,7 @@ import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnap
 import { inspectCriticalSchema, requireCriticalSchema } from "./core/schema-contract";
 import { serveAssetThumbnail } from "./core/thumbnails";
 import { uiAnalysisSnapshot, uiAssetsSnapshot, uiExecutionsSnapshot, uiOverviewSnapshot, uiProjectsSnapshot, uiSettingsSnapshot } from "./core/ui-fast-read";
+import { applyPersistentPolicyToProject, createPersistentPolicy, editPersistentPolicy, listPersistentPolicies, listProjectPersistentPolicies, removePersistentPolicy, removePersistentPolicyFromProject, resolveApplicablePolicies, setPersistentPolicyActive } from "./core/persistent-policies";
 
 async function health(env: Env) {
   let d1: "ok" | "error" = "ok";
@@ -74,17 +75,17 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.40", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.42", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
-const FAST_READ_CACHE_NAMESPACE = "0.20.40";
+const FAST_READ_CACHE_NAMESPACE = "0.20.42";
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
   const started=Date.now();
   const keyUrl=new URL(request.url);
   keyUrl.searchParams.delete("_");
   // Cache API entries can survive a Worker deployment. Namespace every fast
-  // read by the running Core release so an older snapshot can never satisfy a 0.20.40
+  // read by the running Core release so an older snapshot can never satisfy a 0.20.42
   // health/schema gate after self-update.
   keyUrl.searchParams.set("__corvo_release",FAST_READ_CACHE_NAMESPACE);
   const cacheKey=new Request(keyUrl.toString(),{method:"GET"});
@@ -160,7 +161,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.40",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.42",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -186,7 +187,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.40",
+        version:"0.20.42",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
@@ -404,6 +405,15 @@ export default {
     else if (url.pathname === "/stock/policies" && request.method === "POST") response=json(await configureStockPolicy(env,await request.json() as Parameters<typeof configureStockPolicy>[1]),{status:201});
     else if (url.pathname === "/stock/consultations" && request.method === "POST") response=json(await registerAssetConsultation(env,await request.json() as Parameters<typeof registerAssetConsultation>[1]),{status:201});
     else if (url.pathname === "/stock/evaluate" && request.method === "GET") { const concept=url.searchParams.get("concept")||""; response=concept?json(await evaluateCollectionNeed(env,{concept,universe:url.searchParams.get("universe")||undefined,kind:url.searchParams.get("kind")||undefined})):json({error:"INVALID_INPUT"},{status:400}); }
+    else if (url.pathname === "/context-policies" && request.method === "GET") response=json({items:await listPersistentPolicies(env,{scope:url.searchParams.get("scope")||undefined,targetId:url.searchParams.get("targetId")||undefined,active:url.searchParams.has("active")?["1","true","yes"].includes(String(url.searchParams.get("active")).toLowerCase()):undefined,policyKey:url.searchParams.get("policyKey")||undefined,limit:Number(url.searchParams.get("limit")||200)})});
+    else if (url.pathname === "/context-policies" && request.method === "POST") { const body=await request.json() as Parameters<typeof createPersistentPolicy>[1]; const value=await createPersistentPolicy(env,body); response=json(value,{status:"status" in value?Number(value.status||400):201}); }
+    else if (/^\/context-policies\/[^/]+$/.test(url.pathname) && request.method === "PATCH") { const policyId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as Parameters<typeof editPersistentPolicy>[2]; const value=await editPersistentPolicy(env,policyId,body); response=json(value,{status:"status" in value?Number(value.status||400):200}); }
+    else if (/^\/context-policies\/[^/]+$/.test(url.pathname) && request.method === "DELETE") { const policyId=decodeURIComponent(url.pathname.split("/")[2]); response=json(await removePersistentPolicy(env,policyId)); }
+    else if (/^\/context-policies\/[^/]+\/(activate|deactivate)$/.test(url.pathname) && request.method === "POST") { const parts=url.pathname.split("/"); response=json(await setPersistentPolicyActive(env,decodeURIComponent(parts[2]),parts[3]==="activate")); }
+    else if (url.pathname === "/context-policies/applicable" && request.method === "GET") response=json(await resolveApplicablePolicies(env,{projectId:String(url.searchParams.get("projectId")||""),slotId:url.searchParams.get("slotId")||undefined,preset:url.searchParams.get("preset")||undefined,visualRole:url.searchParams.get("visualRole")||undefined}));
+    else if (/^\/projects\/[^/]+\/context-policies$/.test(url.pathname) && request.method === "GET") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); response=json(await listProjectPersistentPolicies(env,projectId)); }
+    else if (/^\/projects\/[^/]+\/context-policies\/link$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {policyId?:string;createdBy?:string}; if(!body.policyId) response=json({error:"POLICY_ID_REQUIRED"},{status:400}); else response=json(await applyPersistentPolicyToProject(env,{projectId,policyId:body.policyId,createdBy:body.createdBy})); }
+    else if (/^\/projects\/[^/]+\/context-policies\/unlink$/.test(url.pathname) && request.method === "POST") { const projectId=decodeURIComponent(url.pathname.split("/")[2]); const body=await request.json() as {policyId?:string}; if(!body.policyId) response=json({error:"POLICY_ID_REQUIRED"},{status:400}); else response=json(await removePersistentPolicyFromProject(env,{projectId,policyId:body.policyId})); }
     else if (url.pathname === "/policies/workspace" && request.method === "GET") response=json(await policyWorkspace(env,url.searchParams.get("projectId")||undefined));
     else if (url.pathname === "/policies/gaps" && request.method === "GET") response=json({items:await listOperationalGaps(env,{status:url.searchParams.get("status")||undefined,severity:url.searchParams.get("severity")||undefined,category:url.searchParams.get("category")||undefined,projectId:url.searchParams.get("projectId")||undefined,limit:Number(url.searchParams.get("limit")||100)})});
     else if (url.pathname === "/policies/gaps" && request.method === "POST") { const body=await request.json() as Parameters<typeof detectOperationalGap>[1]; response=json(await detectOperationalGap(env,body),{status:201}); }

@@ -3,6 +3,7 @@ import { id, nowMs } from "./ids";
 import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
 import { materializeScenesFromProjectScript, parseProjectScriptScenes } from "./project-script-parser";
 import { productionCompletionGate } from "./production-model";
+import { resolveApplicablePolicies } from "./persistent-policies";
 
 function encodeCursor(updatedAt: number, projectId: string) {
   return btoa(JSON.stringify([updatedAt, projectId])).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
@@ -71,6 +72,7 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
   const projectMedia=Number(attachmentSummary?.project_media||0);
   const packages=Number(attachmentSummary?.packages||0);
   const production=await productionCompletionGate(env,projectId).catch(()=>null);
+  const policyContext=await resolveApplicablePolicies(env,{projectId}).catch(()=>({policies:[],asset_requirement:null,policy_revision:null}));
   return {
     project_id:projectId,state_version:version,changed:true,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,
     counts:{ total:Number(project.total_items||0),approved:Number(project.approved_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),frozen:Number(project.frozen_count||0) },
@@ -78,6 +80,7 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
     completion_source:Number(production?.production_slots_total||0)>0?"PRODUCTION_SLOTS":"LEGACY_ITEMS",
     attachments:{project_files:projectFiles,scripts:Number(attachmentSummary?.scripts||0),references:Number(attachmentSummary?.reference_files||0),requirements:Number(attachmentSummary?.requirements||0),collected_files:collectedFiles,project_media:projectMedia,packages,total_visible:projectFiles+collectedFiles+projectMedia+packages,visibility:"MCP_IMMEDIATE_AFTER_D1_COMMIT"},
     lease:{status:project.supervisor_status,execution_id:project.supervisor_execution_id,expires_at:project.supervisor_lease_expires_at,last_seen_at:project.supervisor_last_seen_at},
+    operational_policies:{revision:policyContext.policy_revision,count:(policyContext.policies as unknown[]).length,policies:policyContext.policies},
     updated_at:project.updated_at,
   };
 }

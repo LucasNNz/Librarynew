@@ -23,7 +23,7 @@ import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectIte
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getFinalArtifactLink, getFinalProjectFiles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalExports, queueFinalPackage } from "./core/production";
 import { addProjectQaEvent, attachProjectReferencesInline, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
-import { assignAssetsToSlots, listProductionModel, productionModelCounts, upsertProductionSlots } from "./core/production-model";
+import { assignAssetsToSlots, listProductionModel, productionModelCounts, rejectProductionSlotsBatch, upsertProductionSlots } from "./core/production-model";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getSourceRoutingPlan, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -36,6 +36,7 @@ import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
 import { createSlotTag, findSlotsByTag, listProjectTags, listSlotTags, removeSlotTag } from "./core/slot-tags";
+import { applyPersistentPolicyToProject, createPersistentPolicy, editPersistentPolicy, listPersistentPolicies, listProjectPersistentPolicies, removePersistentPolicy, removePersistentPolicyFromProject, resolveApplicablePolicies, setPersistentPolicyActive } from "./core/persistent-policies";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -46,7 +47,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.40" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.42" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -888,6 +889,26 @@ function createServer(env: Env, request: Request) {
   server.registerTool("obter_telemetria_politicas", { description:"Agrega uso, sucesso/falha e eventos de políticas.", inputSchema:{} }, async()=>output(await policyTelemetry(env)));
   server.registerTool("resolver_gap_e_aprender", { description:"Resolve um gap e cria uma política DRAFT quando ainda não houver uma vinculada.", inputSchema:{ gap_id:z.string().min(1), nome_politica:z.string().optional(), acao:z.unknown().optional(), condicao:z.unknown().optional(), confianca:z.number().min(0).max(100).optional() } }, async(v)=>output((await resolveGapAndLearn(env,v.gap_id,{policyName:v.nome_politica,action:v.acao,condition:v.condicao,confidence:v.confianca}))||{error:"NOT_FOUND"}));
 
+
+  server.registerTool("criar_politica", {
+    description:"Cria uma política operacional persistente de contexto. A política nasce ativa por padrão e pode usar escopo GLOBAL, PRESET, PROJECT ou SLOT.",
+    inputSchema:{ policy_key:z.string().min(1), title:z.string().min(1), description:z.string().optional(), scope:z.enum(["GLOBAL","PRESET","PROJECT","SLOT"]), target_id:z.string().optional(), instruction:z.string().min(1), priority:z.number().int().min(1).max(100).optional(), metadata:z.record(z.string(),z.unknown()).optional(), asset_requirement:z.string().optional(), asset_requirements:z.record(z.string(),z.string()).optional(), applies_to:z.array(z.string()).optional(), created_by:z.string().optional(), active:z.boolean().optional() },
+  }, async(v)=>output(await createPersistentPolicy(env,{policyKey:v.policy_key,title:v.title,description:v.description,scope:v.scope,targetId:v.target_id,instruction:v.instruction,priority:v.priority,metadata:v.metadata,assetRequirement:v.asset_requirement,assetRequirements:v.asset_requirements,appliesTo:v.applies_to,createdBy:v.created_by,active:v.active})));
+
+  server.registerTool("editar_politica", {
+    description:"Edita uma política persistente criando nova versão e preservando a anterior no histórico.",
+    inputSchema:{ policy_id:z.string().min(1), title:z.string().optional(), description:z.string().optional(), scope:z.enum(["GLOBAL","PRESET","PROJECT","SLOT"]).optional(), target_id:z.string().optional(), instruction:z.string().optional(), priority:z.number().int().min(1).max(100).optional(), metadata:z.record(z.string(),z.unknown()).optional(), asset_requirement:z.string().nullable().optional(), asset_requirements:z.record(z.string(),z.string()).nullable().optional(), applies_to:z.array(z.string()).optional(), created_by:z.string().optional() },
+  }, async({policy_id,...v})=>output(await editPersistentPolicy(env,policy_id,{title:v.title,description:v.description,scope:v.scope,targetId:v.target_id,instruction:v.instruction,priority:v.priority,metadata:v.metadata,assetRequirement:v.asset_requirement,assetRequirements:v.asset_requirements,appliesTo:v.applies_to,createdBy:v.created_by})));
+
+  server.registerTool("remover_politica", { description:"Remove logicamente uma política persistente preservando histórico.", inputSchema:{policy_id:z.string().min(1)} }, async({policy_id})=>output(await removePersistentPolicy(env,policy_id)));
+  server.registerTool("ativar_politica", { description:"Ativa uma política persistente.", inputSchema:{policy_id:z.string().min(1)} }, async({policy_id})=>output(await setPersistentPolicyActive(env,policy_id,true)));
+  server.registerTool("desativar_politica", { description:"Desativa uma política persistente sem apagar histórico.", inputSchema:{policy_id:z.string().min(1)} }, async({policy_id})=>output(await setPersistentPolicyActive(env,policy_id,false)));
+  server.registerTool("listar_politicas", { description:"Lista políticas persistentes com filtros de escopo, alvo, atividade e policy_key.", inputSchema:{scope:z.enum(["GLOBAL","PRESET","PROJECT","SLOT"]).optional(),target_id:z.string().optional(),active:z.boolean().optional(),policy_key:z.string().optional(),limit:z.number().int().min(1).max(500).optional()} }, async(v)=>output({items:await listPersistentPolicies(env,{scope:v.scope,targetId:v.target_id,active:v.active,policyKey:v.policy_key,limit:v.limit})}));
+  server.registerTool("obter_politicas_aplicaveis", { description:"Resolve automaticamente herança e prioridade SLOT > PROJECT > PRESET > GLOBAL e devolve asset_requirement do slot.", inputSchema:{project_id:z.string().min(1),slot_id:z.string().optional(),preset:z.string().optional(),visual_role:z.string().optional()} }, async(v)=>output(await resolveApplicablePolicies(env,{projectId:v.project_id,slotId:v.slot_id,preset:v.preset,visualRole:v.visual_role})));
+  server.registerTool("aplicar_politica_projeto", { description:"Vincula uma política persistente reutilizável a um projeto sem duplicá-la.", inputSchema:{project_id:z.string().min(1),policy_id:z.string().min(1),created_by:z.string().optional()} }, async(v)=>output(await applyPersistentPolicyToProject(env,{projectId:v.project_id,policyId:v.policy_id,createdBy:v.created_by})));
+  server.registerTool("remover_politica_projeto", { description:"Remove o vínculo entre política e projeto sem apagar a política.", inputSchema:{project_id:z.string().min(1),policy_id:z.string().min(1)} }, async(v)=>output(await removePersistentPolicyFromProject(env,{projectId:v.project_id,policyId:v.policy_id})));
+  server.registerTool("listar_politicas_projeto", { description:"Lista políticas persistentes diretamente aplicadas ou vinculadas ao projeto.", inputSchema:{project_id:z.string().min(1)} }, async(v)=>output(await listProjectPersistentPolicies(env,v.project_id)));
+
   server.registerTool("obter_status_supervisor_ia", { description:"Estado do Supervisor V2 e suas configurações operacionais seguras.", inputSchema:{} }, async()=>output(await supervisorStatus(env)));
   server.registerTool("configurar_supervisor_mcp", { description:"Altera apenas chaves supervisor_* explicitamente permitidas; nunca aceita segredos/credenciais.", inputSchema:{ supervisor_mcp_enabled:z.boolean().optional(), supervisor_lease_ttl_minutes:z.number().int().min(1).max(120).optional(), supervisor_watchdog_interval_minutes:z.number().int().min(1).max(120).optional(), supervisor_renew_on_activity:z.boolean().optional(), supervisor_auto_mark_abandoned:z.boolean().optional(), supervisor_auto_ready_for_resume:z.boolean().optional(), supervisor_reconcile_before_resume:z.boolean().optional(), supervisor_require_execution_id_for_writes:z.boolean().optional(), supervisor_plan_max_parallelism:z.number().int().min(1).max(100).optional(), supervisor_plan_max_wip:z.number().int().min(1).max(1000).optional(), supervisor_plan_packet_size:z.number().int().min(1).max(200).optional(), supervisor_plan_candidate_buffer_min:z.number().int().min(0).max(20).optional(), supervisor_plan_candidate_buffer_target:z.number().int().min(0).max(50).optional(), supervisor_default_source_profile:z.string().optional() } }, async(v)=>output(await configureSupervisor(env,v)));
   server.registerTool("assumir_proximo_trabalho_supervisor", { description:"Obtém lease atômico de um projeto disponível para o Supervisor.", inputSchema:{ worker_id:z.string().optional(), projeto_id:z.string().optional(), lease_minutos:z.number().int().min(1).max(120).optional() } }, async(v)=>output(await claimNextSupervisorWork(env,{workerId:v.worker_id,projectId:v.projeto_id,leaseMinutes:v.lease_minutos})));
@@ -955,6 +976,11 @@ function createServer(env: Env, request: Request) {
     description:"Upsert idempotente de até 500 PRODUCTION_SLOT pelo target_file. Todos os fluxos de assign/export passam a enxergar os mesmos slots.",
     inputSchema:{ projeto_id:z.string().min(1), slots:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),scene_key:z.string().optional(),subject:z.string().optional(),universe:z.string().optional(),reference:z.string().optional(),preset:z.string().optional(),context:z.string().optional(),composition_class:z.string().optional(),observation:z.string().optional()})).min(1).max(500) },
   }, async(v)=>output(await upsertProductionSlots(env,{projectId:v.projeto_id,slots:v.slots.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,sceneKey:x.scene_key,subject:x.subject,universe:x.universe,reference:x.reference,preset:x.preset,context:x.context,compositionClass:x.composition_class,observation:x.observation}))})));
+
+  server.registerTool("rejeitar_production_slots_lote", {
+    description:"Rejeita imagens no nível PRODUCTION_SLOT/PSLOT sem rejeitar a cena nem o AST global. Remove somente o vínculo ativo slot→asset, preserva R2/histórico e abre RELINK_REQUIRED. Até 500 slots; idempotente por estado e operation_id.",
+    inputSchema:{ projeto_id:z.string().min(1), slots:z.array(z.object({ slot_id:z.string().optional(), target_file:z.string().optional(), motivo:z.string().optional() }).refine((v:any)=>Boolean(v.slot_id||v.target_file),{message:"slot_id ou target_file obrigatório"})).min(1).max(500), operation_id:z.string().optional(), rejected_by:z.string().optional() }
+  }, async(v:any)=>output(await rejectProductionSlotsBatch(env,{projectId:v.projeto_id,slots:v.slots.map((slot:any)=>({slotId:slot.slot_id,targetFile:slot.target_file,reason:slot.motivo})),operationId:v.operation_id,rejectedBy:v.rejected_by})));
 
   server.registerTool("assign_assets_to_slots", {
     description:"Associa AST existente a até 500 production slots sem copiar bytes no R2. O mesmo AST pode atender N target_files; se target_file não existir, o slot é criado idempotentemente.",

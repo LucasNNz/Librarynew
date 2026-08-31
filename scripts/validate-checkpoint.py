@@ -15,13 +15,13 @@ EXPECTED = {
     "all_universes": 0,
     "asset_usage": 0,
     "assets_missing_r2_key": 0,
-    "schema_version": "2.23.0",
+    "schema_version": "2.25.0",
     "historical_mcp": 229,
     "historical_implemented": 227,
     "historical_substituted": 2,
 }
 SUBSTITUTED = {"obter_configuracao_cloudflare", "configurar_cloudflare"}
-EXPECTED_EXTRA_TOOLS = {"auditar_armazenamento_r2", "obter_status_upload_midia", "auditar_integridade_d1", "vasculhar_r2", "reparar_pendentes_r2", "explorar_r2_fisico", "excluir_assets_permanentemente_em_lote", "excluir_pendentes_nao_encontrados_r2", "definir_politica_supervisor_livre", "atualizar_manifesto_recuperacao_d1_r2", "obter_status_export_assets_zip", "obter_link_export_assets_zip", "heartbeat_worker", "heartbeat_supervisor", "heartbeat_operacao", "obter_status_heartbeats", "executar_watchdog_heartbeats", "fast_push_project_candidates", "get_collection_snapshot", "get_materialization_telemetry", "get_qa_work_packet", "submit_qa_decisions", "anexar_script_projeto", "obter_slot_projeto", "atualizar_estados_projeto", "heartbeat_estados_projeto", "concluir_projetos", "rejeitar_projetos", "excluir_projetos_permanentemente", "configurar_slot_projeto", "obter_slots_abertos_projeto", "preencher_slot_imagem_projeto", "preencher_slot_texto_projeto", "vincular_asset_slot_projeto", "obter_resumo_curto", "listar_arquivos_projeto", "listar_artefatos_projeto", "anexar_referencias_projeto", "obter_referencias_projeto", "submit_qa_decisions_sync", "obter_modelo_producao", "obter_contagens_producao", "criar_slots_projeto_lote", "assign_assets_to_slots", "atribuir_assets_aos_slots", "gerar_arquivos_finais_projeto", "obter_arquivos_finais_projeto", "obter_link_imagens_zip", "obter_link_roteiro_txt", "obter_link_thumbs_titulos_zip", "criar_tag_slot", "remover_tag_slot", "listar_tags_slot", "buscar_slots_por_tag", "listar_tags_projeto"}
+EXPECTED_EXTRA_TOOLS = {"auditar_armazenamento_r2", "obter_status_upload_midia", "auditar_integridade_d1", "vasculhar_r2", "reparar_pendentes_r2", "explorar_r2_fisico", "excluir_assets_permanentemente_em_lote", "excluir_pendentes_nao_encontrados_r2", "definir_politica_supervisor_livre", "atualizar_manifesto_recuperacao_d1_r2", "obter_status_export_assets_zip", "obter_link_export_assets_zip", "heartbeat_worker", "heartbeat_supervisor", "heartbeat_operacao", "obter_status_heartbeats", "executar_watchdog_heartbeats", "fast_push_project_candidates", "get_collection_snapshot", "get_materialization_telemetry", "get_qa_work_packet", "submit_qa_decisions", "anexar_script_projeto", "obter_slot_projeto", "atualizar_estados_projeto", "heartbeat_estados_projeto", "concluir_projetos", "rejeitar_projetos", "excluir_projetos_permanentemente", "configurar_slot_projeto", "obter_slots_abertos_projeto", "preencher_slot_imagem_projeto", "preencher_slot_texto_projeto", "vincular_asset_slot_projeto", "obter_resumo_curto", "listar_arquivos_projeto", "listar_artefatos_projeto", "anexar_referencias_projeto", "obter_referencias_projeto", "submit_qa_decisions_sync", "obter_modelo_producao", "obter_contagens_producao", "criar_slots_projeto_lote", "assign_assets_to_slots", "atribuir_assets_aos_slots", "gerar_arquivos_finais_projeto", "obter_arquivos_finais_projeto", "obter_link_imagens_zip", "obter_link_roteiro_txt", "obter_link_thumbs_titulos_zip", "criar_tag_slot", "remover_tag_slot", "listar_tags_slot", "buscar_slots_por_tag", "listar_tags_projeto", "criar_politica", "editar_politica", "remover_politica", "ativar_politica", "desativar_politica", "listar_politicas", "obter_politicas_aplicaveis", "aplicar_politica_projeto", "remover_politica_projeto", "listar_politicas_projeto", "rejeitar_production_slots_lote"}
 FORBIDDEN = ["@libsql", "TURSO_", "production-recovery", "secret_cloudflare_connection"]
 SOURCE_EXTENSIONS = {".ts", ".tsx", ".js", ".mjs", ".cjs"}
 
@@ -69,6 +69,7 @@ def logical_health(conn: sqlite3.Connection):
         "projectTitlesWithoutProject": "SELECT COUNT(*) FROM v2_project_titles t LEFT JOIN automatic_projects a ON a.id=t.project_id WHERE a.id IS NULL",
         "infrastructureEventsWithoutProfile": "SELECT COUNT(*) FROM v2_infrastructure_config_events e LEFT JOIN v2_infrastructure_profiles p ON p.id=e.profile_id WHERE p.id IS NULL",
         "operationHeartbeatsWithoutOperation": "SELECT COUNT(*) FROM v2_runtime_heartbeats h LEFT JOIN v2_ingest_operations o ON o.id=h.scope_id WHERE h.scope_type='OPERATION' AND o.id IS NULL",
+        "productionSlotHistoryWithoutSlot": "SELECT COUNT(*) FROM v2_production_slot_history h LEFT JOIN v2_production_slots s ON s.id=h.slot_id WHERE s.id IS NULL",
     }
     return (
         {k: int(q1(conn, sql) or 0) for k, sql in queries.items()},
@@ -332,8 +333,24 @@ def main():
             "worker_capacity_limits": int(q1(conn,"SELECT COUNT(*) FROM worker_capacity_limits") or 0),
             "operational_policies": int(q1(conn,"SELECT COUNT(*) FROM operational_policies") or 0),
         }
-        for table in ["settings","collection_sources","source_profiles","worker_capacity_limits","operational_policies"]:
+        # Factory-zero allows only deterministic SYSTEM_SEED persistent policies.
+        # User/project/runtime policy rows must remain zero, but the V1 preset/global
+        # policy seed is required by schema 2.24.0 and is configuration, not work data.
+        for table in ["settings","collection_sources","source_profiles","worker_capacity_limits"]:
             if configuration_rows[table] != 0: errors.append(f"factory-zero table {table} must be empty, got {configuration_rows[table]}")
+        policy_seed = {
+            "total": int(q1(conn,"SELECT COUNT(*) FROM operational_policies WHERE rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED'") or 0),
+            "active": int(q1(conn,"SELECT COUNT(*) FROM operational_policies WHERE rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED' AND status='ACTIVE'") or 0),
+            "unexpected": int(q1(conn,"SELECT COUNT(*) FROM operational_policies WHERE NOT (rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED' AND status='ACTIVE')") or 0),
+            "global": int(q1(conn,"SELECT COUNT(*) FROM operational_policies WHERE rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED' AND status='ACTIVE' AND scope_level='GLOBAL'") or 0),
+            "preset": int(q1(conn,"SELECT COUNT(*) FROM operational_policies WHERE rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED' AND status='ACTIVE' AND scope_level='PRESET'") or 0),
+        }
+        if policy_seed["total"] != 20 or policy_seed["active"] != 20 or policy_seed["unexpected"] != 0:
+            errors.append(f"persistent policy seed mismatch: {policy_seed}")
+        if policy_seed["global"] != 4 or policy_seed["preset"] != 16:
+            errors.append(f"persistent policy seed scope mismatch: {policy_seed}")
+        if int(q1(conn,"SELECT COUNT(DISTINCT policy_key) FROM operational_policies WHERE rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED'") or 0) != 20:
+            errors.append("persistent policy seed keys must be unique")
         if int(q1(conn,"SELECT COUNT(*) FROM semantic_stock_policies") or 0) != 0: errors.append("semantic_stock_policies must be empty at factory zero")
 
         heartbeat_smoke = heartbeat_sql_smoke(conn)
@@ -353,7 +370,8 @@ def main():
         }
         for key in ["automatic_projects","automatic_project_items","automatic_project_files","supervisor_plans","worker_project_items","v2_download_packages"]:
             if operational_cleanup[key] != 0: errors.append(f"operational_cleanup.{key}: expected 0, got {operational_cleanup[key]}")
-        if operational_cleanup["operational_policies"] != 0: errors.append("operational policies must be empty at factory zero")
+        non_seed_operational_policies = int(q1(conn,"SELECT COUNT(*) FROM operational_policies WHERE NOT (rule_type='PERSISTENT_CONTEXT_POLICY' AND created_by='SYSTEM_SEED' AND status='ACTIVE')") or 0)
+        if non_seed_operational_policies != 0: errors.append(f"non-seed operational policies must be empty at factory zero, got {non_seed_operational_policies}")
         if operational_cleanup["factory_zero_r2_purge"] != 0: errors.append("safe-forward bootstrap must not schedule factory-zero R2 purge")
         if operational_cleanup["r2_purge_jobs"] != 0: errors.append("safe-forward bootstrap must have no pending R2 purge jobs")
         migration_policy = q1(conn, "SELECT value FROM v2_schema_meta WHERE key=\'migration_executor_policy\'")

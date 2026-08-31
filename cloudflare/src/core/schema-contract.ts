@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.23.0";
+const CONTRACT_VERSION = "2.25.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -69,6 +69,17 @@ const REQUIRED: TableSpec[] = [
       { name:"mime_type", ddl:"ALTER TABLE v2_download_packages ADD COLUMN mime_type TEXT" },
     ],
   },
+  {
+    table: "v2_production_slots",
+    columns: [
+      { name:"visual_role", ddl:"ALTER TABLE v2_production_slots ADD COLUMN visual_role TEXT" },
+      { name:"previous_asset_id", ddl:"ALTER TABLE v2_production_slots ADD COLUMN previous_asset_id TEXT REFERENCES assets(id)" },
+      { name:"relink_required_at", ddl:"ALTER TABLE v2_production_slots ADD COLUMN relink_required_at INTEGER" },
+      { name:"relink_reason", ddl:"ALTER TABLE v2_production_slots ADD COLUMN relink_reason TEXT" },
+      { name:"rejected_by", ddl:"ALTER TABLE v2_production_slots ADD COLUMN rejected_by TEXT" },
+      { name:"rejected_operation_id", ddl:"ALTER TABLE v2_production_slots ADD COLUMN rejected_operation_id TEXT" },
+    ],
+  },
 
 ];
 
@@ -90,7 +101,7 @@ export async function inspectCriticalSchema(env:Env) {
     const columns = await tableColumns(env, spec.table);
     for (const column of spec.columns) if (!columns.has(column.name)) missingColumns.push({table:spec.table,column:column.name});
   }
-  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access","v2_reference_pools","v2_production_scenes","v2_production_slots","v2_slot_tags"]) if (!(await tableExists(env,table))) missingTables.push(table);
+  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access","v2_reference_pools","v2_production_scenes","v2_production_slots","v2_production_slot_history","v2_slot_tags","v2_project_policy_links"]) if (!(await tableExists(env,table))) missingTables.push(table);
   return {
     ready: missingTables.length===0 && missingColumns.length===0,
     contractVersion: CONTRACT_VERSION,
@@ -118,6 +129,21 @@ export async function reconcileCriticalSchema(env:Env) {
     repaired.push("table:v2_slot_tags");
     before=await inspectCriticalSchema(env);
   }
+
+  if(before.missingTables.includes("v2_production_slot_history")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slot_history (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,project_version INTEGER NOT NULL DEFAULT 1,slot_id TEXT NOT NULL REFERENCES v2_production_slots(id) ON DELETE CASCADE,target_file TEXT,event TEXT NOT NULL,previous_asset_id TEXT REFERENCES assets(id),new_asset_id TEXT REFERENCES assets(id),reason TEXT,operation_id TEXT,actor TEXT,created_at INTEGER NOT NULL)`);
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_pslot_history_operation ON v2_production_slot_history(project_id,slot_id,event,operation_id) WHERE operation_id IS NOT NULL AND operation_id<>''");
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_history_slot ON v2_production_slot_history(project_id,slot_id,created_at DESC)");
+    repaired.push("table:v2_production_slot_history");
+    before=await inspectCriticalSchema(env);
+  }
+  if(before.missingTables.includes("v2_project_policy_links")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_project_policy_links (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,policy_id TEXT NOT NULL REFERENCES operational_policies(id) ON DELETE CASCADE,active INTEGER NOT NULL DEFAULT 1,created_by TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,removed_at INTEGER)`);
+    await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_policy_link_unique ON v2_project_policy_links(project_id,policy_id)");
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_policy_link_active ON v2_project_policy_links(project_id,active,updated_at DESC)");
+    repaired.push("table:v2_project_policy_links");
+    before=await inspectCriticalSchema(env);
+  }
   if(before.missingTables.includes("v2_project_slot_access")){
     await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_project_slot_access (project_id TEXT NOT NULL,slot_key TEXT NOT NULL,mcp_open INTEGER NOT NULL DEFAULT 0,instruction TEXT,opened_by TEXT,opened_at INTEGER,updated_at INTEGER NOT NULL,PRIMARY KEY(project_id,slot_key),FOREIGN KEY(project_id) REFERENCES automatic_projects(id) ON DELETE CASCADE)`);
     await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_slot_access_open ON v2_project_slot_access(mcp_open,updated_at DESC)");
@@ -127,7 +153,7 @@ export async function reconcileCriticalSchema(env:Env) {
   if(before.missingTables.some(table=>["v2_reference_pools","v2_production_scenes","v2_production_slots"].includes(table))){
     await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_reference_pools (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,pool_key TEXT NOT NULL,subject TEXT,universe TEXT,semantic_reference TEXT,status TEXT NOT NULL DEFAULT 'PENDING',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
     await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_scenes (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,scene_key TEXT NOT NULL,scene_number INTEGER,title TEXT,universe TEXT,subject TEXT,concept TEXT,semantic_reference TEXT,script_excerpt TEXT,preset TEXT,context TEXT,composition_class TEXT NOT NULL DEFAULT 'CONTEXTUAL',status TEXT NOT NULL DEFAULT 'READY',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
-    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slots (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,scene_id TEXT REFERENCES v2_production_scenes(id) ON DELETE CASCADE,slot_key TEXT NOT NULL,slot_index INTEGER NOT NULL DEFAULT 1,target_file TEXT,subject TEXT,universe TEXT,semantic_reference TEXT,reference_pool_id TEXT REFERENCES v2_reference_pools(id),preset TEXT,context TEXT,composition_class TEXT NOT NULL DEFAULT 'CONTEXTUAL',asset_id TEXT REFERENCES assets(id),status TEXT NOT NULL DEFAULT 'UNRESOLVED',observation TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slots (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,scene_id TEXT REFERENCES v2_production_scenes(id) ON DELETE CASCADE,slot_key TEXT NOT NULL,slot_index INTEGER NOT NULL DEFAULT 1,target_file TEXT,subject TEXT,universe TEXT,semantic_reference TEXT,reference_pool_id TEXT REFERENCES v2_reference_pools(id),preset TEXT,context TEXT,composition_class TEXT NOT NULL DEFAULT 'CONTEXTUAL',visual_role TEXT,asset_id TEXT REFERENCES assets(id),status TEXT NOT NULL DEFAULT 'UNRESOLVED',observation TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_reference_pool_unique ON v2_reference_pools(project_id,version,pool_key)");
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_production_scene_unique ON v2_production_scenes(project_id,version,scene_key)");
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_production_slot_key_unique ON v2_production_slots(project_id,version,slot_key)");
@@ -136,7 +162,7 @@ export async function reconcileCriticalSchema(env:Env) {
     repaired.push("tables:production_model");
     before=await inspectCriticalSchema(env);
   }
-  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access','v2_reference_pools','v2_production_scenes','v2_production_slots','v2_slot_tags'].includes(table));
+  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access','v2_reference_pools','v2_production_scenes','v2_production_slots','v2_production_slot_history','v2_slot_tags','v2_project_policy_links'].includes(table));
   if (hardMissing.length) return { ...before, repaired, error:"CRITICAL_TABLE_MISSING" };
 
   for (const spec of REQUIRED) {
@@ -161,6 +187,7 @@ export async function reconcileCriticalSchema(env:Env) {
         queued_at=COALESCE(queued_at,created_at),
         materialized_at=CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN COALESCE(materialized_at,updated_at) ELSE materialized_at END`).run();
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_relink_required ON v2_production_slots(project_id,status,updated_at DESC) WHERE status='RELINK_REQUIRED'");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_automatic_projects_lifecycle_updated ON automatic_projects(lifecycle_status,updated_at DESC,id DESC)");
   await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_media_slot ON v2_project_media(project_id,kind,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('THUMB_REJECTED','REJECTED')");

@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import { id, nowMs, stableId } from "./ids";
 import { projectWriteGuard } from "./project-workflow";
 import { listProjectTagsFlat } from "./slot-tags";
+import { resolveApplicablePolicies } from "./persistent-policies";
 
 const clean=(value:unknown)=>String(value??"").trim();
 const upper=(value:unknown)=>clean(value).toUpperCase();
@@ -19,7 +20,7 @@ export type ProductionSceneSeed={
   preset?:string;
   context?:string;
   compositionClass?:string;
-  slots:Array<{targetFile?:string|null;subject?:string;reference?:string;preset?:string;context?:string;compositionClass?:string}>;
+  slots:Array<{targetFile?:string|null;subject?:string;reference?:string;preset?:string;context?:string;compositionClass?:string;visualRole?:string}>;
 };
 
 function slug(value:string){return value.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/[^A-Z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,80)||"GENERIC";}
@@ -31,12 +32,12 @@ function poolKey(subject:string,reference:string){return `REF-${slug(subject||re
 
 export async function productionModelCounts(env:Env,projectId:string){
   const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
-  if(!project)return {reference_pools_total:0,reference_pools_ready:0,production_scenes_total:0,production_scenes_ready:0,production_slots_total:0,production_slots_resolved:0,production_slots_with_target:0,production_slots_missing_target:0,complete:false};
+  if(!project)return {reference_pools_total:0,reference_pools_ready:0,production_scenes_total:0,production_scenes_ready:0,production_slots_total:0,production_slots_resolved:0,production_slots_relink_required:0,production_slots_with_target:0,production_slots_missing_target:0,complete:false};
   const version=Number(project.active_version||1);
   const [pools,scenes,slots]=await env.DB.batch<Record<string,unknown>>([
     env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status IN ('READY','COMPLETE','QA_COMPLETE') OR EXISTS (SELECT 1 FROM v2_production_slots ps WHERE ps.reference_pool_id=v2_reference_pools.id AND ps.asset_id IS NOT NULL) THEN 1 ELSE 0 END) ready FROM v2_reference_pools WHERE project_id=? AND version=?").bind(projectId,version),
     env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status IN ('READY','COMPLETE') THEN 1 ELSE 0 END) ready FROM v2_production_scenes WHERE project_id=? AND version=?").bind(projectId,version),
-    env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) resolved,SUM(CASE WHEN target_file IS NOT NULL AND target_file<>'' THEN 1 ELSE 0 END) with_target,SUM(CASE WHEN target_file IS NULL OR target_file='' THEN 1 ELSE 0 END) missing_target FROM v2_production_slots WHERE project_id=? AND version=?").bind(projectId,version),
+    env.DB.prepare("SELECT COUNT(*) total,SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) resolved,SUM(CASE WHEN status='RELINK_REQUIRED' THEN 1 ELSE 0 END) relink_required,SUM(CASE WHEN target_file IS NOT NULL AND target_file<>'' THEN 1 ELSE 0 END) with_target,SUM(CASE WHEN target_file IS NULL OR target_file='' THEN 1 ELSE 0 END) missing_target FROM v2_production_slots WHERE project_id=? AND version=?").bind(projectId,version),
   ]);
   const row=(r:D1Result<Record<string,unknown>>)=>r.results?.[0]||{};
   const p=row(pools),s=row(scenes),sl=row(slots);
@@ -44,7 +45,7 @@ export async function productionModelCounts(env:Env,projectId:string){
   return {
     reference_pools_total:Number(p.total||0),reference_pools_ready:Number(p.ready||0),
     production_scenes_total:Number(s.total||0),production_scenes_ready:Number(s.ready||0),
-    production_slots_total:total,production_slots_resolved:resolved,
+    production_slots_total:total,production_slots_resolved:resolved,production_slots_relink_required:Number(sl.relink_required||0),
     production_slots_with_target:Number(sl.with_target||0),production_slots_missing_target:Number(sl.missing_target||0),
     complete:total>0&&resolved>=total,
   };
@@ -76,10 +77,10 @@ export async function materializeProductionModel(env:Env,input:{projectId:string
       const slotId=await stableId("PSLOT",`${input.projectId}\n${input.version}\n${slotKey}`,12);
       const existingSlot=await env.DB.prepare("SELECT id FROM v2_production_slots WHERE project_id=? AND version=? AND slot_key=?").bind(input.projectId,input.version,slotKey).first();
       existingSlot?slotsUpdated++:slotsCreated++;
-      await env.DB.prepare(`INSERT INTO v2_production_slots(id,project_id,version,scene_id,slot_key,slot_index,target_file,subject,universe,semantic_reference,reference_pool_id,preset,context,composition_class,status,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'UNRESOLVED',?,?)
-        ON CONFLICT(project_id,version,slot_key) DO UPDATE SET scene_id=excluded.scene_id,slot_index=excluded.slot_index,target_file=COALESCE(excluded.target_file,v2_production_slots.target_file),subject=COALESCE(NULLIF(excluded.subject,''),v2_production_slots.subject),universe=COALESCE(NULLIF(excluded.universe,''),v2_production_slots.universe),semantic_reference=COALESCE(NULLIF(excluded.semantic_reference,''),v2_production_slots.semantic_reference),reference_pool_id=excluded.reference_pool_id,preset=COALESCE(NULLIF(excluded.preset,''),v2_production_slots.preset),context=COALESCE(NULLIF(excluded.context,''),v2_production_slots.context),composition_class=COALESCE(NULLIF(excluded.composition_class,''),v2_production_slots.composition_class),updated_at=excluded.updated_at`)
-        .bind(slotId,input.projectId,input.version,sceneId,slotKey,i+1,target||null,subject||null,scene.universe||null,reference||null,poolId,seed.preset||scene.preset||null,seed.context||scene.context||scene.scriptExcerpt||null,seed.compositionClass||scene.compositionClass||"CONTEXTUAL",ts,ts).run();
+      await env.DB.prepare(`INSERT INTO v2_production_slots(id,project_id,version,scene_id,slot_key,slot_index,target_file,subject,universe,semantic_reference,reference_pool_id,preset,context,composition_class,visual_role,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'UNRESOLVED',?,?)
+        ON CONFLICT(project_id,version,slot_key) DO UPDATE SET scene_id=excluded.scene_id,slot_index=excluded.slot_index,target_file=COALESCE(excluded.target_file,v2_production_slots.target_file),subject=COALESCE(NULLIF(excluded.subject,''),v2_production_slots.subject),universe=COALESCE(NULLIF(excluded.universe,''),v2_production_slots.universe),semantic_reference=COALESCE(NULLIF(excluded.semantic_reference,''),v2_production_slots.semantic_reference),reference_pool_id=excluded.reference_pool_id,preset=COALESCE(NULLIF(excluded.preset,''),v2_production_slots.preset),context=COALESCE(NULLIF(excluded.context,''),v2_production_slots.context),composition_class=COALESCE(NULLIF(excluded.composition_class,''),v2_production_slots.composition_class),visual_role=COALESCE(NULLIF(excluded.visual_role,''),v2_production_slots.visual_role),updated_at=excluded.updated_at`)
+        .bind(slotId,input.projectId,input.version,sceneId,slotKey,i+1,target||null,subject||null,scene.universe||null,reference||null,poolId,seed.preset||scene.preset||null,seed.context||scene.context||scene.scriptExcerpt||null,seed.compositionClass||scene.compositionClass||"CONTEXTUAL",seed.visualRole||null,ts,ts).run();
     }
   }
   const counts=await productionModelCounts(env,input.projectId);
@@ -97,8 +98,8 @@ export async function listProductionModel(env:Env,input:{projectId:string;limit?
     env.DB.prepare("SELECT * FROM v2_reference_pools WHERE project_id=? AND version=? ORDER BY pool_key LIMIT ?").bind(input.projectId,version,limit),
   ]);
   const visualTags=await listProjectTagsFlat(env,input.projectId).catch(()=>[]);const bySlot=new Map<string,any[]>();for(const tag of visualTags as any[]){const key=String(tag.slot_id||"");const list=bySlot.get(key)||[];list.push(tag);bySlot.set(key,list);}
-  const productionSlots=(slots.results||[]).map(slot=>{const merged=[...(bySlot.get(String(slot.id||""))||[]),...(bySlot.get(String(slot.slot_key||""))||[])];const seen=new Set<string>();return {...slot,tags:merged.filter((tag:any)=>{const key=String(tag.tag_key||tag.id||"");if(seen.has(key))return false;seen.add(key);return true;})};});
-  return {project_id:input.projectId,version,counts:await productionModelCounts(env,input.projectId),reference_pools:pools.results||[],production_scenes:scenes.results||[],production_slots:productionSlots,slot_tags_total:(visualTags as any[]).length};
+  const productionSlots=await Promise.all((slots.results||[]).map(async slot=>{const merged=[...(bySlot.get(String(slot.id||""))||[]),...(bySlot.get(String(slot.slot_key||""))||[])];const seen=new Set<string>();const tags=merged.filter((tag:any)=>{const key=String(tag.tag_key||tag.id||"");if(seen.has(key))return false;seen.add(key);return true;});const resolved=await resolveApplicablePolicies(env,{projectId:input.projectId,slotId:String(slot.slot_key||slot.id||""),preset:String(slot.preset||""),visualRole:String(slot.visual_role||"")});return {...slot,tags,policies:resolved.policies,asset_requirement:resolved.asset_requirement,policy_revision:resolved.policy_revision};}));
+  return {project_id:input.projectId,version,counts:await productionModelCounts(env,input.projectId),reference_pools:pools.results||[],production_scenes:scenes.results||[],production_slots:productionSlots,slot_tags_total:(visualTags as any[]).length,policy_inheritance:"SLOT>PROJECT>PRESET>GLOBAL"};
 }
 
 
@@ -155,6 +156,58 @@ export async function upsertProductionSlots(env:Env,input:{projectId:string;slot
   return {project_id:input.projectId,accepted:slots.length,results,counts,idempotent_by:"project_id+version+target_file"};
 }
 
+
+export async function rejectProductionSlotsBatch(env:Env,input:{projectId:string;slots:Array<{slotId?:string;targetFile?:string;reason?:string}>;operationId?:string;rejectedBy?:string}){
+  const guard=await projectWriteGuard(env,input.projectId); if(!guard.ok)return guard;
+  const project=guard.project as Record<string,unknown>,version=Number(project.active_version||1);
+  const operationId=clean(input.operationId)||id("OP"),rejectedBy=clean(input.rejectedBy)||"MCP_SUPERVISOR";
+  const requested=(input.slots||[]).map(slot=>({slotId:clean(slot.slotId),targetFile:clean(slot.targetFile),reason:clean(slot.reason)})).filter(slot=>slot.slotId||slot.targetFile).slice(0,500);
+  if(!requested.length)return {error:"NO_PRODUCTION_SLOTS",status:400} as const;
+  const ts=nowMs(),results:Record<string,unknown>[]=[];let rejected=0,alreadyRelinkRequired=0,notFound=0,stateChanged=0;
+  for(const selector of requested){
+    const slot=await env.DB.prepare("SELECT * FROM v2_production_slots WHERE project_id=? AND version=? AND (id=? OR target_file=?) ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1")
+      .bind(input.projectId,version,selector.slotId,selector.targetFile,selector.slotId).first<Record<string,unknown>>();
+    if(!slot){notFound++;results.push({slot_id:selector.slotId||null,target_file:selector.targetFile||null,error:"PRODUCTION_SLOT_NOT_FOUND"});continue;}
+    const slotId=clean(slot.id),targetFile=clean(slot.target_file),currentStatus=upper(slot.status),currentAsset=clean(slot.asset_id);
+    const priorOperation=operationId?await env.DB.prepare("SELECT previous_asset_id,created_at FROM v2_production_slot_history WHERE project_id=? AND slot_id=? AND event='PRODUCTION_SLOT_REJECTED' AND operation_id=? LIMIT 1").bind(input.projectId,slotId,operationId).first<Record<string,unknown>>():null;
+    if(priorOperation){alreadyRelinkRequired++;results.push({slot_id:slotId,target_file:targetFile,status:currentStatus,asset_id:currentAsset||null,idempotent:true,idempotent_operation:true,previous_asset_id:clean(priorOperation.previous_asset_id)||null});continue;}
+    if(currentStatus==="RELINK_REQUIRED"&&!currentAsset){alreadyRelinkRequired++;results.push({slot_id:slotId,target_file:targetFile,status:"RELINK_REQUIRED",already_relink_required:true,idempotent:true,previous_asset_id:clean(slot.previous_asset_id)||null});continue;}
+    if(!currentAsset){alreadyRelinkRequired++;await env.DB.prepare("UPDATE v2_production_slots SET status='RELINK_REQUIRED',relink_required_at=COALESCE(relink_required_at,?),relink_reason=COALESCE(NULLIF(?,''),relink_reason),rejected_by=COALESCE(NULLIF(?,''),rejected_by),rejected_operation_id=COALESCE(NULLIF(?,''),rejected_operation_id),updated_at=? WHERE id=?")
+      .bind(ts,selector.reason,rejectedBy,operationId,ts,slotId).run();stateChanged++;results.push({slot_id:slotId,target_file:targetFile,status:"RELINK_REQUIRED",already_unresolved:true,idempotent:true});continue;}
+    await env.DB.prepare("UPDATE v2_production_slots SET previous_asset_id=?,asset_id=NULL,status='RELINK_REQUIRED',relink_required_at=?,relink_reason=?,rejected_by=?,rejected_operation_id=?,observation=COALESCE(NULLIF(?,''),observation),updated_at=? WHERE id=?")
+      .bind(currentAsset,ts,selector.reason||null,rejectedBy,operationId,selector.reason,ts,slotId).run();
+    const histId=await stableId("PSH",`${input.projectId}\n${version}\n${slotId}\nPRODUCTION_SLOT_REJECTED\n${operationId}`,12);
+    await env.DB.prepare(`INSERT OR IGNORE INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,reason,operation_id,actor,created_at)
+      VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?,?)`)
+      .bind(histId,input.projectId,version,slotId,targetFile||null,currentAsset,selector.reason||null,operationId,rejectedBy,ts).run();
+    await env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
+      .bind(id("PEV"),input.projectId,"PRODUCTION_SLOT_REJECTED","RELINK_REQUIRED",JSON.stringify({project_id:input.projectId,slot_id:slotId,target_file:targetFile||null,previous_asset_id:currentAsset,motivo:selector.reason||null,operation_id:operationId,rejected_at:ts,rejected_by:rejectedBy}),ts).run().catch(()=>undefined);
+    rejected++;stateChanged++;results.push({slot_id:slotId,target_file:targetFile,previous_asset_id:currentAsset,status:"RELINK_REQUIRED",asset_id:null});
+  }
+  const counts=await productionModelCounts(env,input.projectId);
+  if(stateChanged>0){
+    const statements=[
+      env.DB.prepare("UPDATE automatic_projects SET status='ACTIVE',pipeline_status='SLOT_ASSIGNMENT_WORKING',next_action='RELINK_PRODUCTION_SLOTS',state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,input.projectId),
+    ];
+    if(rejected>0){
+      statements.push(env.DB.prepare("UPDATE v2_download_packages SET status='STALE',error='PRODUCTION_SLOT_REJECTED_REGENERATE_IMAGES',updated_at=? WHERE project_id=? AND type IN ('PROJECT_IMAGES_ZIP','PROJECT_PRODUCTION_ZIP') AND status IN ('READY_FOR_DOWNLOAD','COMPLETED','DOWNLOADED')").bind(ts,input.projectId));
+      const invalidationEventId=await stableId("PEV",`${input.projectId}\nFINAL_ARTIFACTS_INVALIDATED_BY_SLOT_REJECTION\n${operationId}`,12);
+      statements.push(env.DB.prepare("INSERT OR IGNORE INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(invalidationEventId,input.projectId,"FINAL_ARTIFACTS_INVALIDATED_BY_SLOT_REJECTION","STALE",JSON.stringify({operation_id:operationId,rejected,production_slots_relink_required:counts.production_slots_relink_required,preserved_previous_exports:true,stale_types:["PROJECT_IMAGES_ZIP","PROJECT_PRODUCTION_ZIP"]}),ts));
+    }
+    await env.DB.batch(statements);
+  }
+  return {project_id:input.projectId,operation_id:operationId,requested:requested.length,rejected,already_relink_required:alreadyRelinkRequired,not_found:notFound,results,counts,collector_eligible_status:"RELINK_REQUIRED",next_action:counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":"ASSIGN_ASSETS_TO_SLOTS",preserved_ast:true,preserved_r2:true,preserved_history:true,previous_exports_preserved:true};
+}
+
+export async function listProductionRelinkGaps(env:Env,projectId:string,limit=500){
+  const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
+  if(!project)return [];
+  const rows=await env.DB.prepare(`SELECT id AS slot_id,target_file,scene_id,slot_key,subject,universe,semantic_reference,preset,context,composition_class,visual_role,previous_asset_id,relink_reason,relink_required_at,status
+    FROM v2_production_slots WHERE project_id=? AND version=? AND status='RELINK_REQUIRED' ORDER BY relink_required_at ASC,updated_at ASC LIMIT ?`)
+    .bind(projectId,Number(project.active_version||1),Math.max(1,Math.min(limit,500))).all<Record<string,unknown>>();
+  return rows.results||[];
+}
+
 export async function assignAssetsToSlots(env:Env,input:{projectId:string;assignments:Array<{slotId?:string;targetFile:string;assetId:string;observation?:string}>}){
   const guard=await projectWriteGuard(env,input.projectId); if(!guard.ok)return guard;
   const project=guard.project as Record<string,unknown>,version=Number(project.active_version||1);
@@ -175,11 +228,22 @@ export async function assignAssetsToSlots(env:Env,input:{projectId:string;assign
       slot=await env.DB.prepare("SELECT * FROM v2_production_slots WHERE id=?").bind(slotId).first<Record<string,unknown>>();
     }
     if(!slot){results.push({target_file:a.targetFile,asset_id:a.assetId,error:"SLOT_UPSERT_FAILED"});continue;}
-    await env.DB.prepare("UPDATE v2_production_slots SET asset_id=?,status='FROZEN',observation=?,updated_at=? WHERE id=?").bind(a.assetId,a.observation||null,ts,slot.id).run();
+    const wasRelinkRequired=upper(slot.status)==="RELINK_REQUIRED";
+    const previousAssetId=wasRelinkRequired?(clean(slot.previous_asset_id)||clean(slot.asset_id)):clean(slot.asset_id);
+    await env.DB.prepare("UPDATE v2_production_slots SET asset_id=?,status='FROZEN',observation=?,relink_required_at=NULL,relink_reason=NULL,rejected_by=NULL,rejected_operation_id=NULL,updated_at=? WHERE id=?").bind(a.assetId,a.observation||null,ts,slot.id).run();
+    if(wasRelinkRequired){
+      const relinkEventId=await stableId("PSH",`${input.projectId}\n${version}\n${String(slot.id)}\nPRODUCTION_SLOT_RELINKED\n${previousAssetId}\n${a.assetId}`,12);
+      await env.DB.prepare(`INSERT OR IGNORE INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,reason,operation_id,actor,created_at) VALUES (?,?,?,?,?,'PRODUCTION_SLOT_RELINKED',?,?,?,?,?,?)`)
+        .bind(relinkEventId,input.projectId,version,String(slot.id),a.targetFile,previousAssetId||null,a.assetId,a.observation||null,null,"ASSIGN_ASSETS_TO_SLOTS",ts).run();
+      await env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
+        .bind(id("PEV"),input.projectId,"PRODUCTION_SLOT_RELINKED","FROZEN",JSON.stringify({project_id:input.projectId,slot_id:String(slot.id),target_file:a.targetFile,previous_asset_id:previousAssetId||null,new_asset_id:a.assetId,relinked_at:ts}),ts).run().catch(()=>undefined);
+      await env.DB.prepare("UPDATE automatic_project_items SET linked_asset_id=?,status='FROZEN',stage='DONE',collection_status='COMPLETE',qa_status='QA_COMPLETE',updated_at=? WHERE project_id=? AND item_key=? AND target_file=? AND kind='production_slot_relink'")
+        .bind(a.assetId,ts,input.projectId,String(slot.id),a.targetFile).run().catch(()=>undefined);
+    }
     const usageId=await stableId("USE",`PRODUCTION_SLOT\n${input.projectId}\n${String(slot.id)}\n${a.assetId}`,12);
     await env.DB.prepare(`INSERT OR IGNORE INTO asset_usage(id,asset_id,project,block,preset,slot,role,script_reference,note,status,used_at) VALUES (?,?,?,?,?,?,? ,?,?, 'Registrado',?)`)
       .bind(usageId,a.assetId,input.projectId,clean(slot.scene_id)||null,clean(slot.preset)||null,a.targetFile,"PRODUCTION_SLOT",clean(slot.context)||null,a.observation||null,ts).run().catch(()=>undefined);
-    touchedAssets.add(a.assetId);results.push({slot_id:slot.id,target_file:a.targetFile,asset_id:a.assetId,status:"FROZEN"});
+    touchedAssets.add(a.assetId);results.push({slot_id:slot.id,target_file:a.targetFile,asset_id:a.assetId,status:"FROZEN",relinked:wasRelinkRequired,previous_asset_id:wasRelinkRequired?(previousAssetId||null):undefined});
   }
   for(const assetId of touchedAssets)await env.DB.prepare("UPDATE assets SET use_count=(SELECT COUNT(*) FROM asset_usage WHERE asset_id=?),last_used_at=?,updated_at=? WHERE id=?").bind(assetId,ts,ts,assetId).run().catch(()=>undefined);
   await env.DB.prepare(`UPDATE v2_reference_pools SET status=CASE WHEN EXISTS (SELECT 1 FROM v2_production_slots ps WHERE ps.reference_pool_id=v2_reference_pools.id AND ps.asset_id IS NOT NULL) THEN 'READY' ELSE status END,updated_at=? WHERE project_id=? AND version=?`).bind(ts,input.projectId,version).run();

@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { id, nowMs } from "./ids";
 import { listProjectTagsFlat } from "./slot-tags";
+import { resolveApplicablePolicies } from "./persistent-policies";
 
 const clean=(v:unknown)=>String(v??"").trim();
 const upper=(v:unknown)=>clean(v).toUpperCase();
@@ -152,8 +153,10 @@ export async function projectSlotSnapshot(env:Env,projectId:string){
     slot("approved","Imagens aprovadas",productionTotal>0?(productionResolved>=productionTotal?"READY":"WORKING"):(required>0&&approved>=required?"READY":required>0?"WORKING":"WAITING"),productionTotal>0?`${productionResolved}/${productionTotal} slots resolvidos`:(required?`${approved}/${required} necessárias`:`${approved} aprovadas`),productionTotal>0?productionResolved/productionTotal*100:(required?approved/required*100:(approved?100:0))),
     slot("zip","Imagens ZIP",["READY","READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED"].includes(zipStatus)?"READY":"WAITING",imagesExport?.file_name?String(imagesExport.file_name):legacyPackage?.file_name?String(legacyPackage.file_name):"Ainda não gerado",imagesExport||legacyPackage?100:0),
   ];
-  const progress=Math.round(slots.reduce((sum,s)=>sum+s.progress,0)/slots.length);
-  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},production:{production_slots_total:productionTotal,production_slots_resolved:productionResolved,production_scenes_total:Number(production?.production_scenes_total||0),reference_pools_total:Number(production?.reference_pools_total||0)},candidates:{...candidates},package:legacyPackage||imagesExport||null,finalArtifacts:{imagens:imagesExport||null,roteiro:scriptExport||null,publicacao:publicationExport||null},slotAccess:slotAccess.results||[],slotTags:{total:(visualSlotTags as any[]).length,bySlot:Object.fromEntries(slotTagMap)}};
+  const slotsWithPolicies=await Promise.all(slots.map(async entry=>{const resolved=await resolveApplicablePolicies(env,{projectId,slotId:entry.key});return {...entry,policies:resolved.policies,assetRequirement:resolved.asset_requirement,policyRevision:resolved.policy_revision};}));
+  const progress=Math.round(slotsWithPolicies.reduce((sum,s)=>sum+s.progress,0)/slotsWithPolicies.length);
+  const policyCount=slotsWithPolicies.reduce((sum,s)=>sum+Number((s.policies as unknown[]|undefined)?.length||0),0);
+  return {project:{...project,mcp_locked:Number(project.mcp_locked||0),lifecycle_status:project.lifecycle_status||"ACTIVE"},activeTags,slots:slotsWithPolicies,progress,script,referenceBrief:referenceBrief||null,thumbs:{count:thumbCount,selected:Number(thumbs?.selected||0),max:3},titles:{count:titleCount,selected:Number(titles?.selected||0),max:3},items:{...items},production:{production_slots_total:productionTotal,production_slots_resolved:productionResolved,production_scenes_total:Number(production?.production_scenes_total||0),reference_pools_total:Number(production?.reference_pools_total||0)},candidates:{...candidates},package:legacyPackage||imagesExport||null,finalArtifacts:{imagens:imagesExport||null,roteiro:scriptExport||null,publicacao:publicationExport||null},slotAccess:slotAccess.results||[],slotTags:{total:(visualSlotTags as any[]).length,bySlot:Object.fromEntries(slotTagMap)},operationalPolicies:{resolvedAcrossSlots:policyCount,inheritance:"SLOT>PROJECT>PRESET>GLOBAL"}};
 }
 
 export async function setProjectLifecycle(env:Env,input:{projectIds:string[];action:"COMPLETE"|"REJECT"|"REOPEN";reason?:string}){

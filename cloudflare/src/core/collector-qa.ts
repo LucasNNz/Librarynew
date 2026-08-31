@@ -5,6 +5,7 @@ import { id, nowMs, stableId } from "./ids";
 import { safeRemoteUrl } from "./net";
 import { configureProjectItemPipeline, markProjectItemQaInProgress, refreshProjectItemPipelineState, resolveProjectItem, summarizeOperationCollectionGoal, type ProjectPipelineItemState } from "./project-pipeline-state";
 import { projectWriteGuard, syncDerivedProjectWorkflow, updateProjectWorkflow } from "./project-workflow";
+import { resolveApplicablePolicies } from "./persistent-policies";
 
 function collectorClean(v: unknown) { return String(v ?? "").trim(); }
 function collectorSleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -214,6 +215,16 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
     : states.some(state => state.collectionStatus === "COLLECTING") ? "COLLECTING"
     : states.some(state => state.collectionStatus === "NEEDS_MORE" || state.collectionStatus === "EMPTY") ? "NEEDS_MORE" : "EMPTY");
   const goalSatisfied = telemetry?.goalSatisfied ?? (states.length > 0 && states.every(state => state.collectionStatus === "COMPLETE"));
+  const policyContexts = new Map<string,Awaited<ReturnType<typeof resolveApplicablePolicies>>>();
+  await Promise.all(states.map(async state=>{
+    const item=await env.DB.prepare("SELECT target_file,item_key FROM automatic_project_items WHERE project_id=? AND id=? LIMIT 1").bind(projectId,state.itemId).first<{target_file:string|null;item_key:string|null}>().catch(()=>null);
+    const productionSlot=item?.target_file?await env.DB.prepare("SELECT slot_key,preset,visual_role FROM v2_production_slots WHERE project_id=? AND target_file=? LIMIT 1").bind(projectId,item.target_file).first<{slot_key:string|null;preset:string|null;visual_role:string|null}>().catch(()=>null):null;
+    const context=await resolveApplicablePolicies(env,{projectId,slotId:String(productionSlot?.slot_key||item?.item_key||state.itemKey||state.itemId),preset:String(productionSlot?.preset||""),visualRole:String(productionSlot?.visual_role||"")}).catch(()=>({project_id:projectId,slot_id:String(state.itemKey||state.itemId),visual_role:null,preset:null,policy_revision:null,asset_requirement:null,policies:[]}));
+    policyContexts.set(state.itemId,context);
+  }));
+  const relinkGapsResult=await env.DB.prepare(`SELECT id AS slot_id,slot_key,target_file,scene_id,subject,universe,semantic_reference,preset,context,composition_class,visual_role,previous_asset_id,relink_reason,relink_required_at,status
+    FROM v2_production_slots WHERE project_id=? AND status='RELINK_REQUIRED' ORDER BY relink_required_at ASC,updated_at ASC LIMIT 500`).bind(projectId).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>));
+  const relinkRequiredSlots=relinkGapsResult.results||[];
   return {
     goalSatisfied,
     goal_satisfied: goalSatisfied,
@@ -240,8 +251,13 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
       qa_status: state.qaStatus,
       status: state.collectionStatus === "COMPLETE" ? "READY_FOR_QA" : state.collectionStatus,
       requirement_status: state.requirementStatus,
+      asset_requirement: policyContexts.get(state.itemId)?.asset_requirement || null,
+      policies: policyContexts.get(state.itemId)?.policies || [],
+      policy_revision: policyContexts.get(state.itemId)?.policy_revision || null,
     })),
     needsMore: states.filter(state => (state.collectionStatus === "NEEDS_MORE" || state.collectionStatus === "EMPTY") && state.reserve === 0).map(state => ({ item_id: state.itemId, item_key: state.itemKey, missing: state.missing || state.targetCandidates })),
+    production_slots_relink_required: relinkRequiredSlots.length,
+    relink_required_slots: relinkRequiredSlots.map(slot=>({...slot,collector_item_id:slot.slot_id,collector_eligible:true,relink_only:true})),
   };
 }
 
@@ -268,6 +284,8 @@ export async function getQaWorkPacket(request: Request, env: Env, input: { proje
       .bind(item.project_id, item.id, candidatesPerItem).all<Record<string,unknown>>();
     const materialization = await env.DB.prepare("SELECT script_reference,visual_reference,concept,subject,universe FROM materialization_items WHERE item_id=? ORDER BY updated_at DESC LIMIT 1")
       .bind(item.id).first<Record<string,unknown>>().catch(() => null);
+    const productionSlot = item.target_file ? await env.DB.prepare("SELECT id,slot_key,preset FROM v2_production_slots WHERE project_id=? AND target_file=? ORDER BY updated_at DESC LIMIT 1").bind(item.project_id,item.target_file).first<Record<string,unknown>>().catch(()=>null) : null;
+    const operationalPolicies = await resolveApplicablePolicies(env,{projectId:String(item.project_id||""),slotId:String(productionSlot?.slot_key||item.item_key||item.id||""),preset:String(productionSlot?.preset||""),visualRole:String(productionSlot?.visual_role||"")}).catch(()=>({policies:[],asset_requirement:null,policy_revision:null}));
     let strategy: Record<string,unknown> = {};
     try { strategy = JSON.parse(String(item.strategy_state || "{}")) as Record<string,unknown>; } catch { strategy = {}; }
     items.push({
@@ -290,7 +308,10 @@ export async function getQaWorkPacket(request: Request, env: Env, input: { proje
           target_candidates: Number(item.target_candidates || 8),
           required_approved: Number(item.required_approved || 1),
           approved: Number(item.approved_count || 0),
+          asset_requirement: operationalPolicies.asset_requirement,
         },
+        policies: operationalPolicies.policies,
+        policy_revision: operationalPolicies.policy_revision,
       },
       candidates: await Promise.all((candidates.results || []).map(async candidate => ({
         candidate_id: candidate.id,

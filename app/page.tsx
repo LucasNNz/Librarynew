@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import type { Asset, AutomaticProject, FinalProjectFiles, ProjectArtifactInventory, ProjectSlotSnapshot, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
+import type { Asset, AutomaticProject, FinalProjectFiles, ProjectArtifactInventory, ProjectSlotSnapshot, OperationalPolicyContext, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
 import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
 
 type SchemaContractState = {
@@ -54,6 +54,16 @@ type InfrastructureProfile = {
 
 type InfrastructureDraft = Pick<InfrastructureProfile, "bffProjectName"|"workerName"|"d1DatabaseName"|"r2BucketName"|"queueName"|"dlqName">;
 
+type PersistentPolicy = OperationalPolicyContext & {
+  status?:string;
+  target_id?:string|null;
+  metadata?:Record<string,unknown>;
+  previous_version_id?:string|null;
+};
+
+type PolicyDraft = {policyKey:string;title:string;scope:"GLOBAL"|"PRESET"|"PROJECT"|"SLOT";targetId:string;instruction:string;priority:string;assetRequirement:string};
+const emptyPolicyDraft:PolicyDraft={policyKey:"",title:"",scope:"GLOBAL",targetId:"",instruction:"",priority:"50",assetRequirement:""};
+
 const defaultInfrastructureDraft: InfrastructureDraft = {
   bffProjectName:"corvo-library-v2",
   workerName:"corvo-core-v2",
@@ -71,7 +81,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.40";
+const EXPECTED_CORE_VERSION = "0.20.42";
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -392,6 +402,11 @@ export default function Home() {
   const [materializationStats, setMaterializationStats] = useState<MaterializationStats | null>(null);
   const [policyWorkspace, setPolicyWorkspace] = useState<{gaps:Array<Record<string,unknown>>;policies:Array<Record<string,unknown>>;recentEvents:Array<Record<string,unknown>>}|null>(null);
   const [policyTelemetry, setPolicyTelemetry] = useState<{policies:Array<Record<string,unknown>>;events:Array<Record<string,unknown>>}|null>(null);
+  const [persistentPolicies, setPersistentPolicies] = useState<PersistentPolicy[]>([]);
+  const [policyDraft, setPolicyDraft] = useState<PolicyDraft>(emptyPolicyDraft);
+  const [policyFilter, setPolicyFilter] = useState<"ALL"|"GLOBAL"|"PRESET"|"PROJECT"|"SLOT"|"ACTIVE"|"INACTIVE">("ALL");
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyMessage, setPolicyMessage] = useState("");
   const [supervisorPanel, setSupervisorPanel] = useState<Record<string,unknown>|null>(null);
   const [stockDetail, setStockDetail] = useState<{totals:Array<Record<string,unknown>>;universes:Array<Record<string,unknown>>;rotation:Array<Record<string,unknown>>;policies:Array<Record<string,unknown>>}|null>(null);
   const [safeSettings, setSafeSettings] = useState<Array<{key:string;value:string;updated_at:number}>>([]);
@@ -688,10 +703,52 @@ export default function Home() {
   }
 
   const refreshPolicies = useCallback(async () => {
-    const response=await fetch("/api/ui/analysis?policies=1",{cache:"no-store"});
-    if(!response.ok)return;const value=await response.json();
-    if(value.stock)setStockDetail(value.stock);if(value.policyWorkspace)setPolicyWorkspace(value.policyWorkspace);if(value.policyTelemetry)setPolicyTelemetry(value.policyTelemetry);
+    const [analysisResponse,contextResponse]=await Promise.all([
+      fetch("/api/ui/analysis?policies=1",{cache:"no-store"}),
+      fetch("/api/context-policies?limit=500",{cache:"no-store"}),
+    ]);
+    if(analysisResponse.ok){const value=await analysisResponse.json();if(value.stock)setStockDetail(value.stock);if(value.policyWorkspace)setPolicyWorkspace(value.policyWorkspace);if(value.policyTelemetry)setPolicyTelemetry(value.policyTelemetry);}
+    if(contextResponse.ok){const value=await contextResponse.json();setPersistentPolicies(Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[]);}
   },[]);
+
+  async function createContextPolicy(event:FormEvent){
+    event.preventDefault();
+    if(!policyDraft.policyKey.trim()||!policyDraft.title.trim()||!policyDraft.instruction.trim()){setPolicyMessage("Preencha chave, título e instrução.");return;}
+    if(policyDraft.scope!=="GLOBAL"&&!policyDraft.targetId.trim()){setPolicyMessage("Este escopo exige um alvo.");return;}
+    setPolicyBusy(true);setPolicyMessage("");
+    try{
+      const response=await fetch("/api/context-policies",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({policyKey:policyDraft.policyKey.trim(),title:policyDraft.title.trim(),scope:policyDraft.scope,targetId:policyDraft.scope==="GLOBAL"?undefined:policyDraft.targetId.trim(),instruction:policyDraft.instruction.trim(),priority:Number(policyDraft.priority||50),assetRequirement:policyDraft.assetRequirement.trim()||undefined,createdBy:"UI"})});
+      const value=await response.json();if(!response.ok)throw new Error(value.error||`POLICY_CREATE_${response.status}`);
+      setPolicyDraft(emptyPolicyDraft);setPolicyMessage("Política criada e persistida.");await refreshPolicies();
+    }catch(error){setPolicyMessage(error instanceof Error?error.message:"POLICY_CREATE_FAILED");}finally{setPolicyBusy(false);}
+  }
+
+  async function editContextPolicy(policy:PersistentPolicy){
+    const title=window.prompt("Título da política",String(policy.title||""));if(title===null)return;
+    const instruction=window.prompt("Instrução operacional",String(policy.instruction||""));if(instruction===null)return;
+    setPolicyBusy(true);setPolicyMessage("");
+    try{const response=await fetch(`/api/context-policies/${encodeURIComponent(policy.id)}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({title:title.trim()||policy.title,instruction:instruction.trim()||policy.instruction,createdBy:"UI"})});const value=await response.json();if(!response.ok)throw new Error(value.error||`POLICY_EDIT_${response.status}`);setPolicyMessage("Nova versão da política criada.");await refreshPolicies();}catch(error){setPolicyMessage(error instanceof Error?error.message:"POLICY_EDIT_FAILED");}finally{setPolicyBusy(false);}
+  }
+
+  async function toggleContextPolicy(policy:PersistentPolicy){
+    setPolicyBusy(true);setPolicyMessage("");const action=policy.active?"deactivate":"activate";
+    try{const response=await fetch(`/api/context-policies/${encodeURIComponent(policy.id)}/${action}`,{method:"POST"});const value=await response.json();if(!response.ok)throw new Error(value.error||`POLICY_${action.toUpperCase()}_${response.status}`);setPolicyMessage(policy.active?"Política desativada.":"Política ativada.");await refreshPolicies();}catch(error){setPolicyMessage(error instanceof Error?error.message:"POLICY_STATUS_FAILED");}finally{setPolicyBusy(false);}
+  }
+
+  async function deleteContextPolicy(policy:PersistentPolicy){
+    if(!window.confirm(`Excluir/desativar permanentemente ${policy.policy_key}?`))return;setPolicyBusy(true);setPolicyMessage("");
+    try{const response=await fetch(`/api/context-policies/${encodeURIComponent(policy.id)}`,{method:"DELETE"});const value=await response.json();if(!response.ok)throw new Error(value.error||`POLICY_DELETE_${response.status}`);setPolicyMessage("Política removida preservando histórico.");await refreshPolicies();}catch(error){setPolicyMessage(error instanceof Error?error.message:"POLICY_DELETE_FAILED");}finally{setPolicyBusy(false);}
+  }
+
+  async function linkContextPolicyToProject(policy:PersistentPolicy){
+    const projectId=window.prompt("ID do projeto que deve herdar esta política",selectedProjectId||"");if(!projectId?.trim())return;setPolicyBusy(true);setPolicyMessage("");
+    try{const response=await fetch(`/api/projects/${encodeURIComponent(projectId.trim())}/context-policies/link`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({policyId:policy.id,createdBy:"UI"})});const value=await response.json();if(!response.ok)throw new Error(value.error||`POLICY_LINK_${response.status}`);setPolicyMessage(`Política aplicada a ${projectId.trim()}.`);await refreshPolicies();}catch(error){setPolicyMessage(error instanceof Error?error.message:"POLICY_LINK_FAILED");}finally{setPolicyBusy(false);}
+  }
+
+  async function unlinkContextPolicyFromProject(policy:PersistentPolicy){
+    const projectId=window.prompt("ID do projeto do qual remover o vínculo",selectedProjectId||"");if(!projectId?.trim())return;setPolicyBusy(true);setPolicyMessage("");
+    try{const response=await fetch(`/api/projects/${encodeURIComponent(projectId.trim())}/context-policies/unlink`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({policyId:policy.id})});const value=await response.json();if(!response.ok)throw new Error(value.error||`POLICY_UNLINK_${response.status}`);setPolicyMessage(`Vínculo removido de ${projectId.trim()}.`);await refreshPolicies();}catch(error){setPolicyMessage(error instanceof Error?error.message:"POLICY_UNLINK_FAILED");}finally{setPolicyBusy(false);}
+  }
 
   const refreshSettings = useCallback(async () => {
     const cached=readViewCache<any>("settings",10*60_000);
@@ -1695,7 +1752,7 @@ Tudo é configurado pela própria tela Configurações.
 
                   <section className="projectSlotSection">
                     <header><div><span className="eyebrow">CONTEÚDO DO PROJETO</span><h4>Slots integrados</h4></div><span>{projectSlot.slots.filter(slot=>slot.state==="READY").length}/{projectSlot.slots.length} prontos</span></header>
-                    <div className="projectSlotCards">{projectSlot.slots.map(slot=>{const textArtifact=slot.key==="script"?scriptArtifact:slot.key==="reference"?referenceArtifact:null;const textRole=slot.key==="script"?"SCRIPT":slot.key==="reference"?String(referenceArtifact?.role||"REFERENCES"):null;const visualTags=slot.tags||[];const tagTitle=(tag:any)=>`${tag.emoji||"🏷️"} ${tag.label||tag.tag_key}${tag.note?` — ${tag.note}`:""}${tag.created_by?` · ${tag.created_by}`:""}`;return <article className={`projectContentSlot state-${slot.state.toLowerCase()} ${slot.mcpOpen?"mcp-open":""} ${slot.key==="reference"?"reference-brief-slot":""} ${visualTags.length?"has-slot-tags":""}`} style={visualTags.length?({"--slot-tag-glow":slotTagGlow(String(visualTags[0]?.tag_key||"TAG"))} as any):undefined} key={slot.key}>{visualTags.length>0&&<div className="slotVisualTags" aria-label={`${visualTags.length} tags ativas`}>{visualTags.slice(0,2).map((tag:any)=><span className="slotVisualTag" title={tagTitle(tag)} key={tag.id||tag.tag_key}>{tag.emoji||"🏷️"}</span>)}{visualTags.length>2&&<span className="slotVisualTag more" title={visualTags.slice(2).map(tagTitle).join("\n")}>+{visualTags.length-2}</span>}</div>}<div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><p>{slot.summary}</p>{slot.key==="reference"&&<div className="referenceSlotPurpose"><b>TXT PARA O COLETOR</b><span>O agente de referências escreve aqui o que precisa ser buscado. O Coletor e o MCP podem ler o conteúdo imediatamente.</span></div>}{slot.mcpOpen&&<div className="slotMcpInstruction"><b>IA/MCP aberto</b>{slot.instruction&&<span>{slot.instruction}</span>}</div>}<div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><div className="projectSlotFooter"><small>{slot.progress}%</small><div className="projectSlotActions"><button disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void manualAddProjectSlot(slot.key)}>{slot.key==="reference"?"＋ TXT":"＋ Adicionar"}</button>{textArtifact?.preview_url&&<button onClick={()=>window.open(textArtifact.preview_url!,"_blank","noopener,noreferrer")}>Ver</button>}{textRole&&textArtifact&&<button onClick={()=>void copyProjectTextRole(projectSlot.project.id,textRole,slot.key==="reference"?"TXT de referências":"Roteiro")}>Copiar</button>}{textArtifact?.download_url&&<a href={textArtifact.download_url} target="_blank" rel="noreferrer">Baixar</a>}<button className={slot.mcpOpen?"mcpOpen active":"mcpOpen"} disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void configureSlotForMcp(slot.key,Boolean(slot.mcpOpen))}>{slot.mcpOpen?"● MCP aberto":"○ Abrir para MCP"}</button></div></div></article>})}</div>
+                    <div className="projectSlotCards">{projectSlot.slots.map(slot=>{const textArtifact=slot.key==="script"?scriptArtifact:slot.key==="reference"?referenceArtifact:null;const textRole=slot.key==="script"?"SCRIPT":slot.key==="reference"?String(referenceArtifact?.role||"REFERENCES"):null;const visualTags=slot.tags||[];const operationalPolicies=slot.policies||[];const tagTitle=(tag:any)=>`${tag.emoji||"🏷️"} ${tag.label||tag.tag_key}${tag.note?` — ${tag.note}`:""}${tag.created_by?` · ${tag.created_by}`:""}`;const policiesTitle=operationalPolicies.map((policy:any)=>`${policy.scope} — ${policy.title}: ${policy.instruction}`).join("\n");return <article className={`projectContentSlot state-${slot.state.toLowerCase()} ${slot.mcpOpen?"mcp-open":""} ${slot.key==="reference"?"reference-brief-slot":""} ${visualTags.length?"has-slot-tags":""}`} style={visualTags.length?({"--slot-tag-glow":slotTagGlow(String(visualTags[0]?.tag_key||"TAG"))} as any):undefined} key={slot.key}>{visualTags.length>0&&<div className="slotVisualTags" aria-label={`${visualTags.length} tags ativas`}>{visualTags.slice(0,2).map((tag:any)=><span className="slotVisualTag" title={tagTitle(tag)} key={tag.id||tag.tag_key}>{tag.emoji||"🏷️"}</span>)}{visualTags.length>2&&<span className="slotVisualTag more" title={visualTags.slice(2).map(tagTitle).join("\n")}>+{visualTags.length-2}</span>}</div>}<div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><div className="slotContextBadges"><span title={`${visualTags.length} tag(s) ativas`}>🏷 Tags: {visualTags.length}</span><span className={operationalPolicies.length?"hasPolicies":""} title={policiesTitle||"Nenhuma política aplicável"}>📜 Políticas: {operationalPolicies.length}</span>{slot.assetRequirement&&<span className="assetRequirementBadge" title="Requisito visual resolvido por política">{slot.assetRequirement}</span>}</div><p>{slot.summary}</p>{slot.key==="reference"&&<div className="referenceSlotPurpose"><b>TXT PARA O COLETOR</b><span>O agente de referências escreve aqui o que precisa ser buscado. O Coletor e o MCP podem ler o conteúdo imediatamente.</span></div>}{slot.mcpOpen&&<div className="slotMcpInstruction"><b>IA/MCP aberto</b>{slot.instruction&&<span>{slot.instruction}</span>}</div>}<div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><div className="projectSlotFooter"><small>{slot.progress}%</small><div className="projectSlotActions"><button disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void manualAddProjectSlot(slot.key)}>{slot.key==="reference"?"＋ TXT":"＋ Adicionar"}</button>{textArtifact?.preview_url&&<button onClick={()=>window.open(textArtifact.preview_url!,"_blank","noopener,noreferrer")}>Ver</button>}{textRole&&textArtifact&&<button onClick={()=>void copyProjectTextRole(projectSlot.project.id,textRole,slot.key==="reference"?"TXT de referências":"Roteiro")}>Copiar</button>}{textArtifact?.download_url&&<a href={textArtifact.download_url} target="_blank" rel="noreferrer">Baixar</a>}<button className={slot.mcpOpen?"mcpOpen active":"mcpOpen"} disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void configureSlotForMcp(slot.key,Boolean(slot.mcpOpen))}>{slot.mcpOpen?"● MCP aberto":"○ Abrir para MCP"}</button></div></div></article>})}</div>
                   </section>
 
                   <section className="projectFinalFilesSection">
@@ -1716,7 +1773,7 @@ Tudo é configurado pela própria tela Configurações.
                     </section>
 
                     <aside className="projectInfoColumn">
-                      <section className="projectSummaryCard"><header><h4>Resumo do projeto</h4></header><dl>{Number(projectSlot.production?.production_slots_total||0)>0&&<><div><dt>Pools de referência</dt><dd>{Number(projectSlot.production?.reference_pools_total||0)}</dd></div><div><dt>Cenas de produção</dt><dd>{Number(projectSlot.production?.production_scenes_total||0)}</dd></div><div><dt>Slots finais</dt><dd>{Number(projectSlot.production?.production_slots_resolved||0)}/{Number(projectSlot.production?.production_slots_total||0)}</dd></div></>}<div><dt>Itens do coletor</dt><dd>{itemsTotal}</dd></div><div><dt>Assets alvo</dt><dd>{target}</dd></div><div><dt>MATERIALIZED</dt><dd>{materialized}</dd></div><div><dt>Aprovados</dt><dd>{approved}</dd></div><div><dt>Falhas</dt><dd>{failed}</dd></div><div><dt>Thumbs</dt><dd>{projectSlot.thumbs.count}/{projectSlot.thumbs.max}</dd></div><div><dt>Títulos</dt><dd>{projectSlot.titles.count}/{projectSlot.titles.max}</dd></div></dl></section>
+                      <section className="projectSummaryCard"><header><h4>Resumo do projeto</h4></header><dl>{Number(projectSlot.production?.production_slots_total||0)>0&&<><div><dt>Pools de referência</dt><dd>{Number(projectSlot.production?.reference_pools_total||0)}</dd></div><div><dt>Cenas de produção</dt><dd>{Number(projectSlot.production?.production_scenes_total||0)}</dd></div><div><dt>Slots finais</dt><dd>{Number(projectSlot.production?.production_slots_resolved||0)}/{Number(projectSlot.production?.production_slots_total||0)}</dd></div>{Number(projectSlot.production?.production_slots_relink_required||0)>0&&<div><dt>Relink necessário</dt><dd>{Number(projectSlot.production?.production_slots_relink_required||0)}</dd></div>}</>}<div><dt>Itens do coletor</dt><dd>{itemsTotal}</dd></div><div><dt>Assets alvo</dt><dd>{target}</dd></div><div><dt>MATERIALIZED</dt><dd>{materialized}</dd></div><div><dt>Aprovados</dt><dd>{approved}</dd></div><div><dt>Falhas</dt><dd>{failed}</dd></div><div><dt>Thumbs</dt><dd>{projectSlot.thumbs.count}/{projectSlot.thumbs.max}</dd></div><div><dt>Títulos</dt><dd>{projectSlot.titles.count}/{projectSlot.titles.max}</dd></div></dl></section>
                       <section className="projectSignalsCard"><header><h4>Sinais recentes</h4><span>estado real</span></header><div>{projectSlot.activeTags.slice(0,4).map(tag=><article key={`signal-${tag.tag}`}><span className={`signalDot ${String(tag.tag).includes("WORKING")?"live":"stable"}`}/><div><strong>{PROJECT_TAG_LABELS[tag.tag]||tag.tag.replace(/_/g," ")}</strong><small>{tag.last_seen_at?`heartbeat ${formatProjectMoment(Number(tag.last_seen_at))}`:"marco estável"}</small></div></article>)}{projectSlot.activeTags.length===0&&projectSlot.slots.slice(0,3).map(slot=><article key={`signal-slot-${slot.key}`}><span className={`signalDot ${slot.state==="READY"?"stable":"idle"}`}/><div><strong>{slot.label}</strong><small>{slot.summary}</small></div></article>)}</div></section>
                     </aside>
                   </div>
@@ -1795,9 +1852,24 @@ Tudo é configurado pela própria tela Configurações.
           </div>
         </section>}
 
-        {currentView === "Políticas" && <section className="modulePanel operationGrid">
+        {currentView === "Políticas" && <section className="modulePanel operationGrid policyWorkspaceV2">
+          <div className="persistentPolicyManager">
+            <div className="persistentPolicyHead"><div><span className="eyebrow">MEMÓRIA OPERACIONAL PERSISTENTE</span><h2>Políticas</h2><p>Regras que acompanham automaticamente o contexto. Herança: <b>Slot → Projeto → Preset → Global</b>.</p></div><div className="policyFilterBar">{(["ALL","GLOBAL","PRESET","PROJECT","SLOT","ACTIVE","INACTIVE"] as const).map(item=><button key={item} className={policyFilter===item?"active":""} onClick={()=>setPolicyFilter(item)}>{item==="ALL"?"Todas":item==="ACTIVE"?"Ativas":item==="INACTIVE"?"Inativas":item}</button>)}</div></div>
+            <form className="policyCreateForm" onSubmit={createContextPolicy}>
+              <label><span>Chave</span><input value={policyDraft.policyKey} onChange={(event:ChangeEvent<HTMLInputElement>)=>setPolicyDraft(current=>({...current,policyKey:event.target.value.toUpperCase().replace(/\s+/g,"_")}))} placeholder="EX: PROJECT_VISUAL_QUALITY" /></label>
+              <label><span>Título</span><input value={policyDraft.title} onChange={(event:ChangeEvent<HTMLInputElement>)=>setPolicyDraft(current=>({...current,title:event.target.value}))} placeholder="Nome legível" /></label>
+              <label><span>Escopo</span><select value={policyDraft.scope} onChange={(event:ChangeEvent<HTMLSelectElement>)=>setPolicyDraft(current=>({...current,scope:event.target.value as PolicyDraft["scope"],targetId:event.target.value==="GLOBAL"?"":current.targetId}))}><option>GLOBAL</option><option>PRESET</option><option>PROJECT</option><option>SLOT</option></select></label>
+              <label><span>Alvo</span><input disabled={policyDraft.scope==="GLOBAL"} value={policyDraft.targetId} onChange={(event:ChangeEvent<HTMLInputElement>)=>setPolicyDraft(current=>({...current,targetId:event.target.value}))} placeholder={policyDraft.scope==="SLOT"?"PROJ-...:slot-id":policyDraft.scope==="PRESET"?"CENTRAL_2":policyDraft.scope==="PROJECT"?"PROJ-...":"Global"} /></label>
+              <label><span>Requirement visual</span><input value={policyDraft.assetRequirement} onChange={(event:ChangeEvent<HTMLInputElement>)=>setPolicyDraft(current=>({...current,assetRequirement:event.target.value}))} placeholder="raster_4x3 / transparent_subject" /></label>
+              <label className="policyPriority"><span>Prioridade</span><input type="number" min="1" max="999" value={policyDraft.priority} onChange={(event:ChangeEvent<HTMLInputElement>)=>setPolicyDraft(current=>({...current,priority:event.target.value}))} /></label>
+              <label className="policyInstruction"><span>Instrução operacional</span><textarea value={policyDraft.instruction} onChange={(event:ChangeEvent<HTMLTextAreaElement>)=>setPolicyDraft(current=>({...current,instruction:event.target.value}))} placeholder="Como o agente deve operar neste contexto." /></label>
+              <button className="primary" disabled={policyBusy} type="submit">{policyBusy?"Salvando…":"Nova política"}</button>
+            </form>
+            {policyMessage&&<div className="policyMessage">{policyMessage}</div>}
+            <div className="persistentPolicyList">{persistentPolicies.filter(policy=>policyFilter==="ALL"?true:policyFilter==="ACTIVE"?policy.active:policyFilter==="INACTIVE"?!policy.active:String(policy.scope).toUpperCase()===policyFilter).length===0?<div className="quiet">Nenhuma política neste filtro.</div>:persistentPolicies.filter(policy=>policyFilter==="ALL"?true:policyFilter==="ACTIVE"?policy.active:policyFilter==="INACTIVE"?!policy.active:String(policy.scope).toUpperCase()===policyFilter).map(policy=><article className={policy.active?"active":"inactive"} key={policy.id}><div className="policyIdentity"><span className={`policyScope scope-${String(policy.scope).toLowerCase()}`}>{policy.scope}</span><div><strong>{policy.title}</strong><code>{policy.policy_key}</code></div></div><p>{policy.instruction}</p><div className="policyMeta"><span>alvo <b>{policy.target_id||"GLOBAL"}</b></span><span>prioridade <b>{policy.priority}</b></span><span>v{policy.version||1}</span>{policy.asset_requirement&&<span className="policyRequirement">{policy.asset_requirement}</span>}</div><div className="policyActions"><button disabled={policyBusy} onClick={()=>void editContextPolicy(policy)}>Editar</button><button disabled={policyBusy} onClick={()=>void toggleContextPolicy(policy)}>{policy.active?"Desativar":"Ativar"}</button><button disabled={policyBusy} onClick={()=>void linkContextPolicyToProject(policy)}>Aplicar a projeto</button><button disabled={policyBusy} onClick={()=>void unlinkContextPolicyFromProject(policy)}>Remover do projeto</button><button className="dangerGhost" disabled={policyBusy} onClick={()=>void deleteContextPolicy(policy)}>Excluir</button></div></article>)}</div>
+          </div>
           <div><span className="eyebrow">APRENDIZADO OPERACIONAL</span><h2>Gaps</h2><p>Os gaps são deduplicados por assinatura e permanecem auditáveis.</p><div className="recordList">{(policyWorkspace?.gaps||[]).length===0?<div className="quiet">Nenhum gap registrado.</div>:(policyWorkspace?.gaps||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"GAP")}</strong><span>{String(item.severity||"")} · {String(item.status||"")}</span></div><code>{String(item.count||item.occurrence_count||0)}</code></article>)}</div></div>
-          <div><span className="eyebrow">POLÍTICAS</span><h2>Versões e estado</h2><p>Alterações criam novas versões; rollback não apaga histórico.</p><div className="recordList">{(policyWorkspace?.policies||[]).length===0?<div className="quiet">Nenhuma política registrada.</div>:(policyWorkspace?.policies||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"POLICY")}</strong><span>{String(item.status||"")} · {String(item.applied||0)} aplicações</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
+          <div><span className="eyebrow">POLÍTICAS LEGADAS</span><h2>Versões e estado</h2><p>Telemetria histórica permanece disponível separadamente.</p><div className="recordList">{(policyWorkspace?.policies||[]).length===0?<div className="quiet">Nenhuma política histórica registrada.</div>:(policyWorkspace?.policies||[]).map((item,index)=><article key={`${String(item.status)}-${String(item.category)}-${index}`}><div><strong>{String(item.category||"POLICY")}</strong><span>{String(item.status||"")} · {String(item.applied||0)} aplicações</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
           <div><span className="eyebrow">TELEMETRIA</span><h2>Aplicações e resultados</h2><div className="recordList">{(policyTelemetry?.events||[]).length===0?<div className="quiet">Sem eventos de política.</div>:(policyTelemetry?.events||[]).map((item,index)=><article key={`${String(item.event_type)}-${index}`}><div><strong>{String(item.event_type||"EVENT")}</strong><span>{String(item.successes||"")}</span></div><code>{String(item.count||0)}</code></article>)}</div></div>
         </section>}
 

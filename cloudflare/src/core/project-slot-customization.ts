@@ -6,6 +6,7 @@ import { configureProjectItemPipeline } from "./project-pipeline-state";
 import { createProjectMediaFromCandidate, pushProjectTitles } from "./production";
 import { projectWriteGuard } from "./project-workflow";
 import { listProjectTagsFlat } from "./slot-tags";
+import { resolveApplicablePolicies } from "./persistent-policies";
 
 const clean=(value:unknown)=>String(value??"").trim();
 export const PROJECT_SLOT_KEYS=["script","reference","thumbs","titles","candidates","approved","zip"] as const;
@@ -29,7 +30,7 @@ export async function listProjectSlotAccess(env:Env,projectId?:string,onlyOpen=f
   const rows=await env.DB.prepare(`SELECT project_id,slot_key,mcp_open,instruction,opened_by,opened_at,updated_at FROM v2_project_slot_access${where} ORDER BY updated_at DESC LIMIT 500`).bind(...params).all<Record<string,unknown>>();
   const items:Array<Record<string,unknown>&{mcp_open:boolean}>=(rows.results||[]).map(row=>({...row,mcp_open:Boolean(Number(row.mcp_open||0))}));
   if(projectId&&!items.some(row=>String(row.slot_key)==="reference"))items.unshift({project_id:projectId,slot_key:"reference",mcp_open:true,instruction:"Agente de referências: grave aqui o TXT que orienta exatamente o que o Coletor precisa buscar.",opened_by:"SYSTEM_DEFAULT",opened_at:null,updated_at:null});
-  if(projectId){const tags=await listProjectTagsFlat(env,projectId).catch(()=>[]);const grouped=new Map<string,unknown[]>();for(const tag of tags){const key=String(tag.slot_id||"");const list=grouped.get(key)||[];list.push(tag);grouped.set(key,list);}for(const item of items)item.tags=grouped.get(String(item.slot_key||""))||[];}
+  if(projectId){const tags=await listProjectTagsFlat(env,projectId).catch(()=>[]);const grouped=new Map<string,unknown[]>();for(const tag of tags){const key=String(tag.slot_id||"");const list=grouped.get(key)||[];list.push(tag);grouped.set(key,list);}for(const item of items){item.tags=grouped.get(String(item.slot_key||""))||[];const resolved=await resolveApplicablePolicies(env,{projectId,slotId:String(item.slot_key||"")});item.policies=resolved.policies;item.asset_requirement=resolved.asset_requirement;item.policy_revision=resolved.policy_revision;}}
   return {items:onlyOpen?items.filter(row=>Boolean(row.mcp_open)):items};
 }
 
