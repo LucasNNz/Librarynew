@@ -76,17 +76,17 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.44", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.45", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
-const FAST_READ_CACHE_NAMESPACE = "0.20.44";
+const FAST_READ_CACHE_NAMESPACE = "0.20.45";
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
   const started=Date.now();
   const keyUrl=new URL(request.url);
   keyUrl.searchParams.delete("_");
   // Cache API entries can survive a Worker deployment. Namespace every fast
-  // read by the running Core release so an older snapshot can never satisfy a 0.20.44
+  // read by the running Core release so an older snapshot can never satisfy a 0.20.45
   // health/schema gate after self-update.
   keyUrl.searchParams.set("__corvo_release",FAST_READ_CACHE_NAMESPACE);
   const cacheKey=new Request(keyUrl.toString(),{method:"GET"});
@@ -162,7 +162,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.44",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.45",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -188,7 +188,7 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.44",
+        version:"0.20.45",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,

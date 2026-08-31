@@ -16,8 +16,8 @@ def sqlite_atomic_demo():
     c.executescript('''
       CREATE TABLE assets(id TEXT PRIMARY KEY,status TEXT NOT NULL);
       CREATE TABLE automatic_projects(id TEXT PRIMARY KEY,status TEXT,pipeline_status TEXT,next_action TEXT,state_version INTEGER DEFAULT 0,workflow_updated_at INTEGER,updated_at INTEGER);
-      CREATE TABLE v2_production_slots(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,version INTEGER NOT NULL,target_file TEXT,asset_id TEXT,previous_asset_id TEXT,status TEXT NOT NULL,relink_required_at INTEGER,relink_reason TEXT,rejected_by TEXT,rejected_operation_id TEXT,observation TEXT,updated_at INTEGER NOT NULL);
-      CREATE TABLE v2_production_slot_history(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,project_version INTEGER NOT NULL,slot_id TEXT NOT NULL,target_file TEXT,event TEXT NOT NULL,previous_asset_id TEXT,new_asset_id TEXT,reason TEXT,operation_id TEXT,actor TEXT,created_at INTEGER NOT NULL);
+      CREATE TABLE v2_production_slots(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,version INTEGER NOT NULL,target_file TEXT,asset_id TEXT,candidate_id TEXT,previous_asset_id TEXT,previous_candidate_id TEXT,status TEXT NOT NULL,assigned_for_qa_at INTEGER,qa_finalized_at INTEGER,qa_operation_id TEXT,relink_required_at INTEGER,relink_reason TEXT,rejected_by TEXT,rejected_operation_id TEXT,observation TEXT,updated_at INTEGER NOT NULL);
+      CREATE TABLE v2_production_slot_history(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,project_version INTEGER NOT NULL,slot_id TEXT NOT NULL,target_file TEXT,event TEXT NOT NULL,previous_asset_id TEXT,new_asset_id TEXT,previous_candidate_id TEXT,new_candidate_id TEXT,reason TEXT,operation_id TEXT,actor TEXT,created_at INTEGER NOT NULL);
       CREATE TABLE automatic_project_events(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,event TEXT NOT NULL,status TEXT,detail TEXT,created_at INTEGER NOT NULL);
       CREATE TABLE v2_download_packages(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,type TEXT,status TEXT,error TEXT,updated_at INTEGER);
     ''')
@@ -32,10 +32,10 @@ def sqlite_atomic_demo():
     try:
         c.execute('BEGIN')
         c.execute("UPDATE v2_production_slots SET previous_asset_id=asset_id,asset_id=NULL,status='RELINK_REQUIRED',updated_at=2 WHERE id='A'")
-        # Correct 12-column/12-value history form used by 0.20.44.
-        c.execute("""INSERT INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,reason,operation_id,actor,created_at)
-                     VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?)""",
-                  ('H-A','P',1,'A','A.jpg','AST-A','bad','OP','SUP',2))
+        # Correct cardinality, extended in 2.26.0 with candidate provenance.
+        c.execute("""INSERT INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,previous_candidate_id,new_candidate_id,reason,operation_id,actor,created_at)
+                     VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,NULL,?,?,?,?)""",
+                  ('H-A','P',1,'A','A.jpg','AST-A',None,'bad','OP','SUP',2))
         c.execute("UPDATE v2_production_slots SET previous_asset_id=asset_id,asset_id=NULL,status='RELINK_REQUIRED',updated_at=2 WHERE id='B'")
         # Force a later statement failure; transaction must rollback A and B.
         c.execute("INSERT INTO automatic_project_events(id,project_id,event,created_at) VALUES ('E',NULL,'FAIL',2)")
@@ -48,9 +48,9 @@ def sqlite_atomic_demo():
 
     with c:
         c.execute("UPDATE v2_production_slots SET previous_asset_id=asset_id,asset_id=NULL,status='RELINK_REQUIRED',updated_at=3 WHERE id='A'")
-        c.execute("""INSERT INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,reason,operation_id,actor,created_at)
-                     VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?)""",
-                  ('H-A2','P',1,'A','A.jpg','AST-A','bad','OP2','SUP',3))
+        c.execute("""INSERT INTO v2_production_slot_history(id,project_id,project_version,slot_id,target_file,event,previous_asset_id,new_asset_id,previous_candidate_id,new_candidate_id,reason,operation_id,actor,created_at)
+                     VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,NULL,?,?,?,?)""",
+                  ('H-A2','P',1,'A','A.jpg','AST-A',None,'bad','OP2','SUP',3))
     success=c.execute("SELECT asset_id,status,previous_asset_id FROM v2_production_slots WHERE id='A'").fetchone()
     return {
       'forced_failure_happened': failed,
@@ -61,12 +61,12 @@ def sqlite_atomic_demo():
 
 
 def main():
-    history_pattern="(?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?)"
-    estimated_tx_statements=1+math.ceil(500/24)+500+math.ceil(500/10)+math.ceil(500/25)+1+1+1+3
+    history_pattern="(?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,NULL,?,?,?,?)"
+    estimated_tx_statements=1+math.ceil(500/18)+500+math.ceil(500/8)+math.ceil(500/25)+1+1+1+3
     demo=sqlite_atomic_demo()
     checks={
       **demo,
-      'history_values_exactly_12': history_pattern in FN and history_pattern.count('?')==10,
+      'history_values_match_14_column_schema': history_pattern in FN and history_pattern.count('?')==11,
       'old_13_value_history_shape_removed': "VALUES (?,?,?,?,?,'PRODUCTION_SLOT_REJECTED',?,NULL,?,?,?,?,?)" not in FN,
       'single_transactional_d1_batch': 'await env.DB.batch<Record<string,unknown>>(statements)' in FN,
       'no_mutating_run_before_batch': '.run()' not in FN,
@@ -80,13 +80,13 @@ def main():
       'exports_invalidated_inside_batch': "PRODUCTION_SLOT_REJECTED_REGENERATE_IMAGES" in FN and 'statements.push(env.DB.prepare("UPDATE v2_download_packages' in FN,
       'global_ast_not_mutated': 'UPDATE assets SET' not in FN,
       'mcp_limit_500_preserved': '.slice(0,500)' in FN and '.max(500)' in MCP,
-      'd1_bound_parameter_guards': 'offset+=24' in FN and 'offset+=10' in FN and 'offset+=25' in FN and 'offset+=90' in FN,
+      'd1_bound_parameter_guards': 'offset+=18' in FN and 'offset+=8' in FN and 'offset+=25' in FN and 'offset+=90' in FN,
       'worst_case_transaction_statements_under_1000': estimated_tx_statements < 1000,
-      'mcp_description_declares_atomic': 'operação D1 atômica (rollback integral em falha)' in MCP,
+      'mcp_description_declares_atomic': 'D1 atômico' in MCP and 'idempotente por operation_id' in MCP,
     }
     report={
       'version':'0.20.44',
-      'schema':'2.25.0',
+      'schema':'2.26.0 compatibility',
       'feature':'Atomic PRODUCTION_SLOT rejection + SQL cardinality hotfix',
       'estimated_500_slot_transaction_statements':estimated_tx_statements,
       'checks':checks,

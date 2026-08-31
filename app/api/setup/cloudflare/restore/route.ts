@@ -68,6 +68,28 @@ const CRITICAL_SCHEMA_COLUMNS: Record<string, Array<{name:string;ddl:string}>> =
   v2_project_titles: [
     {name:"slot_index",ddl:"ALTER TABLE v2_project_titles ADD COLUMN slot_index INTEGER"},
   ],
+  v2_download_packages: [
+    {name:"revision_hash",ddl:"ALTER TABLE v2_download_packages ADD COLUMN revision_hash TEXT"},
+    {name:"mime_type",ddl:"ALTER TABLE v2_download_packages ADD COLUMN mime_type TEXT"},
+  ],
+  v2_production_slots: [
+    {name:"visual_role",ddl:"ALTER TABLE v2_production_slots ADD COLUMN visual_role TEXT"},
+    {name:"previous_asset_id",ddl:"ALTER TABLE v2_production_slots ADD COLUMN previous_asset_id TEXT REFERENCES assets(id)"},
+    {name:"relink_required_at",ddl:"ALTER TABLE v2_production_slots ADD COLUMN relink_required_at INTEGER"},
+    {name:"relink_reason",ddl:"ALTER TABLE v2_production_slots ADD COLUMN relink_reason TEXT"},
+    {name:"rejected_by",ddl:"ALTER TABLE v2_production_slots ADD COLUMN rejected_by TEXT"},
+    {name:"rejected_operation_id",ddl:"ALTER TABLE v2_production_slots ADD COLUMN rejected_operation_id TEXT"},
+    {name:"candidate_id",ddl:"ALTER TABLE v2_production_slots ADD COLUMN candidate_id TEXT REFERENCES v2_ingest_candidates(id)"},
+    {name:"previous_candidate_id",ddl:"ALTER TABLE v2_production_slots ADD COLUMN previous_candidate_id TEXT REFERENCES v2_ingest_candidates(id)"},
+    {name:"assigned_for_qa_at",ddl:"ALTER TABLE v2_production_slots ADD COLUMN assigned_for_qa_at INTEGER"},
+    {name:"qa_finalized_at",ddl:"ALTER TABLE v2_production_slots ADD COLUMN qa_finalized_at INTEGER"},
+    {name:"qa_operation_id",ddl:"ALTER TABLE v2_production_slots ADD COLUMN qa_operation_id TEXT"},
+    {name:"assignment_source",ddl:"ALTER TABLE v2_production_slots ADD COLUMN assignment_source TEXT"},
+  ],
+  v2_production_slot_history: [
+    {name:"previous_candidate_id",ddl:"ALTER TABLE v2_production_slot_history ADD COLUMN previous_candidate_id TEXT REFERENCES v2_ingest_candidates(id)"},
+    {name:"new_candidate_id",ddl:"ALTER TABLE v2_production_slot_history ADD COLUMN new_candidate_id TEXT REFERENCES v2_ingest_candidates(id)"},
+  ],
 };
 
 async function tableColumns(token:string,accountId:string,databaseId:string,table:string) {
@@ -83,10 +105,10 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
     await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_unique ON v2_project_workflow_tags(project_id,tag)");
     repaired.push("table:v2_project_workflow_tags");
   }
-  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_ingest_operations","v2_ingest_events"]){
+  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_download_packages","v2_ingest_operations","v2_ingest_events","v2_production_slots","v2_production_slot_history"]){
     if(!(await tableExists(token,accountId,databaseId,table))) missingTables.push(table);
   }
-  if(missingTables.length) return {ready:false,contractVersion:"2.19.0",missingTables,missingColumns:[],repaired};
+  if(missingTables.length) return {ready:false,contractVersion:"2.26.0",missingTables,missingColumns:[],repaired};
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     let columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs){
@@ -96,6 +118,7 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
       columns.add(spec.name); repaired.push(`${table}.${spec.name}`);
     }
   }
+  await queryD1(token,accountId,databaseId,"UPDATE v2_production_slots SET status='FROZEN', qa_finalized_at=COALESCE(qa_finalized_at,updated_at), assignment_source=COALESCE(NULLIF(assignment_source,''),'LEGACY_QA_APPROVED') WHERE asset_id IS NOT NULL AND candidate_id IS NULL AND status IN ('RESOLVED','APPROVED','COMPLETED')");
   await queryD1(token,accountId,databaseId,"UPDATE v2_ingest_candidates SET discovered_at=COALESCE(discovered_at,created_at), queued_at=COALESCE(queued_at,created_at), materialized_at=CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN COALESCE(materialized_at,updated_at) ELSE materialized_at END");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
@@ -103,13 +126,18 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_media_slot ON v2_project_media(project_id,kind,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('THUMB_REJECTED','REJECTED')");
   await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_titles_slot ON v2_project_titles(project_id,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('TITLE_REJECTED','REJECTED')");
   await queryD1(token,accountId,databaseId,"CREATE TABLE IF NOT EXISTS v2_schema_meta (key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL)");
-  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.19.0',?)",[Date.now()]);
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_pslot_relink_required ON v2_production_slots(project_id,status,updated_at DESC) WHERE status='RELINK_REQUIRED'");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_pslot_assigned_for_qa ON v2_production_slots(project_id,status,updated_at DESC) WHERE status='ASSIGNED_FOR_QA'");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_pslot_candidate ON v2_production_slots(candidate_id) WHERE candidate_id IS NOT NULL");
+  await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_pslot_history_operation ON v2_production_slot_history(project_id,slot_id,event,operation_id) WHERE operation_id IS NOT NULL AND operation_id<>''");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_pslot_history_slot ON v2_production_slot_history(project_id,slot_id,created_at DESC)");
+  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.26.0',?)",[Date.now()]);
   const missingColumns:Array<{table:string;column:string}>=[];
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     const columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs) if(!columns.has(spec.name)) missingColumns.push({table,column:spec.name});
   }
-  return {ready:missingColumns.length===0,contractVersion:"2.19.0",missingTables:[],missingColumns,repaired};
+  return {ready:missingColumns.length===0,contractVersion:"2.26.0",missingTables:[],missingColumns,repaired};
 }
 
 async function migrationFiles() {
@@ -162,7 +190,7 @@ const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
   "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql", "2.19.0":"9019_v2_project_slots_workflow.sql",
-  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql",
+  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql", "2.26.0":"9026_v2_qa_by_rejection.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
@@ -221,6 +249,14 @@ async function applyPendingMigrations(token: string, accountId: string, database
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[productionSlotRejectionMigration.name,checksum,now]);
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[productionSlotRejectionMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
     applied.add(productionSlotRejectionMigration.name);
+  }
+  const qaByRejectionMigration=files.find(item=>item.name==="9026_v2_qa_by_rejection.sql");
+  if(preSchemaContract?.ready && qaByRejectionMigration && !applied.has(qaByRejectionMigration.name)){
+    const checksum=createHash("sha256").update(qaByRejectionMigration.sql).digest("hex");
+    const now=Date.now();
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[qaByRejectionMigration.name,checksum,now]);
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[qaByRejectionMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
+    applied.add(qaByRejectionMigration.name);
   }
 
   for (const item of files) {

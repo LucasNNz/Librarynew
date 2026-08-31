@@ -1,0 +1,16 @@
+{
+  "version": "0.20.45",
+  "gate": "exact SQL smoke for finalizar_qa_projeto",
+  "checks": {
+    "slot_promoted_and_frozen": true,
+    "candidate_promoted": true,
+    "asset_usage_exactly_once": true,
+    "project_advances_after_frozen": true,
+    "history_candidate_provenance": true,
+    "forced_guard_failure": true,
+    "rollback_preserves_slot": true,
+    "rollback_removes_commit_marker": true,
+    "rollback_removes_guard_artifact": true
+  },
+  "pass": true
+}

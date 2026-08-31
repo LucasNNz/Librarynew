@@ -80,7 +80,7 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
   return {
     project_id:projectId,state_version:version,changed:true,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,
     counts:{ total:Number(project.total_items||0),approved:Number(project.approved_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),frozen:Number(project.frozen_count||0) },
-    production:production?{reference_pools_total:production.reference_pools_total,reference_pools_ready:production.reference_pools_ready,production_scenes_total:production.production_scenes_total,production_scenes_ready:production.production_scenes_ready,production_slots_total:production.production_slots_total,production_slots_resolved:production.production_slots_resolved,package_ready:production.package_ready,can_complete:production.can_complete}:null,
+    production:production?{reference_pools_total:production.reference_pools_total,reference_pools_ready:production.reference_pools_ready,production_scenes_total:production.production_scenes_total,production_scenes_ready:production.production_scenes_ready,production_slots_total:production.production_slots_total,production_slots_resolved:production.production_slots_resolved,production_slots_assigned_for_qa:production.production_slots_assigned_for_qa,production_slots_frozen:production.production_slots_frozen,production_slots_relink_required:production.production_slots_relink_required,qa_complete:production.qa_complete,package_ready:production.package_ready,can_complete:production.can_complete}:null,
     completion_source:Number(production?.production_slots_total||0)>0?"PRODUCTION_SLOTS":"LEGACY_ITEMS",
     attachments:{project_files:projectFiles,scripts:Number(attachmentSummary?.scripts||0),references:Number(attachmentSummary?.reference_files||0),requirements:Number(attachmentSummary?.requirements||0),collected_files:collectedFiles,project_media:projectMedia,packages,total_visible:projectFiles+collectedFiles+projectMedia+packages,visibility:"MCP_IMMEDIATE_AFTER_D1_COMMIT"},
     lease:{status:project.supervisor_status,execution_id:project.supervisor_execution_id,expires_at:project.supervisor_lease_expires_at,last_seen_at:project.supervisor_last_seen_at},
@@ -196,12 +196,12 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   const productionRequired=hasScript||referenceOnly;
   const legacyCompleted=!productionRequired && counts.total>0 && counts.approved+counts.frozen>=counts.total;
   const completed=hasProduction?Boolean(production?.can_complete):legacyCompleted;
-  const slotsResolved=Number(production?.production_slots_resolved||0),slotsTotal=Number(production?.production_slots_total||0);
+  const slotsResolved=Number(production?.production_slots_resolved||0),slotsTotal=Number(production?.production_slots_total||0),slotsAssignedForQa=Number(production?.production_slots_assigned_for_qa||0),slotsFrozen=Number(production?.production_slots_frozen||0),slotsRelink=Number(production?.production_slots_relink_required||0);
   const nextAction=completed?null:hasProduction
-    ? (slotsResolved<slotsTotal?"ASSIGN_ASSETS_TO_SLOTS":production?.package_ready?"FINALIZE":"GENERATE_PACKAGE")
+    ? (slotsAssignedForQa>0?"FINALIZE_QA_OR_REJECT_SLOTS":slotsRelink>0?"RELINK_PRODUCTION_SLOTS":slotsFrozen<slotsTotal?"ASSIGN_ASSETS_TO_SLOTS":production?.package_ready?"FINALIZE":"GENERATE_PACKAGE")
     : productionRequired?"CREATE_PRODUCTION_SLOTS":"DISPATCH";
   const pipeline=completed?"CONCLUIDO":hasProduction
-    ? (slotsResolved<slotsTotal?"SLOT_ASSIGNMENT_WORKING":"PACKAGE_PENDING")
+    ? (slotsAssignedForQa>0?"QA_REVIEW_WORKING":slotsRelink>0||slotsFrozen<slotsTotal?"SLOT_ASSIGNMENT_WORKING":"PACKAGE_PENDING")
     : referenceOnly?"REFERENCE_STAGE_COMPLETE":hasScript?"INTERPRETANDO_ROTEIRO":counts.failed>0?"ATENCAO":"PROCESSANDO";
   const status=completed?"COMPLETED":String(project.status)==="WAITING_FILES"&&counts.total===0&&!hasProduction&&!productionRequired?"WAITING_FILES":"ACTIVE";
   await env.DB.batch<Record<string, unknown>>([

@@ -363,7 +363,7 @@ export async function queueFinalPackage(env:Env,input:{projectId:string;type?:st
   const production=await productionCompletionGate(env,input.projectId).catch(()=>null);
   const type=clean(input.type||"PROJECT_IMAGES_ZIP").toUpperCase();
   const isFinal=FINAL_ARTIFACT_TYPES.has(type as FinalArtifactType);
-  if((type==="PROJECT_IMAGES_ZIP"||type==="PROJECT_PRODUCTION_ZIP"||type==="FULL_PROJECT_ZIP")&&Number(production?.production_slots_total||0)>0&&Number(production?.production_slots_resolved||0)<Number(production?.production_slots_total||0))return{error:"PRODUCTION_SLOTS_INCOMPLETE",status:409,...production}as const;
+  if((type==="PROJECT_IMAGES_ZIP"||type==="PROJECT_PRODUCTION_ZIP"||type==="FULL_PROJECT_ZIP")&&Number(production?.production_slots_total||0)>0&&!Boolean(production?.complete))return{error:"PRODUCTION_QA_NOT_FINALIZED",status:409,...production}as const;
   if(!isFinal&&!['FULL_PROJECT_ZIP','PROJECT_PRODUCTION_ZIP'].includes(type))return{error:"PACKAGE_TYPE_NOT_SUPPORTED",status:400,allowed:[...FINAL_ARTIFACT_TYPES,'PROJECT_PRODUCTION_ZIP']}as const;
   if(type==="PROJECT_PUBLICATION_ZIP"){const readiness=await publicationReadiness(env,input.projectId);if(!readiness.ready)return{error:"PUBLICATION_ARTIFACT_NOT_READY",status:409,...readiness,independent:true}as const;}
   const revision=projectRevision(project),operationId=clean(input.operationId)||id("OP");
@@ -477,7 +477,7 @@ export async function projectProductionPackage(request:Request,env:Env,projectId
   const version=Number(project.active_version||1);
   const [items,productionSlots,productionScenes,referencePools,media,titles,files,packages]=await Promise.all([
     env.DB.prepare("SELECT id,item_key,target_file,status,linked_asset_id FROM automatic_project_items WHERE project_id=? AND version=? ORDER BY priority,created_at").bind(projectId,version).all<Record<string,unknown>>(),
-    env.DB.prepare(`SELECT s.*,a.name asset_name,a.r2_key asset_r2_key,a.mime_type asset_mime_type FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? ORDER BY s.created_at`).bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
+    env.DB.prepare(`SELECT s.*,a.name asset_name,a.r2_key asset_r2_key,a.mime_type asset_mime_type,c.status candidate_status,c.r2_key candidate_r2_key,c.mime_type candidate_mime_type,c.source_url candidate_source_url FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id LEFT JOIN v2_ingest_candidates c ON c.id=s.candidate_id WHERE s.project_id=? AND s.version=? ORDER BY s.created_at`).bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_production_scenes WHERE project_id=? AND version=? ORDER BY scene_number,created_at").bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_reference_pools WHERE project_id=? AND version=? ORDER BY pool_key").bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_project_media WHERE project_id=? ORDER BY selected DESC,created_at").bind(projectId).all<Record<string,unknown>>(),
@@ -487,8 +487,11 @@ export async function projectProductionPackage(request:Request,env:Env,projectId
   ]);
   const mediaRows=media.results||[];
   const slots=productionSlots.results||[];
-  const resolved=slots.filter(s=>clean(s.asset_id)&&RESOLVED_SLOT_STATES.has(clean(s.status).toUpperCase())).length;
-  return{project,items:items.results||[],production:{reference_pools:referencePools.results||[],production_scenes:productionScenes.results||[],production_slots:slots,production_slots_total:slots.length,production_slots_resolved:resolved},files:files.results||[],thumbs:await Promise.all(mediaRows.map(async m=>({...m,preview_url:await createSignedProjectMediaUrl(request,clean(m.id),env,900)}))),titles:titles.results||[],packages:packages.results||[],selected_thumb:mediaRows.find(m=>Number(m.selected||0))||null,selected_title:(titles.results||[]).find(t=>Number(t.selected||0))||null};
+  const frozen=slots.filter(s=>clean(s.asset_id)&&RESOLVED_SLOT_STATES.has(clean(s.status).toUpperCase())).length;
+  const assignedForQa=slots.filter(s=>clean(s.status).toUpperCase()==="ASSIGNED_FOR_QA"&&(clean(s.asset_id)||clean(s.candidate_id))).length;
+  const relinkRequired=slots.filter(s=>clean(s.status).toUpperCase()==="RELINK_REQUIRED").length;
+  const resolved=frozen+assignedForQa;
+  return{project,items:items.results||[],production:{reference_pools:referencePools.results||[],production_scenes:productionScenes.results||[],production_slots:slots,production_slots_total:slots.length,production_slots_resolved:resolved,production_slots_assigned_for_qa:assignedForQa,production_slots_frozen:frozen,production_slots_relink_required:relinkRequired,qa_complete:slots.length>0&&frozen===slots.length},files:files.results||[],thumbs:await Promise.all(mediaRows.map(async m=>({...m,preview_url:await createSignedProjectMediaUrl(request,clean(m.id),env,900)}))),titles:titles.results||[],packages:packages.results||[],selected_thumb:mediaRows.find(m=>Number(m.selected||0))||null,selected_title:(titles.results||[]).find(t=>Number(t.selected||0))||null};
 }
 
 export async function projectThumbLinks(request:Request,env:Env,projectId:string,limit=50){const rows=await env.DB.prepare("SELECT * FROM v2_project_media WHERE project_id=? AND kind='THUMB' ORDER BY selected DESC,created_at DESC LIMIT ?").bind(projectId,Math.max(1,Math.min(limit,100))).all<Record<string,unknown>>();return{items:await Promise.all((rows.results||[]).map(async r=>({...r,preview_url:await createSignedProjectMediaUrl(request,clean(r.id),env,900)})))};}

@@ -314,6 +314,13 @@ export async function applyMigrationsFromApp(env: Env) {
     await registerMigration(env,productionSlotRejectionMigration,"APPLIED","schema_contract_reconciled");
     applied.add(productionSlotRejectionMigration.name);
   }
+  // 2.26.0 provisional assignment is likewise part of the reconciled schema
+  // contract. Register it instead of replaying ADD COLUMN after reconciliation.
+  const qaByRejectionMigration=items.find(item=>item.name==="9026_v2_qa_by_rejection.sql");
+  if(preSchemaContract?.ready&&qaByRejectionMigration&&!applied.has(qaByRejectionMigration.name)){
+    await registerMigration(env,qaByRejectionMigration,"APPLIED","schema_contract_reconciled");
+    applied.add(qaByRejectionMigration.name);
+  }
 
   for(const item of items){
     if(applied.has(item.name)) continue;

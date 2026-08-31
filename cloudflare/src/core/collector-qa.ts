@@ -222,9 +222,10 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
     const context=await resolveApplicablePolicies(env,{projectId,slotId:String(productionSlot?.slot_key||item?.item_key||state.itemKey||state.itemId),preset:String(productionSlot?.preset||""),visualRole:String(productionSlot?.visual_role||"")}).catch(()=>({project_id:projectId,slot_id:String(state.itemKey||state.itemId),visual_role:null,preset:null,policy_revision:null,asset_requirement:null,policies:[]}));
     policyContexts.set(state.itemId,context);
   }));
-  const relinkGapsResult=await env.DB.prepare(`SELECT id AS slot_id,slot_key,target_file,scene_id,subject,universe,semantic_reference,preset,context,composition_class,visual_role,previous_asset_id,relink_reason,relink_required_at,status
+  const relinkGapsResult=await env.DB.prepare(`SELECT id AS slot_id,slot_key,target_file,scene_id,subject,universe,semantic_reference,preset,context,composition_class,visual_role,previous_asset_id,previous_candidate_id,relink_reason,relink_required_at,status
     FROM v2_production_slots WHERE project_id=? AND status='RELINK_REQUIRED' ORDER BY relink_required_at ASC,updated_at ASC LIMIT 500`).bind(projectId).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>));
   const relinkRequiredSlots=relinkGapsResult.results||[];
+  const qaSlotCounts=await env.DB.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN status='ASSIGNED_FOR_QA' AND (asset_id IS NOT NULL OR candidate_id IS NOT NULL) THEN 1 ELSE 0 END) assigned_for_qa,SUM(CASE WHEN status='FROZEN' AND asset_id IS NOT NULL THEN 1 ELSE 0 END) frozen,SUM(CASE WHEN status='RELINK_REQUIRED' THEN 1 ELSE 0 END) relink_required FROM v2_production_slots WHERE project_id=?`).bind(projectId).first<Record<string,unknown>>().catch(()=>null);
   return {
     goalSatisfied,
     goal_satisfied: goalSatisfied,
@@ -256,7 +257,10 @@ export async function getProjectCollectionSnapshot(env: Env, input: { projectId:
       policy_revision: policyContexts.get(state.itemId)?.policy_revision || null,
     })),
     needsMore: states.filter(state => (state.collectionStatus === "NEEDS_MORE" || state.collectionStatus === "EMPTY") && state.reserve === 0).map(state => ({ item_id: state.itemId, item_key: state.itemKey, missing: state.missing || state.targetCandidates })),
+    production_slots_assigned_for_qa: Number(qaSlotCounts?.assigned_for_qa||0),
+    production_slots_frozen: Number(qaSlotCounts?.frozen||0),
     production_slots_relink_required: relinkRequiredSlots.length,
+    qa_flow:"COLLECTOR_ASSIGN -> ASSIGNED_FOR_QA -> QA_REJECT_ONLY -> FINALIZE_QA",
     relink_required_slots: relinkRequiredSlots.map(slot=>({...slot,collector_item_id:slot.slot_id,collector_eligible:true,relink_only:true})),
   };
 }

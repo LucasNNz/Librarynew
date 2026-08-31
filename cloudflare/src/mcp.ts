@@ -24,7 +24,7 @@ import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectIte
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, getFinalArtifactLink, getFinalProjectFiles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalExports, queueFinalPackage } from "./core/production";
 import { addProjectQaEvent, attachProjectReferencesInline, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
-import { assignAssetsToSlots, listProductionModel, productionModelCounts, rejectProductionSlotsBatch, upsertProductionSlots } from "./core/production-model";
+import { assignAssetsToSlots, assignCandidatesToSlotsForQa, finalizeProjectQa, listProductionModel, listProductionSlotsForQa, productionModelCounts, rejectProductionSlotsBatch, upsertProductionSlots } from "./core/production-model";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getSourceRoutingPlan, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -48,7 +48,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.44" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.45" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -312,7 +312,7 @@ function createServer(env: Env, request: Request) {
   }, async (v) => output(await getQaWorkPacket(request,env,{projectId:v.project_id,limitItems:v.limite_cenas,candidatesPerItem:v.candidatas_por_cena})));
 
   server.registerTool("submit_qa_decisions", {
-    description: "ACK assíncrono para 1-100 decisões QA. Grava a operação e processa em chunks seguros na Queue/Data Plane, evitando limite de subrequests do Worker.",
+    description: "LEGADO/CATÁLOGO: decisões positivas/negativas por candidata. Não usar no PSLOT QA por rejeição; use obter_production_slots_para_qa + rejeitar_production_slots_lote + finalizar_qa_projeto.",
     inputSchema: {
       operation_id: z.string().optional(),
       decisions: z.array(z.object({candidate_id:z.string().min(1),decision:z.enum(["APPROVE","REJECT"]),observation:z.string().optional()})).min(1).max(100),
@@ -320,7 +320,7 @@ function createServer(env: Env, request: Request) {
   }, async (v) => output(await enqueueQaDecisions(env,{operationId:v.operation_id,decisions:v.decisions.map((d: {candidate_id:string;decision:"APPROVE"|"REJECT";observation?:string})=>({candidateId:d.candidate_id,decision:d.decision,observation:d.observation}))})));
 
   server.registerTool("submit_qa_decisions_sync", {
-    description: "Rota síncrona de compatibilidade/diagnóstico. Para lotes normais prefira submit_qa_decisions assíncrono.",
+    description: "LEGADO/CATÁLOGO: rota síncrona de decisão por candidata. Não usar no fluxo PSLOT QA por rejeição.",
     inputSchema: {
       decisions: z.array(z.object({candidate_id:z.string().min(1),decision:z.enum(["APPROVE","REJECT"]),observation:z.string().optional()})).min(1).max(30),
     },
@@ -360,7 +360,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("aprovar_candidatas_fast_push_lote", {
-    description: "Aprova candidatas materializadas. Move mídia de incoming/ para assets/, cria AST-* no D1 histórico e remove o temporário.",
+    description: "CATÁLOGO/MANUAL: aprova candidatas materializadas globalmente. Não usar para PSLOT provisório do Coletor; no QA por rejeição a promoção global ocorre em finalizar_qa_projeto.",
     inputSchema: { candidate_ids: z.array(z.string()).min(1).max(100) },
   }, async ({ candidate_ids }) => {
     const results: unknown[] = [];
@@ -487,7 +487,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("fast_decidir_candidatas_lote", {
-    description: "Aplica aprovações/rejeições em lote nas candidatas FAST PUSH já materializadas.",
+    description: "LEGADO/CATÁLOGO: decide candidatas FAST PUSH globalmente. No PSLOT QA por rejeição não aprove candidatas individualmente.",
     inputSchema: { decisoes:z.array(z.object({candidate_id:z.string().min(1),decisao:z.enum(["APROVAR","REJEITAR"])})).min(1).max(100) },
   }, async ({ decisoes }) => {
     const resultados: unknown[]=[];
@@ -496,7 +496,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("decidir_candidatas_lote", {
-    description: "Compatibilidade: decide candidatas FAST PUSH em lote.",
+    description: "LEGADO/CATÁLOGO: compatibilidade para decisão global de candidatas FAST PUSH; não usar no QA por rejeição de PSLOT.",
     inputSchema: { decisoes:z.array(z.object({candidate_id:z.string().min(1),decisao:z.enum(["APROVAR","REJEITAR"])})).min(1).max(100) },
   }, async ({ decisoes }) => {
     const resultados: unknown[]=[];
@@ -505,7 +505,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("aprovar_candidatas_lote", {
-    description: "Aprova candidatas FAST PUSH em lote.",
+    description: "CATÁLOGO/MANUAL: aprova candidatas FAST PUSH globalmente. No fluxo PSLOT, finalizar_qa_projeto promove apenas sobreviventes.",
     inputSchema: { candidate_ids:z.array(z.string()).min(1).max(100) },
   }, async ({ candidate_ids }) => { const resultados: unknown[]=[]; for(const candidate_id of candidate_ids) resultados.push({candidate_id,...await approveCandidate(candidate_id,env)}); return output({resultados}); });
 
@@ -986,12 +986,12 @@ function createServer(env: Env, request: Request) {
   server.registerTool("gerar_grid_candidatas", { description:"Compatibilidade visual: devolve candidatos e seus links temporários para que o cliente componha a grade sem gerar imagem intermediária.", inputSchema:{ limite:z.number().int().min(1).max(100).optional() } }, async(v)=>output({render:"CLIENT_GRID",items:await listCandidates(requestFor(request,`/candidates?status=MATERIALIZED&limit=${v.limite||40}`),env)}));
 
   server.registerTool("obter_modelo_producao", {
-    description:"Retorna separadamente REFERENCE_POOL, PRODUCTION_SCENE e PRODUCTION_SLOT, incluindo manifesto slot -> asset e contagens reais de produção.",
+    description:"Retorna REFERENCE_POOL, PRODUCTION_SCENE e PRODUCTION_SLOT, incluindo vínculo provisório por candidate_id ou AST, estado ASSIGNED_FOR_QA/FROZEN e contagens reais de QA.",
     inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(1000).optional() },
   }, async(v)=>output(await listProductionModel(env,{projectId:v.projeto_id,limit:v.limite})));
 
   server.registerTool("obter_contagens_producao", {
-    description:"Contagens compactas: pools de referência, cenas de produção e slots resolvidos. Use no hot path em vez de total_items como indicador único.",
+    description:"Contagens compactas do fluxo de produção: total, ASSIGNED_FOR_QA, FROZEN, RELINK_REQUIRED e resolvidos. Use no hot path em vez de total_items.",
     inputSchema:{ projeto_id:z.string().min(1) },
   }, async(v)=>output(await productionModelCounts(env,v.projeto_id)));
 
@@ -1001,24 +1001,39 @@ function createServer(env: Env, request: Request) {
   }, async(v)=>output(await upsertProductionSlots(env,{projectId:v.projeto_id,slots:v.slots.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,sceneKey:x.scene_key,subject:x.subject,universe:x.universe,reference:x.reference,preset:x.preset,context:x.context,compositionClass:x.composition_class,observation:x.observation}))})));
 
   server.registerTool("rejeitar_production_slots_lote", {
-    description:"Rejeita imagens no nível PRODUCTION_SLOT/PSLOT sem rejeitar a cena nem o AST global. Remove somente o vínculo ativo slot→asset, preserva R2/histórico e abre RELINK_REQUIRED. Até 500 slots; operação D1 atômica (rollback integral em falha) e idempotente por operation_id.",
+    description:"QA por rejeição no nível PRODUCTION_SLOT. Remove somente o vínculo ativo provisório (AST ou candidate), preserva Biblioteca/R2/histórico e abre RELINK_REQUIRED. Até 500 slots; D1 atômico e idempotente por operation_id.",
     inputSchema:{ projeto_id:z.string().min(1), slots:z.array(z.object({ slot_id:z.string().optional(), target_file:z.string().optional(), motivo:z.string().optional() }).refine((v:any)=>Boolean(v.slot_id||v.target_file),{message:"slot_id ou target_file obrigatório"})).min(1).max(500), operation_id:z.string().optional(), rejected_by:z.string().optional() }
   }, async(v:any)=>output(await rejectProductionSlotsBatch(env,{projectId:v.projeto_id,slots:v.slots.map((slot:any)=>({slotId:slot.slot_id,targetFile:slot.target_file,reason:slot.motivo})),operationId:v.operation_id,rejectedBy:v.rejected_by})));
 
   server.registerTool("assign_assets_to_slots", {
-    description:"Associa AST existente a até 500 production slots sem copiar bytes no R2. O mesmo AST pode atender N target_files; se target_file não existir, o slot é criado idempotentemente.",
-    inputSchema:{ projeto_id:z.string().min(1), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
-  }, async(v)=>output(await assignAssetsToSlots(env,{projectId:v.projeto_id,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,assetId:x.asset_id,observation:x.observation}))})));
+    description:"Coletor/Relinker: vincula AST já APPROVED da Biblioteca ao PSLOT sem copiar bytes, mas deixa o uso do projeto em ASSIGNED_FOR_QA. Nunca congela/aprova o uso automaticamente.",
+    inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), actor:z.string().optional(), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
+  }, async(v)=>output(await assignAssetsToSlots(env,{projectId:v.projeto_id,operationId:v.operation_id,actor:v.actor,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,assetId:x.asset_id,observation:x.observation}))})));
 
   server.registerTool("atribuir_assets_aos_slots", {
-    description:"Alias em português de assign_assets_to_slots.",
-    inputSchema:{ projeto_id:z.string().min(1), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
-  }, async(v)=>output(await assignAssetsToSlots(env,{projectId:v.projeto_id,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,assetId:x.asset_id,observation:x.observation}))})));
+    description:"Alias em português: vincula AST da Biblioteca como ASSIGNED_FOR_QA, nunca direto FROZEN.",
+    inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), actor:z.string().optional(), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
+  }, async(v)=>output(await assignAssetsToSlots(env,{projectId:v.projeto_id,operationId:v.operation_id,actor:v.actor,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,assetId:x.asset_id,observation:x.observation}))})));
 
-  server.registerTool("FAST_APPROVE_PROJECT_ITEMS", { description:"ACK assíncrono: aprova pares item/candidata e congela os itens no Data Plane. Não espera o lote concluir.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), aprovacoes:z.array(z.object({item_id:z.string().optional(),target_file:z.string().optional(),candidata_id:z.string().min(1),observacao:z.string().optional()})).min(1).max(100) } }, async(v)=>output(await enqueueFastApproveProjectItems(env,{projectId:v.projeto_id,operationId:v.operation_id,approvals:v.aprovacoes.map((a: {item_id?:string;target_file?:string;candidata_id:string;observacao?:string})=>({itemId:a.item_id,targetFile:a.target_file,candidateId:a.candidata_id,note:a.observacao}))})));
+  server.registerTool("atribuir_candidatas_aos_slots_para_qa", {
+    description:"Coletor/Relinker externo: vincula candidate_id MATERIALIZED diretamente ao PSLOT como ASSIGNED_FOR_QA, mantendo incoming provisório e sem criar AST/APPROVED antes do fechamento do QA.",
+    inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), actor:z.string().optional(), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),candidate_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
+  }, async(v)=>output(await assignCandidatesToSlotsForQa(env,{projectId:v.projeto_id,operationId:v.operation_id,actor:v.actor,assignments:v.assignments.map((x:any)=>({slotId:x.slot_id,targetFile:x.target_file,candidateId:x.candidate_id,observation:x.observation}))})));
+
+
+  server.registerTool("obter_production_slots_para_qa", {
+    description:"Caminho preferencial do QA por rejeição: retorna apenas PSLOTs ASSIGNED_FOR_QA com preview assinado, unificando AST da Biblioteca e candidate MATERIALIZED externo. O QA rejeita somente os não conformes e depois chama finalizar_qa_projeto.",
+    inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(500).optional() },
+  }, async(v)=>output(await listProductionSlotsForQa(request,env,v.projeto_id,v.limite||200)));
+  server.registerTool("finalizar_qa_projeto", {
+    description:"Encerra explicitamente a rodada de QA por rejeição. Todos os ASSIGNED_FOR_QA sobreviventes viram FROZEN; candidatas externas sobreviventes só então são promovidas a AST APPROVED e usos são registrados. RELINK_REQUIRED permanece gap. Idempotente por operation_id.",
+    inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), finalizado_por:z.string().optional() },
+  }, async(v)=>output(await finalizeProjectQa(env,{projectId:v.projeto_id,operationId:v.operation_id,finalizedBy:v.finalizado_por})));
+
+  server.registerTool("FAST_APPROVE_PROJECT_ITEMS", { description:"LEGADO/MANUAL: aprovação direta antiga de item/candidata. O Coletor V2 não deve usar esta rota; use atribuir_candidatas_aos_slots_para_qa + finalizar_qa_projeto para QA por rejeição.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), aprovacoes:z.array(z.object({item_id:z.string().optional(),target_file:z.string().optional(),candidata_id:z.string().min(1),observacao:z.string().optional()})).min(1).max(100) } }, async(v)=>output(await enqueueFastApproveProjectItems(env,{projectId:v.projeto_id,operationId:v.operation_id,approvals:v.aprovacoes.map((a: {item_id?:string;target_file?:string;candidata_id:string;observacao?:string})=>({itemId:a.item_id,targetFile:a.target_file,candidateId:a.candidata_id,note:a.observacao}))})));
   server.registerTool("aplicar_decisoes_supervisor_lote", { description:"ACK assíncrono para decisões do Supervisor sobre vários itens.", inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), decisoes:z.array(z.object({item_id:z.string().min(1),status:z.string().min(1),observacao:z.string().optional()})).min(1).max(200) } }, async(v)=>output(await enqueueSupervisorDecisions(env,{projectId:v.projeto_id,operationId:v.operation_id,decisions:v.decisoes.map((d: {item_id:string;status:string;observacao?:string})=>({itemId:d.item_id,status:d.status,observation:d.observacao}))})));
-  server.registerTool("aprovar_itens_lote", { description:"Aprova itens que tenham exatamente uma candidata ativa; ambiguidades são devolvidas sem decisão automática.", inputSchema:{ projeto_id:z.string().min(1), item_ids:z.array(z.string()).min(1).max(100), observacao:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await enqueueApprovalsByItems(env,{projectId:v.projeto_id,itemIds:v.item_ids,reason:v.observacao,operationId:v.operation_id})));
-  server.registerTool("aprovar_target_files_lote", { description:"Aprova por target_file quando houver uma única candidata ativa.", inputSchema:{ projeto_id:z.string().min(1), target_files:z.array(z.string()).min(1).max(100), observacao:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await enqueueApprovalsByItems(env,{projectId:v.projeto_id,targetFiles:v.target_files,reason:v.observacao,operationId:v.operation_id})));
+  server.registerTool("aprovar_itens_lote", { description:"LEGADO/MANUAL: aprovação positiva antiga por item. Não usar no fluxo Coletor + QA por rejeição; prefira atribuição ASSIGNED_FOR_QA, rejeitar_production_slots_lote e finalizar_qa_projeto.", inputSchema:{ projeto_id:z.string().min(1), item_ids:z.array(z.string()).min(1).max(100), observacao:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await enqueueApprovalsByItems(env,{projectId:v.projeto_id,itemIds:v.item_ids,reason:v.observacao,operationId:v.operation_id})));
+  server.registerTool("aprovar_target_files_lote", { description:"LEGADO/MANUAL: aprovação positiva antiga por target_file. Não usar no fluxo Coletor + QA por rejeição; prefira finalizar_qa_projeto para promover sobreviventes.", inputSchema:{ projeto_id:z.string().min(1), target_files:z.array(z.string()).min(1).max(100), observacao:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await enqueueApprovalsByItems(env,{projectId:v.projeto_id,targetFiles:v.target_files,reason:v.observacao,operationId:v.operation_id})));
   server.registerTool("relink_itens_lote", { description:"Coloca itens em RELINK_REQUIRED de forma assíncrona.", inputSchema:{ projeto_id:z.string().min(1), item_ids:z.array(z.string()).max(200).optional(), target_files:z.array(z.string()).max(200).optional(), motivo:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await relinkProjectItems(env,{projectId:v.projeto_id,itemIds:v.item_ids,targetFiles:v.target_files,reason:v.motivo,operationId:v.operation_id})));
   server.registerTool("rejeitar_itens_lote", { description:"Rejeita itens em lote e os encaminha para relink sem apagar mídia histórica.", inputSchema:{ projeto_id:z.string().min(1), item_ids:z.array(z.string()).max(200).optional(), target_files:z.array(z.string()).max(200).optional(), motivo:z.string().optional(), operation_id:z.string().optional() } }, async(v)=>output(await rejectProjectItems(env,{projectId:v.projeto_id,itemIds:v.item_ids,targetFiles:v.target_files,reason:v.motivo,operationId:v.operation_id})));
 
@@ -1107,7 +1122,7 @@ function createServer(env: Env, request: Request) {
   server.registerTool("criar_fila_materializacao_continua", { description:"Cria fila persistente de materialização sem iniciar download.", inputSchema:{ batch_id:z.string().optional(), projeto:z.string().min(1) } }, async(v)=>output(await createContinuousMaterializationQueue(env,{batchId:v.batch_id,project:v.projeto})));
   server.registerTool("adicionar_itens_fila_materializacao", { description:"Adiciona até 40 itens à fila e envia URLs válidas à Queue.", inputSchema:{ batch_id:z.string().min(1), itens:z.array(materializationItem).min(1).max(40), execution_id:z.string().optional() } }, async(v)=>output(await addMaterializationItems(env,v.batch_id,v.itens)));
   server.registerTool("obter_assets_para_qa_lote", { description:"Retorna QA em LINKS_ONLY com URLs temporárias do R2, sem resource_link de binário no chat.", inputSchema:{ batch_id:z.string().min(1), limite:z.number().int().min(1).max(100).optional(), execution_id:z.string().optional() } }, async(v)=>output(await assetsForQa(request,env,v.batch_id,v.limite||20)));
-  server.registerTool("registrar_qa_lote", { description:"Registra QA. APROVADO congela/cataloga; REJEITADO descarta candidatas temporárias sem apagar histórico.", inputSchema:{ batch_id:z.string().min(1), decisoes:z.array(z.object({item_id:z.string().min(1),status:z.string().min(1),observacao:z.string().optional()})).min(1).max(100), execution_id:z.string().optional() } }, async(v)=>output(await registerMaterializationQa(env,v.batch_id,v.decisoes)));
+  server.registerTool("registrar_qa_lote", { description:"LEGADO/MATERIALIZATION_BATCH: QA positivo/negativo da esteira histórica. Para PRODUCTION_SLOT use QA por rejeição: obter_production_slots_para_qa, rejeitar_production_slots_lote e finalizar_qa_projeto.", inputSchema:{ batch_id:z.string().min(1), decisoes:z.array(z.object({item_id:z.string().min(1),status:z.string().min(1),observacao:z.string().optional()})).min(1).max(100), execution_id:z.string().optional() } }, async(v)=>output(await registerMaterializationQa(env,v.batch_id,v.decisoes)));
   server.registerTool("adicionar_candidatas_item", { description:"Acrescenta novas URLs ao item e retoma a materialização pela Queue.", inputSchema:{ batch_id:z.string().min(1), item_id:z.string().min(1), projeto_id:z.string().optional(), candidatas:z.array(z.object({priority:z.number().int().optional(),url:z.string().url(),source:z.string().optional()})).min(1).max(20), execution_id:z.string().optional() } }, async(v)=>output(await addCandidatesToMaterializationItem(env,{batchId:v.batch_id,itemId:v.item_id,candidates:v.candidatas})));
   server.registerTool("aplicar_correcao_tecnica", { description:"Preserva a linhagem e aceita resultado técnico externo por URL. Sem url_resultado retorna TRANSFORM_SERVICE_REQUIRED em vez de fingir transformação dentro do Worker.", inputSchema:{ batch_id:z.string().min(1), item_id:z.string().min(1), projeto_id:z.string().optional(), parent_materialization_id:z.string().optional(), operacao:z.string().optional(), operacoes:z.array(z.string()).optional(), technical_fixes:z.array(z.string()).optional(), technical_parameters:z.record(z.string(),z.unknown()).optional(), reavaliado_antes_terceira:z.boolean().optional(), url_resultado:z.string().optional(), execution_id:z.string().optional() } }, async(v)=>output(await applyTechnicalCorrectionCompat(env,{batchId:v.batch_id,itemId:v.item_id,urlResult:v.url_resultado,operations:[...(v.operacao?[v.operacao]:[]),...(v.operacoes||[]),...(v.technical_fixes||[])],parameters:v.technical_parameters})));
   server.registerTool("exportar_zip_arquivo", { description:"Gera ZIP assíncrono dos assets congelados do lote usando o mesmo exportador streaming do R2.", inputSchema:{ batch_id:z.string().min(1), nome_zip:z.string().optional(), arquivos:z.array(z.object({item_id:z.string(),arquivo_alvo:z.string()})).optional(), execution_id:z.string().optional() } }, async(v)=>output(await exportFrozenMaterializationBatch(env,v.batch_id,v.nome_zip)));

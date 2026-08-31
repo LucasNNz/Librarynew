@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.25.0";
+const CONTRACT_VERSION = "2.26.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -78,6 +78,19 @@ const REQUIRED: TableSpec[] = [
       { name:"relink_reason", ddl:"ALTER TABLE v2_production_slots ADD COLUMN relink_reason TEXT" },
       { name:"rejected_by", ddl:"ALTER TABLE v2_production_slots ADD COLUMN rejected_by TEXT" },
       { name:"rejected_operation_id", ddl:"ALTER TABLE v2_production_slots ADD COLUMN rejected_operation_id TEXT" },
+      { name:"candidate_id", ddl:"ALTER TABLE v2_production_slots ADD COLUMN candidate_id TEXT REFERENCES v2_ingest_candidates(id)" },
+      { name:"previous_candidate_id", ddl:"ALTER TABLE v2_production_slots ADD COLUMN previous_candidate_id TEXT REFERENCES v2_ingest_candidates(id)" },
+      { name:"assigned_for_qa_at", ddl:"ALTER TABLE v2_production_slots ADD COLUMN assigned_for_qa_at INTEGER" },
+      { name:"qa_finalized_at", ddl:"ALTER TABLE v2_production_slots ADD COLUMN qa_finalized_at INTEGER" },
+      { name:"qa_operation_id", ddl:"ALTER TABLE v2_production_slots ADD COLUMN qa_operation_id TEXT" },
+      { name:"assignment_source", ddl:"ALTER TABLE v2_production_slots ADD COLUMN assignment_source TEXT" },
+    ],
+  },
+  {
+    table: "v2_production_slot_history",
+    columns: [
+      { name:"previous_candidate_id", ddl:"ALTER TABLE v2_production_slot_history ADD COLUMN previous_candidate_id TEXT REFERENCES v2_ingest_candidates(id)" },
+      { name:"new_candidate_id", ddl:"ALTER TABLE v2_production_slot_history ADD COLUMN new_candidate_id TEXT REFERENCES v2_ingest_candidates(id)" },
     ],
   },
 
@@ -131,7 +144,7 @@ export async function reconcileCriticalSchema(env:Env) {
   }
 
   if(before.missingTables.includes("v2_production_slot_history")){
-    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slot_history (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,project_version INTEGER NOT NULL DEFAULT 1,slot_id TEXT NOT NULL REFERENCES v2_production_slots(id) ON DELETE CASCADE,target_file TEXT,event TEXT NOT NULL,previous_asset_id TEXT REFERENCES assets(id),new_asset_id TEXT REFERENCES assets(id),reason TEXT,operation_id TEXT,actor TEXT,created_at INTEGER NOT NULL)`);
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slot_history (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,project_version INTEGER NOT NULL DEFAULT 1,slot_id TEXT NOT NULL REFERENCES v2_production_slots(id) ON DELETE CASCADE,target_file TEXT,event TEXT NOT NULL,previous_asset_id TEXT REFERENCES assets(id),new_asset_id TEXT REFERENCES assets(id),previous_candidate_id TEXT REFERENCES v2_ingest_candidates(id),new_candidate_id TEXT REFERENCES v2_ingest_candidates(id),reason TEXT,operation_id TEXT,actor TEXT,created_at INTEGER NOT NULL)`);
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_pslot_history_operation ON v2_production_slot_history(project_id,slot_id,event,operation_id) WHERE operation_id IS NOT NULL AND operation_id<>''");
     await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_history_slot ON v2_production_slot_history(project_id,slot_id,created_at DESC)");
     repaired.push("table:v2_production_slot_history");
@@ -153,7 +166,7 @@ export async function reconcileCriticalSchema(env:Env) {
   if(before.missingTables.some(table=>["v2_reference_pools","v2_production_scenes","v2_production_slots"].includes(table))){
     await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_reference_pools (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,pool_key TEXT NOT NULL,subject TEXT,universe TEXT,semantic_reference TEXT,status TEXT NOT NULL DEFAULT 'PENDING',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
     await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_scenes (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,scene_key TEXT NOT NULL,scene_number INTEGER,title TEXT,universe TEXT,subject TEXT,concept TEXT,semantic_reference TEXT,script_excerpt TEXT,preset TEXT,context TEXT,composition_class TEXT NOT NULL DEFAULT 'CONTEXTUAL',status TEXT NOT NULL DEFAULT 'READY',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
-    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slots (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,scene_id TEXT REFERENCES v2_production_scenes(id) ON DELETE CASCADE,slot_key TEXT NOT NULL,slot_index INTEGER NOT NULL DEFAULT 1,target_file TEXT,subject TEXT,universe TEXT,semantic_reference TEXT,reference_pool_id TEXT REFERENCES v2_reference_pools(id),preset TEXT,context TEXT,composition_class TEXT NOT NULL DEFAULT 'CONTEXTUAL',visual_role TEXT,asset_id TEXT REFERENCES assets(id),status TEXT NOT NULL DEFAULT 'UNRESOLVED',observation TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_production_slots (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,version INTEGER NOT NULL DEFAULT 1,scene_id TEXT REFERENCES v2_production_scenes(id) ON DELETE CASCADE,slot_key TEXT NOT NULL,slot_index INTEGER NOT NULL DEFAULT 1,target_file TEXT,subject TEXT,universe TEXT,semantic_reference TEXT,reference_pool_id TEXT REFERENCES v2_reference_pools(id),preset TEXT,context TEXT,composition_class TEXT NOT NULL DEFAULT 'CONTEXTUAL',visual_role TEXT,asset_id TEXT REFERENCES assets(id),candidate_id TEXT REFERENCES v2_ingest_candidates(id),previous_candidate_id TEXT REFERENCES v2_ingest_candidates(id),status TEXT NOT NULL DEFAULT 'UNRESOLVED',observation TEXT,assigned_for_qa_at INTEGER,qa_finalized_at INTEGER,qa_operation_id TEXT,assignment_source TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`);
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_reference_pool_unique ON v2_reference_pools(project_id,version,pool_key)");
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_production_scene_unique ON v2_production_scenes(project_id,version,scene_key)");
     await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_production_slot_key_unique ON v2_production_slots(project_id,version,slot_key)");
@@ -182,12 +195,23 @@ export async function reconcileCriticalSchema(env:Env) {
   }
 
   const ts=Date.now();
+  // Grandfather states that were already final in <=2.25.0 into the single
+  // canonical final PSLOT state used by QA-by-rejection. This is idempotent
+  // and never touches unresolved/relink/provisional slots.
+  await env.DB.prepare(`UPDATE v2_production_slots
+    SET status='FROZEN',
+        qa_finalized_at=COALESCE(qa_finalized_at,updated_at),
+        assignment_source=COALESCE(NULLIF(assignment_source,''),'LEGACY_QA_APPROVED')
+    WHERE asset_id IS NOT NULL AND candidate_id IS NULL
+      AND status IN ('RESOLVED','APPROVED','COMPLETED')`).run();
   await env.DB.prepare(`UPDATE v2_ingest_candidates
     SET discovered_at=COALESCE(discovered_at,created_at),
         queued_at=COALESCE(queued_at,created_at),
         materialized_at=CASE WHEN status IN ('MATERIALIZED','APPROVED','REJECTED') THEN COALESCE(materialized_at,updated_at) ELSE materialized_at END`).run();
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_item_status ON v2_ingest_candidates(project_id,item_id,status,updated_at DESC)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_relink_required ON v2_production_slots(project_id,status,updated_at DESC) WHERE status='RELINK_REQUIRED'");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_assigned_for_qa ON v2_production_slots(project_id,status,updated_at DESC) WHERE status='ASSIGNED_FOR_QA'");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_candidate ON v2_production_slots(candidate_id) WHERE candidate_id IS NOT NULL");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_automatic_projects_lifecycle_updated ON automatic_projects(lifecycle_status,updated_at DESC,id DESC)");
   await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_media_slot ON v2_project_media(project_id,kind,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('THUMB_REJECTED','REJECTED')");

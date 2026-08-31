@@ -1,0 +1,15 @@
+{
+  "version": "0.20.45",
+  "gate": "migration 9026 / schema 2.26.0",
+  "checks": {
+    "migration_applies_to_2_25_shape": true,
+    "slot_columns_present": true,
+    "history_candidate_columns_present": true,
+    "legacy_final_normalized": true,
+    "schema_version_2_26": true,
+    "boot_reconcile_prevents_duplicate_alter": true,
+    "restore_reconcile_prevents_duplicate_alter": true,
+    "critical_contract_matches_2_26": true
+  },
+  "pass": true
+}

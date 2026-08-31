@@ -1,3 +1,24 @@
+# Corvo Library V2 0.20.45 — Coletor Provisório + QA por Rejeição
+
+## Destaques 0.20.45
+- novo estado `ASSIGNED_FOR_QA`: imagem ativa no PSLOT, mas ainda provisória para QA;
+- AST aprovado da Biblioteca pode ser reutilizado sem cópia, porém o uso no projeto continua provisório até o fechamento do QA;
+- candidata externa `MATERIALIZED` pode ser ligada ao PSLOT por `candidate_id` sem virar APPROVED global;
+- nova rota MCP `atribuir_candidatas_aos_slots_para_qa`;
+- nova leitura MCP `obter_production_slots_para_qa`, com previews assinados para ASTs e candidatas externas;
+- QA padrão passa a rejeitar somente não conformes via `rejeitar_production_slots_lote`;
+- nova rota `finalizar_qa_projeto` promove sobreviventes `ASSIGNED_FOR_QA → FROZEN` e só então promove externas para AST APPROVED;
+- `RELINK_REQUIRED` volta sempre para `ASSIGNED_FOR_QA`, nunca direto para FROZEN;
+- `FROZEN` permanece protegido e candidatas extras não substituem silenciosamente uma escolha ativa;
+- `COLLECTOR_FINISHED`/`ready_for_qa` só aparecem quando não existem PENDING/RELINK_REQUIRED;
+- export final exige slots finais/FROZEN;
+- schema D1 `2.26.0`, migration `9026_v2_qa_by_rejection.sql`;
+- rejeição atômica/idempotente da 0.20.44 e interface da 0.20.43 preservadas.
+
+Consulte `RELEASE_0_20_45_QA_BY_REJECTION.md` e `VALIDATION_0_20_45_QA_BY_REJECTION.md`.
+
+---
+
 # Corvo Library V2 0.20.44 — Rejeição Atômica de PRODUCTION_SLOT
 
 ## Hotfix 0.20.44

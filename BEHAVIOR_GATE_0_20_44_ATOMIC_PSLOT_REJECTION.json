@@ -1,14 +1,14 @@
 {
   "version": "0.20.44",
-  "schema": "2.25.0",
+  "schema": "2.26.0 compatibility",
   "feature": "Atomic PRODUCTION_SLOT rejection + SQL cardinality hotfix",
-  "estimated_500_slot_transaction_statements": 598,
+  "estimated_500_slot_transaction_statements": 618,
   "checks": {
     "forced_failure_happened": true,
     "rollback_restored_all_slots": true,
     "rollback_removed_history": true,
     "corrected_history_insert_executes": true,
-    "history_values_exactly_12": true,
+    "history_values_match_14_column_schema": true,
     "old_13_value_history_shape_removed": true,
     "single_transactional_d1_batch": true,
     "no_mutating_run_before_batch": true,
