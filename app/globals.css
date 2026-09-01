@@ -365,3 +365,166 @@ html,body{overflow-x:hidden;scrollbar-color:#514168 #08111b;scrollbar-width:thin
 .projectFinalFileCard.optional{border-style:dashed;opacity:.88}
 .projectFinalFileCard.optional .projectFinalFileBody>span:after{content:" · opcional";color:#83769b;font-size:.78em;font-weight:700;text-transform:none;letter-spacing:0}
 .projectSummaryOptional{color:#7e718f!important;font-size:.86em!important}
+
+/* 0.20.52 — responsive workspace: adapt to the actual detail canvas, never clip project content */
+.projectStudio,
+.projectStudioBody,
+.projectRail,
+.projectDetailCanvas,
+.projectDetailHeader,
+.projectPipelineTrack,
+.projectSlotSection,
+.projectSlotCards,
+.projectFinalFilesSection,
+.projectFinalFileGrid,
+.projectArtifactSection,
+.projectArtifactRows,
+.projectDetailLower,
+.projectAgentsPanel,
+.projectInfoColumn{min-width:0;max-width:100%}
+
+.projectStudio{width:100%;overflow:visible}
+.projectStudioBody{
+  width:100%;
+  grid-template-columns:minmax(270px,clamp(285px,23vw,360px)) minmax(0,1fr);
+  align-items:start;
+}
+.projectDetailCanvas{
+  width:100%;
+  overflow:visible;
+  container-type:inline-size;
+  container-name:project-detail;
+}
+.projectRail{width:100%;max-width:100%}
+
+.projectDetailHeader{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;
+  gap:14px;
+}
+.projectDetailIdentity,
+.projectDetailIdentity>div:last-child,
+.projectDetailTitleLine{min-width:0;max-width:100%}
+.projectDetailTitleLine{flex-wrap:wrap;row-gap:6px}
+.projectDetailTitleLine h3{min-width:0;max-width:100%}
+.projectDetailIdentity p{max-width:100%;overflow-wrap:anywhere;word-break:break-word}
+.projectDetailIdentity code{white-space:normal;overflow-wrap:anywhere}
+.projectDetailHeaderActions{min-width:0;flex-wrap:wrap;justify-content:flex-end}
+
+/* Flow stages wrap instead of forcing a five-column minimum width. */
+.projectPipelineTrack{
+  grid-template-columns:repeat(auto-fit,minmax(145px,1fr));
+  overflow:visible;
+}
+.projectPipelineStage{min-width:0}
+.projectPipelineStage>div{min-width:0}
+.projectPipelineStage strong,
+.projectPipelineStage small{overflow-wrap:anywhere}
+.pipelineConnector{display:none}
+
+/* Slots respond to the space that remains after the project rail. */
+.projectSlotSection{width:100%;overflow:visible}
+.projectSlotSection>header{gap:12px;flex-wrap:wrap}
+.projectSlotCards{
+  width:100%;
+  grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  align-items:stretch;
+}
+.projectContentSlot{width:100%;max-width:100%;overflow:hidden}
+.projectContentSlotHead{min-width:0}
+.projectContentSlotHead strong{min-width:0}
+.projectContentSlot p,
+.referenceSlotPurpose span,
+.slotMcpInstruction span{overflow-wrap:anywhere;word-break:break-word}
+.projectSlotFooter{min-width:0;flex-wrap:wrap}
+.projectSlotActions{min-width:0;max-width:100%;flex-wrap:wrap}
+.projectSlotActions button,
+.projectSlotActions a{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:center}
+
+/* Final files use available space instead of fixed three columns. */
+.projectFinalFilesSection{width:100%}
+.projectFinalFilesSection>header{flex-wrap:wrap}
+.projectFinalFileGrid{
+  width:100%;
+  grid-template-columns:repeat(auto-fit,minmax(245px,1fr));
+}
+.projectFinalFileCard{min-width:0;max-width:100%}
+.projectFinalFileBody{min-width:0}
+.projectFinalFileBody strong{max-width:100%}
+.projectFinalFileAction{min-width:0}
+
+/* Lower detail and artifact areas also shrink cleanly. */
+.projectDetailLower{
+  width:100%;
+  grid-template-columns:minmax(0,1.45fr) minmax(220px,.72fr);
+}
+.projectAgentRow{min-width:0;max-width:100%}
+.projectAgentIdentity,
+.projectAgentExecution,
+.projectAgentHeartbeat{min-width:0}
+.projectArtifactSection{width:100%;max-width:100%}
+.projectArtifactSection>header{flex-wrap:wrap}
+.projectArtifactHeaderMeta{min-width:0;flex-wrap:wrap}
+.projectArtifactRow{min-width:0;max-width:100%;grid-template-columns:38px minmax(0,1fr) minmax(96px,.30fr) auto}
+.projectArtifactIdentity,
+.projectArtifactState,
+.projectArtifactActions{min-width:0;max-width:100%}
+.projectArtifactActions{flex-wrap:wrap;justify-content:flex-end}
+
+/* The detail panel itself decides how dense its children can be. */
+@container project-detail (max-width:900px){
+  .projectPipelineTrack{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+  .projectSlotCards{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .projectDetailLower{grid-template-columns:1fr}
+  .projectInfoColumn{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .projectFinalFileGrid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+  .projectAgentRow{grid-template-columns:34px minmax(0,1fr) minmax(92px,.4fr)}
+  .projectAgentHeartbeat{display:none}
+}
+
+@container project-detail (max-width:680px){
+  .projectDetailHeader{grid-template-columns:1fr;align-items:start}
+  .projectDetailHeaderActions{justify-content:flex-start;width:100%}
+  .projectDetailProgress{text-align:left}
+  .projectPipelineTrack{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .projectSlotCards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .projectInfoColumn{grid-template-columns:1fr}
+  .projectFinalFileGrid{grid-template-columns:1fr}
+  .projectArtifactRow{grid-template-columns:34px minmax(0,1fr) auto}
+  .projectArtifactState{display:none}
+  .projectAgentRow{grid-template-columns:34px minmax(0,1fr)}
+  .projectAgentExecution{display:none}
+}
+
+@container project-detail (max-width:430px){
+  .projectDetailIdentity{align-items:flex-start}
+  .projectDetailCover{width:52px;height:52px}
+  .projectDetailTitleLine{align-items:flex-start;flex-direction:column}
+  .projectDetailProgress{display:block}
+  .projectDeleteButton{width:100%}
+  .projectPipelineTrack,.projectSlotCards,.projectFinalFileGrid{grid-template-columns:1fr}
+  .projectFinalFileCard{grid-template-columns:40px minmax(0,1fr)}
+  .projectFinalFileAction{grid-column:2;align-items:flex-start;flex-direction:row;flex-wrap:wrap}
+  .projectArtifactRow{grid-template-columns:32px minmax(0,1fr)}
+  .projectArtifactActions{grid-column:2;justify-content:flex-start}
+}
+
+/* Viewport fallbacks: account for the app sidebar before content becomes cramped. */
+@media(max-width:1380px){
+  .projectStudioBody{grid-template-columns:minmax(260px,300px) minmax(0,1fr)}
+  .projectStudio{padding-left:18px;padding-right:18px}
+}
+@media(max-width:1180px){
+  .projectStudioBody{grid-template-columns:1fr}
+  .projectRail{position:relative;top:auto;max-height:none;overflow:visible}
+  .projectCardList{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));max-height:390px}
+  .projectDetailCanvas{margin-top:2px}
+}
+@media(max-width:760px){
+  .projectStudio{padding:12px}
+  .projectKpiGrid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .projectCardList{grid-template-columns:1fr;max-height:370px}
+  .projectRailTools{gap:8px;flex-wrap:wrap}
+  .projectRailTools button{max-width:100%}
+}

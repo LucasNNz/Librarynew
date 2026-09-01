@@ -16,13 +16,12 @@ function decodeCursor(value?: string | null) {
 export async function listAutomaticProjects(env: Env, limit=50, cursorValue?: string | null) {
   const safe=Math.max(1,Math.min(limit,200)); const cursor=decodeCursor(cursorValue); const values:unknown[]=[]; let where="";
   if(cursor){where=" WHERE (updated_at < ? OR (updated_at = ? AND id < ?))"; values.push(cursor.updatedAt,cursor.updatedAt,cursor.projectId);}
-  await expireProjectWorkflowTags(env).catch(()=>undefined);
   const result=await env.DB.prepare(`SELECT id,name,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,pending_count,failed_count,created_at,updated_at,completed_at,lifecycle_status,mcp_locked,rejected_at,closed_reason,workflow_updated_at FROM automatic_projects${where} ORDER BY updated_at DESC,id DESC LIMIT ?`).bind(...values,safe+1).all<Record<string,unknown>>();
   const rows=result.results||[]; const hasMore=rows.length>safe; const items=rows.slice(0,safe); const last=items[items.length-1];
   if(items.length){
     const placeholders=items.map(()=>"?").join(",");
     const [tagRows,profileRows]=await Promise.all([
-      env.DB.prepare(`SELECT project_id,tag,owner_id,execution_id,last_seen_at,lease_expires_at FROM v2_project_workflow_tags WHERE status='ACTIVE' AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...items.map(row=>row.id)).all<Record<string,unknown>>(),
+      env.DB.prepare(`SELECT project_id,tag,owner_id,execution_id,last_seen_at,lease_expires_at FROM v2_project_workflow_tags WHERE status='ACTIVE' AND (lease_expires_at IS NULL OR lease_expires_at>=?) AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(Date.now(),...items.map(row=>row.id)).all<Record<string,unknown>>(),
       env.DB.prepare(`SELECT project_id,id,updated_at FROM v2_project_media WHERE kind='PROJECT_PROFILE' AND selected=1 AND status='PROFILE_ACTIVE' AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...items.map(row=>row.id)).all<Record<string,unknown>>().catch(()=>({results:[]} as any)),
     ]);
     const byProject=new Map<string,Record<string,unknown>[]>(); for(const row of tagRows.results||[]){const key=String(row.project_id);byProject.set(key,[...(byProject.get(key)||[]),row]);}
@@ -30,6 +29,52 @@ export async function listAutomaticProjects(env: Env, limit=50, cursorValue?: st
     for(const item of items){(item as any).workflow_tags=byProject.get(String(item.id))||[];const profile=profileByProject.get(String(item.id));if(profile)(item as any).profile_media_id=String(profile.id||"");}
   }
   return {items,nextCursor:hasMore&&last?encodeCursor(Number(last.updated_at),String(last.id)):null};
+}
+
+export async function listActionableProjects(env: Env, input: { limit?:number; tagKeys?:string[]; nextActions?:string[] } = {}) {
+  const limit=Math.max(1,Math.min(Number(input.limit||50),100));
+  const tags=[...new Set((input.tagKeys||[]).map(value=>String(value||"").trim()).filter(Boolean))].slice(0,20);
+  const actions=[...new Set((input.nextActions||[]).map(value=>String(value||"").trim()).filter(Boolean))].slice(0,20);
+  const where=["COALESCE(lifecycle_status,'ACTIVE')='ACTIVE'","upper(COALESCE(status,'')) NOT IN ('COMPLETED','DONE','CONCLUIDO','CONCLUÍDO','REJECTED','REJEITADO','CANCELLED','CANCELADO')","next_action IS NOT NULL"];
+  const bind:unknown[]=[];
+  if(actions.length){where.push(`next_action IN (${actions.map(()=>"?").join(",")})`);bind.push(...actions);}
+  if(tags.length){
+    const placeholders=tags.map(()=>"?").join(",");
+    where.push(`(EXISTS (SELECT 1 FROM v2_slot_tags st WHERE st.project_id=automatic_projects.id AND st.active=1 AND st.tag_key IN (${placeholders})) OR EXISTS (SELECT 1 FROM v2_project_workflow_tags wt WHERE wt.project_id=automatic_projects.id AND wt.status='ACTIVE' AND (wt.lease_expires_at IS NULL OR wt.lease_expires_at>=?) AND wt.tag IN (${placeholders})))`);
+    bind.push(...tags,Date.now(),...tags);
+  }
+  const result=await env.DB.prepare(`SELECT id,name,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,frozen_count,collecting_count,waiting_qa_count,relink_count,pending_count,updated_at,workflow_updated_at,
+    EXISTS(SELECT 1 FROM automatic_project_files f WHERE f.project_id=automatic_projects.id AND f.role='SCRIPT' LIMIT 1) AS has_script,
+    EXISTS(SELECT 1 FROM automatic_project_files f WHERE f.project_id=automatic_projects.id AND f.role IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS') LIMIT 1) AS has_references,
+    (SELECT COUNT(*) FROM v2_project_titles t WHERE t.project_id=automatic_projects.id AND t.status NOT IN ('TITLE_REJECTED','REJECTED')) AS title_count,
+    (SELECT COUNT(*) FROM v2_project_media m WHERE m.project_id=automatic_projects.id AND m.kind='THUMB' AND m.status NOT IN ('THUMB_REJECTED','REJECTED')) AS thumb_count
+    FROM automatic_projects WHERE ${where.join(" AND ")} ORDER BY queue_priority DESC,updated_at ASC,id ASC LIMIT ?`).bind(...bind,limit).all<Record<string,unknown>>();
+  const items=result.results||[];
+  if(!items.length)return {items:[],returned:0,control_plane:"ACTIONABLE_ONLY",detail_route:"obter_slot_projeto"};
+  const ids=items.map(item=>String(item.id));const placeholders=ids.map(()=>"?").join(",");
+  const [slotTags,workflowTags]=await Promise.all([
+    env.DB.prepare(`SELECT project_id,tag_key FROM v2_slot_tags WHERE active=1 AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...ids).all<Record<string,unknown>>(),
+    env.DB.prepare(`SELECT project_id,tag FROM v2_project_workflow_tags WHERE status='ACTIVE' AND (lease_expires_at IS NULL OR lease_expires_at>=?) AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(Date.now(),...ids).all<Record<string,unknown>>(),
+  ]);
+  const tagsByProject=new Map<string,Set<string>>();
+  for(const row of [...(slotTags.results||[]),...(workflowTags.results||[])]){const pid=String(row.project_id||"");const tag=String(row.tag_key||row.tag||"");if(!pid||!tag)continue;const set=tagsByProject.get(pid)||new Set<string>();set.add(tag);tagsByProject.set(pid,set);}
+  return {items:items.map(item=>({...item,tags:[...(tagsByProject.get(String(item.id))||new Set<string>())]})),returned:items.length,control_plane:"ACTIONABLE_ONLY",detail_route:"obter_slot_projeto",instruction:"Use esta rota para a varredura inicial. Só chame obter_slot_projeto após selecionar um projeto acionável."};
+}
+
+export async function getShortOperationalSnapshot(env: Env, projectId:string, sinceVersion?:number) {
+  const project=await env.DB.prepare(`SELECT id,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,frozen_count,collecting_count,materializing_count,waiting_qa_count,relink_count,technical_count,pending_count,failed_count,active_version,updated_at,workflow_updated_at,lifecycle_status,mcp_locked FROM automatic_projects WHERE id=? LIMIT 1`).bind(projectId).first<Record<string,unknown>>();
+  if(!project)return null;
+  const version=Number(project.state_version||1);
+  if(sinceVersion!=null&&Number(sinceVersion)===version)return {project_id:projectId,state_version:version,changed:false,not_modified:true};
+  const activeVersion=Number(project.active_version||1);
+  const production=await env.DB.prepare(`SELECT COUNT(*) AS total,
+    SUM(CASE WHEN status='ASSIGNED_FOR_QA' AND (asset_id IS NOT NULL OR candidate_id IS NOT NULL) THEN 1 ELSE 0 END) AS assigned_for_qa,
+    SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) AS frozen,
+    SUM(CASE WHEN status='RELINK_REQUIRED' THEN 1 ELSE 0 END) AS relink_required,
+    SUM(CASE WHEN status IN ('UNRESOLVED','PENDING') OR ((asset_id IS NULL AND candidate_id IS NULL) AND status NOT IN ('RELINK_REQUIRED')) THEN 1 ELSE 0 END) AS pending
+    FROM v2_production_slots WHERE project_id=? AND version=?`).bind(projectId,activeVersion).first<Record<string,unknown>>();
+  const total=Number(production?.total||0),assigned=Number(production?.assigned_for_qa||0),frozen=Number(production?.frozen||0),relink=Number(production?.relink_required||0),pending=Number(production?.pending||0);
+  return {project_id:projectId,state_version:version,changed:true,not_modified:false,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,project_domain:project.project_domain,queue_priority:Number(project.queue_priority||1),counts:{total:Number(project.total_items||0),approved:Number(project.approved_count||0),frozen:Number(project.frozen_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0)},production:{production_slots_total:total,production_slots_assigned_for_qa:assigned,production_slots_frozen:frozen,production_slots_relink_required:relink,production_slots_pending:pending,qa_complete:total>0&&frozen>=total&&assigned===0&&relink===0&&pending===0},lifecycle_status:project.lifecycle_status,mcp_locked:Boolean(project.mcp_locked),updated_at:project.updated_at,workflow_updated_at:project.workflow_updated_at,read_profile:"FAST_CONTROL_PLANE_NO_FILES_NO_POLICIES_NO_R2"};
 }
 
 export async function createAutomaticProject(env: Env, input: { projeto_id?:string; nome:string; project_domain?:string; prioridade_fila?:number; automatico?:boolean; biblioteca_primeiro?:boolean; busca_externa?:boolean; zip_automatico?:boolean; excluir_zip_ao_concluir?:boolean }) {
@@ -158,8 +203,13 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   // PRODUCTION_SLOT is the source of truth for production progress. Reconcile stale legacy PITEMs
   // before deriving project counters so a 102/102 FROZEN project cannot still look COLLECTING/RELINK_REQUIRED.
   const legacyItemReconciliation=await reconcileLegacyProjectItemsFromProduction(env,projectId).catch(error=>({error:error instanceof Error?error.message:String(error),changed:0}));
-  const itemsResult = await env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId).all<Record<string,unknown>>();
+  const [itemsResult,activeWorkResult] = await env.DB.batch<Record<string,unknown>>([
+    env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId),
+    env.DB.prepare("SELECT id,item_id,status,worker_type,stage FROM worker_work_items WHERE project_id=? AND status IN ('READY','LEASED')").bind(projectId),
+  ]);
   const items = itemsResult.results || [];
+  const activeWorkByItem=new Map<string,Record<string,unknown>>();
+  for(const row of activeWorkResult.results||[]){const itemId=String(row.item_id||"");if(itemId&&!activeWorkByItem.has(itemId))activeWorkByItem.set(itemId,row);}
   const counts = { total:items.length, approved:0, frozen:0, collecting:0, materializing:0, waitingQa:0, relink:0, technical:0, waitingSeed:0, failed:0, pending:0 };
   const statements:D1PreparedStatement[] = [];
   const ts = nowMs();
@@ -177,13 +227,16 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
     else counts.pending++;
 
     if (!terminalItemStates.has(status)) {
-      const existing = await env.DB.prepare("SELECT id,status FROM worker_work_items WHERE project_id=? AND item_id=? AND status IN ('READY','LEASED') LIMIT 1").bind(projectId,item.id).first<Record<string,unknown>>();
+      const itemId=String(item.id||"");
+      const existing = activeWorkByItem.get(itemId);
       if (!existing) {
         const {stage,workerType}=workerStageForItem(status);
         const ready = Number(item.stage_ready_at || item.updated_at || ts);
         const original = Number(item.original_ready_at || item.created_at || ready);
+        const workId=id("WORK");
         statements.push(env.DB.prepare(`INSERT INTO worker_work_items (id,scope_type,scope_id,project_id,project_domain,item_id,stage,worker_type,priority,resume_priority,status,ready_at,original_ready_at,attempts,last_action,payload_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,'READY',?,?,0,'RECONCILE',?, ?,?)`)
-          .bind(id("WORK"),"PROJECT_ITEM",String(item.id),projectId,String(project.project_domain||"GENERAL"),String(item.id),stage,workerType,Number(item.priority||1),ready,original,JSON.stringify({term:item.term,universe:item.universe,target_file:item.target_file}),ts,ts));
+          .bind(workId,"PROJECT_ITEM",itemId,projectId,String(project.project_domain||"GENERAL"),itemId,stage,workerType,Number(item.priority||1),ready,original,JSON.stringify({term:item.term,universe:item.universe,target_file:item.target_file}),ts,ts));
+        activeWorkByItem.set(itemId,{id:workId,item_id:itemId,status:"READY",worker_type:workerType,stage});
       }
     }
   }
@@ -210,13 +263,23 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
     ? (slotsAssignedForQa>0?"QA_REVIEW_WORKING":slotsRelink>0||slotsPending>0||slotsFrozen<slotsTotal?"SLOT_ASSIGNMENT_WORKING":deliveryReady?"READY_FOR_DOWNLOAD":"QA_CONCLUIDO")
     : referenceOnly?"REFERENCE_STAGE_COMPLETE":hasScript?"INTERPRETANDO_ROTEIRO":counts.failed>0?"ATENCAO":"PROCESSANDO";
   const status=completed?"COMPLETED":String(project.status)==="WAITING_FILES"&&counts.total===0&&!hasProduction&&!productionRequired?"WAITING_FILES":"ACTIVE";
-  await env.DB.batch<Record<string, unknown>>([
-    env.DB.prepare(`UPDATE automatic_projects SET status=?,pipeline_status=?,next_action=?,total_items=?,approved_count=?,frozen_count=?,collecting_count=?,materializing_count=?,waiting_qa_count=?,relink_count=?,technical_count=?,waiting_seed_count=?,failed_count=?,pending_count=?,completed_at=?,state_version=state_version+1,updated_at=? WHERE id=?`)
-      .bind(status,pipeline,nextAction,counts.total,counts.approved,counts.frozen,counts.collecting,counts.materializing,counts.waitingQa,counts.relink,counts.technical,counts.waitingSeed,counts.failed,counts.pending,completed?ts:null,ts,projectId),
-    env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
-      .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,production,legacyItemReconciliation,createdWorkItems:statements.length}),ts),
-  ]);
-  return { project: await getAutomaticProject(env,projectId), counts, production, legacyItemReconciliation, createdWorkItems: statements.length, scriptRecovery };
+  const desiredCompletedAt=completed?ts:null;
+  const stateChanged=
+    String(project.status||"")!==status || String(project.pipeline_status||"")!==pipeline || String(project.next_action||"")!==String(nextAction||"") ||
+    Number(project.total_items||0)!==counts.total || Number(project.approved_count||0)!==counts.approved || Number(project.frozen_count||0)!==counts.frozen ||
+    Number(project.collecting_count||0)!==counts.collecting || Number(project.materializing_count||0)!==counts.materializing || Number(project.waiting_qa_count||0)!==counts.waitingQa ||
+    Number(project.relink_count||0)!==counts.relink || Number(project.technical_count||0)!==counts.technical || Number(project.waiting_seed_count||0)!==counts.waitingSeed ||
+    Number(project.failed_count||0)!==counts.failed || Number(project.pending_count||0)!==counts.pending ||
+    Number((legacyItemReconciliation as any)?.changed||0)>0 || statements.length>0 || Boolean(scriptRecovery);
+  if(stateChanged){
+    await env.DB.batch<Record<string, unknown>>([
+      env.DB.prepare(`UPDATE automatic_projects SET status=?,pipeline_status=?,next_action=?,total_items=?,approved_count=?,frozen_count=?,collecting_count=?,materializing_count=?,waiting_qa_count=?,relink_count=?,technical_count=?,waiting_seed_count=?,failed_count=?,pending_count=?,completed_at=?,state_version=state_version+1,updated_at=? WHERE id=?`)
+        .bind(status,pipeline,nextAction,counts.total,counts.approved,counts.frozen,counts.collecting,counts.materializing,counts.waitingQa,counts.relink,counts.technical,counts.waitingSeed,counts.failed,counts.pending,desiredCompletedAt,ts,projectId),
+      env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)")
+        .bind(id("PEV"),projectId,"RECONCILED",pipeline,JSON.stringify({counts,production,legacyItemReconciliation,createdWorkItems:statements.length}),ts),
+    ]);
+  }
+  return { project: stateChanged?await getAutomaticProject(env,projectId):project, counts, production, legacyItemReconciliation, createdWorkItems: statements.length, scriptRecovery, stateChanged };
 }
 
 export async function processAutomaticProject(env: Env, projectId: string) {

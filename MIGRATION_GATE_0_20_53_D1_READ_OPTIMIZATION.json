@@ -1,0 +1,33 @@
+{
+  "version": "0.20.53",
+  "schema": "2.27.0",
+  "gate": "migration 9027 + query-plan index coverage",
+  "passed": 14,
+  "total": 14,
+  "ok": true,
+  "failed": [],
+  "plans": {
+    "actionable": "SCAN automatic_projects USING INDEX idx_automatic_projects_actionable",
+    "pitems": "SEARCH automatic_project_items USING INDEX idx_project_items_project_status (project_id=? AND status=?)",
+    "worker_claim": "SEARCH worker_work_items USING INDEX idx_worker_ready_claim (worker_type=? AND project_domain=?)",
+    "pslots": "SEARCH v2_production_slots USING INDEX idx_v2_production_slot_project_version_status (project_id=? AND version=? AND status=?)",
+    "slot_tags": "SEARCH v2_slot_tags USING INDEX idx_v2_slot_tags_project_key_active (project_id=? AND tag_key=? AND active=?)",
+    "files": "SEARCH automatic_project_files USING INDEX idx_project_files_project_role (project_id=? AND role=?)"
+  },
+  "checks": {
+    "migration_applies_to_2_26_shape": true,
+    "production_reconciled_at_added": true,
+    "telemetry_table_created": true,
+    "all_expected_indexes_created": true,
+    "schema_version_2_27": true,
+    "actionable_query_uses_index": true,
+    "pitem_query_uses_index": true,
+    "worker_claim_uses_index": true,
+    "pslot_query_uses_index": true,
+    "slot_tag_query_uses_index": true,
+    "file_query_uses_index": true,
+    "boot_reconcile_prevents_duplicate_column_replay": true,
+    "restore_reconcile_prevents_duplicate_column_replay": true,
+    "schema_contract_recreates_indexes_before_marking_ready": true
+  }
+}

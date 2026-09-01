@@ -11,8 +11,8 @@ import { integritySample } from "./core/storage";
 import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listAdapters, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
-import { claimNextWork, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
-import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectSlot, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
+import { claimNextWork, compactWorkerQueue, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
+import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectSlot, getShortOperationalSnapshot, listActionableProjects, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
 import { configureProjectSlotAccess, fillProjectImageSlot, fillProjectTextSlot, linkApprovedAssetToProjectSlot, listProjectSlotAccess } from "./core/project-slot-customization";
 import { clearProjectProfile, getProjectProfile, setProjectProfileFromAsset, setProjectProfileFromCandidate } from "./core/project-profile";
@@ -38,6 +38,7 @@ import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } 
 import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
 import { createSlotTag, findSlotsByTag, listProjectTags, listSlotTags, removeSlotTag } from "./core/slot-tags";
 import { applyPersistentPolicyToProject, createPersistentPolicy, editPersistentPolicy, listPersistentPolicies, listProjectPersistentPolicies, removePersistentPolicy, removePersistentPolicyFromProject, resolveApplicablePolicies, setPersistentPolicyActive } from "./core/persistent-policies";
+import { createD1TelemetryEnv, detectMcpToolName, recordD1RouteTelemetry, type D1RouteMetrics } from "./core/d1-telemetry";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -149,7 +150,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.51" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.53" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -489,9 +490,14 @@ function createServer(env: Env, request: Request) {
   }, async ({ asset_ids }) => output({ links: await getAssetLinks(request, asset_ids, env) }));
 
   server.registerTool("listar_projetos_automaticos", {
-    description: "Lista resumida de projetos automáticos preservados no D1, com paginação por cursor.",
+    description: "Lista administrativa/UI de projetos. Para varredura automática de agentes use listar_projetos_acionaveis, que é o control plane leve e evita scans desnecessários.",
     inputSchema: { limite: z.number().int().min(1).max(200).optional(), cursor: z.string().optional() },
   }, async ({ limite, cursor }) => output(await listAutomaticProjects(env, limite || 50, cursor)));
+
+  server.registerTool("listar_projetos_acionaveis", {
+    description: "CONTROL PLANE PREFERENCIAL PARA AGENTES: retorna somente projetos ACTIVE com next_action real, estado mínimo e tags. Use primeiro em cada rodada; só abra obter_slot_projeto depois de escolher um projeto desta lista.",
+    inputSchema: { limite:z.number().int().min(1).max(100).optional(), tags:z.array(z.string()).max(20).optional(), next_actions:z.array(z.string()).max(20).optional() },
+  }, async ({limite,tags,next_actions}) => output(await listActionableProjects(env,{limit:limite||50,tagKeys:tags,nextActions:next_actions})));
 
   server.registerTool("criar_projeto_automatico", {
     description: "Cria um projeto automático V2 usando a tabela histórica e ID opcional idempotente.",
@@ -514,9 +520,9 @@ function createServer(env: Env, request: Request) {
   }, async ({ projeto_id, since_version }) => output((await getOperationalSnapshot(env,projeto_id,since_version)) || {error:"NOT_FOUND"}));
 
   server.registerTool("obter_resumo_curto", {
-    description: "Hot path FAST READ: retorna somente o snapshot incremental de um projeto, sem detalhes, logs ou varredura R2.",
+    description: "HOT PATH obrigatório para rechecagens: lê somente automatic_projects + contagem indexada de PSLOTs; sem arquivos, políticas, logs, candidatas ou R2. since_version igual retorna not_modified em uma única busca por PK.",
     inputSchema: { projeto_id:z.string().min(1), since_version:z.number().int().optional() },
-  }, async ({ projeto_id, since_version }) => output((await getOperationalSnapshot(env,projeto_id,since_version)) || {error:"NOT_FOUND"}));
+  }, async ({ projeto_id, since_version }) => output((await getShortOperationalSnapshot(env,projeto_id,since_version)) || {error:"NOT_FOUND"}));
 
   server.registerTool("validar_consistencia", {
     description: "Executa uma checagem de integridade D1↔R2 e identifica r2_key compartilhadas sem alterar dados.",
@@ -806,7 +812,7 @@ function createServer(env: Env, request: Request) {
   }, async ({worker_type,worker_domain,max_workers,max_por_projeto,ativo}) => output(await configureWorkerLimit(env,{workerType:worker_type,workerDomain:worker_domain,maxWorkers:max_workers,maxPerProject:max_por_projeto,enabled:ativo})));
 
   server.registerTool("obter_slot_projeto", {
-    description: "Snapshot operacional completo de um projeto-slot: lifecycle, tags simultâneas/heartbeats, roteiro, thumbs (max 3), títulos (max 3), referências, cenas/candidatas, aprovadas e ZIP final.",
+    description: "ROTA PESADA DE DETALHE: lifecycle + tags + roteiro + thumbs + títulos + referências + cenas/candidatas + aprovadas + ZIP. Não use para varrer todos os projetos; selecione primeiro via listar_projetos_acionaveis/obter_resumo_curto.",
     inputSchema: { projeto_id:z.string().min(1) },
   }, async ({projeto_id}) => output((await getProjectSlot(env,projeto_id))||{error:"NOT_FOUND"}));
   server.registerTool("criar_tag_slot", {
@@ -963,7 +969,7 @@ function createServer(env: Env, request: Request) {
   }, async ({tipo}) => output((await latestOperation(env,tipo))||{error:"NOT_FOUND"}));
 
   server.registerTool("obter_performance_mcp", {
-    description: "Agrega telemetria histórica da tabela mcp_audit, sem expor segredos.",
+    description: "Telemetria D1 por rota MCP: queries, duração e rows_read/rows_written observados quando o D1 fornece meta. Mostra ranking das rotas mais caras e usa mcp_audit apenas como fallback legado.",
     inputSchema: { limite:z.number().int().min(1).max(1000).optional() },
   }, async ({limite}) => output(await mcpPerformance(env,limite||100)));
 
@@ -1044,7 +1050,8 @@ function createServer(env: Env, request: Request) {
   server.registerTool("heartbeat_supervisor", { description:"Renova o lease do Supervisor somente para o projeto/execution_id atual. Um agente não pode renovar a execução de outro.", inputSchema:{ projeto_id:z.string().min(1), execution_id:z.string().min(1), worker_id:z.string().optional(), lease_minutos:z.number().int().min(1).max(120).optional() } }, async(v)=>output(await heartbeatSupervisor(env,{projectId:v.projeto_id,executionId:v.execution_id,ownerId:v.worker_id,leaseMinutes:v.lease_minutos})));
   server.registerTool("executar_watchdog_supervisor", { description:"Marca execuções Supervisor com lease expirado como abandonadas.", inputSchema:{} }, async()=>output(await supervisorWatchdog(env)));
   server.registerTool("obter_telemetria_leases_supervisor", { description:"Telemetria de leases do Supervisor.", inputSchema:{} }, async()=>output(await supervisorLeaseTelemetry(env)));
-  server.registerTool("executar_dispatcher_workers", { description:"Reconcilia filas dos projetos ativos e retorna saúde do dispatcher.", inputSchema:{ limite_projetos:z.number().int().min(1).max(100).optional() } }, async({limite_projetos})=>{const projects=await listAutomaticProjects(env,limite_projetos||25,null);let reconciled=0;for(const p of projects.items){if(!["COMPLETED","CANCELLED"].includes(String(p.status))){await reconcileAutomaticProject(env,String(p.id));reconciled++;}}return output({reconciled,health:await dispatcherHealth(env)});});
+  server.registerTool("executar_dispatcher_workers", { description:"Compacta duplicatas/stale READY e reconcilia somente projetos acionáveis; evita varrer todos os projetos em cada tick.", inputSchema:{ limite_projetos:z.number().int().min(1).max(100).optional() } }, async({limite_projetos})=>{const compact=await compactWorkerQueue(env);const projects=await listActionableProjects(env,{limit:limite_projetos||25});const actionable=projects.items as Record<string,unknown>[];let reconciled=0;for(const p of actionable){await reconcileAutomaticProject(env,String(p.id));reconciled++;}return output({compact,reconciled,selected_projects:actionable.map(p=>({id:p.id,next_action:p.next_action,state_version:p.state_version})),health:await dispatcherHealth(env)});});
+  server.registerTool("compactar_fila_workers", { description:"Cancela READY cujo PITEM já é terminal/ASSIGNED_FOR_QA e deduplica READY equivalentes, preservando histórico como CANCELLED. Use para reduzir backlog legado sem apagar registros.", inputSchema:{} }, async()=>output(await compactWorkerQueue(env)));
 
   server.registerTool("obter_estado_supervisor", { description:"Estado consolidado do Supervisor; pode ser filtrado por projeto no painel.", inputSchema:{} }, async()=>output(await supervisorStatus(env)));
   server.registerTool("obter_painel_supervisor", { description:"Painel Supervisor com leases, decisões e candidatas pendentes.", inputSchema:{ projeto_id:z.string().optional() } }, async({projeto_id})=>output(await supervisorPanel(env,projeto_id)));
@@ -1266,7 +1273,25 @@ function createServer(env: Env, request: Request) {
   return server;
 }
 
-export function handleMcp(request: Request, env: Env, ctx: ExecutionContext) {
-  const handler = createMcpHandler(() => createServer(env, request), { route: "/mcp", responseMode: "json" });
-  return handler(request, env, ctx);
+export async function handleMcp(request: Request, env: Env, ctx: ExecutionContext) {
+  const tool = await detectMcpToolName(request);
+  if (!tool) {
+    const handler = createMcpHandler(() => createServer(env, request), { route: "/mcp", responseMode: "json" });
+    return handler(request, env, ctx);
+  }
+  const metrics: D1RouteMetrics = { tool, startedAt: Date.now(), dbQueries: 0, metaCoveredQueries: 0, rowsReadObserved: 0, rowsWrittenObserved: 0 };
+  const instrumentedEnv = createD1TelemetryEnv(env, metrics);
+  const handler = createMcpHandler(() => createServer(instrumentedEnv, request), { route: "/mcp", responseMode: "json" });
+  try {
+    const response = await handler(request, instrumentedEnv, ctx);
+    metrics.success = response.ok;
+    metrics.durationMs = Date.now() - metrics.startedAt;
+    ctx.waitUntil(recordD1RouteTelemetry(env, metrics));
+    return response;
+  } catch (error) {
+    metrics.success = false;
+    metrics.durationMs = Date.now() - metrics.startedAt;
+    ctx.waitUntil(recordD1RouteTelemetry(env, metrics));
+    throw error;
+  }
 }

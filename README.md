@@ -1,3 +1,37 @@
+# Corvo Library V2 0.20.53 — D1 Read Optimization
+
+## Destaques 0.20.53
+
+- novo control plane `listar_projetos_acionaveis` para agentes;
+- `obter_resumo_curto` realmente leve, com `state_version/not_modified`;
+- elimina N+1 de `worker_work_items` na reconciliação;
+- checkpoint `production_reconciled_at` evita sincronização PSLOT→PITEM repetida;
+- compactação segura da fila READY preservando histórico;
+- migration 9027 / schema D1 2.27.0 com índices dos hot paths;
+- telemetria MCP por rota com queries e `rows_read` observado quando disponível;
+- `obter_performance_mcp` passa a mostrar as rotas mais caras e últimas 24h;
+- preserva QA inline, upload de thumb, publicação opcional e workspace responsivo.
+
+Consulte `RELEASE_0_20_53_D1_READ_OPTIMIZATION.md` e `VALIDATION_0_20_53_D1_READ_OPTIMIZATION.md`.
+
+---
+
+# Corvo Library V2 0.20.52 — Responsive Workspace Layout
+
+## Destaques 0.20.52
+
+- tela de Projetos passa a responder à largura real do painel, e não a um monitor específico;
+- `container queries` reorganizam pipeline, slots, arquivos finais, artefatos e resumo sem cortar conteúdo;
+- grades fixas foram substituídas por `auto-fit` nos pontos críticos;
+- em notebooks/telas menores, o rail de projetos sobe automaticamente e o detalhe usa a largura inteira;
+- IDs, botões e textos longos quebram linha sem criar overflow horizontal;
+- preserva separação Em andamento/Concluídos, publicação opcional e QA inline sem permissão;
+- schema D1 permanece 2.26.0.
+
+Consulte `RELEASE_0_20_52_RESPONSIVE_WORKSPACE_LAYOUT.md` e `VALIDATION_0_20_52_RESPONSIVE_WORKSPACE_LAYOUT.md`.
+
+---
+
 # Corvo Library V2 0.20.51 — Inline MCP QA Previews
 
 ## Destaques 0.20.51

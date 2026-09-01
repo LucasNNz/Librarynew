@@ -60,6 +60,7 @@ const CRITICAL_SCHEMA_COLUMNS: Record<string, Array<{name:string;ddl:string}>> =
     {name:"rejected_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN rejected_at INTEGER"},
     {name:"closed_reason",ddl:"ALTER TABLE automatic_projects ADD COLUMN closed_reason TEXT"},
     {name:"workflow_updated_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN workflow_updated_at INTEGER"},
+    {name:"production_reconciled_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN production_reconciled_at INTEGER"},
   ],
   v2_project_media: [
     {name:"slot_index",ddl:"ALTER TABLE v2_project_media ADD COLUMN slot_index INTEGER"},
@@ -100,15 +101,21 @@ async function tableColumns(token:string,accountId:string,databaseId:string,tabl
 async function reconcileCriticalSchemaRemote(token:string,accountId:string,databaseId:string) {
   const repaired:string[]=[];
   const missingTables:string[]=[];
+  if(!(await tableExists(token,accountId,databaseId,"v2_mcp_route_telemetry"))){
+    await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_mcp_route_telemetry (id TEXT PRIMARY KEY NOT NULL,tool TEXT NOT NULL,success INTEGER NOT NULL DEFAULT 1,duration_ms INTEGER NOT NULL DEFAULT 0,db_query_count INTEGER NOT NULL DEFAULT 0,meta_covered_queries INTEGER NOT NULL DEFAULT 0,rows_read_observed INTEGER NOT NULL DEFAULT 0,rows_written_observed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL)`);
+    await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_mcp_route_telemetry_created ON v2_mcp_route_telemetry(created_at DESC)");
+    await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_mcp_route_telemetry_tool_created ON v2_mcp_route_telemetry(tool,created_at DESC)");
+    repaired.push("table:v2_mcp_route_telemetry");
+  }
   if(!(await tableExists(token,accountId,databaseId,"v2_project_workflow_tags"))){
     await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_project_workflow_tags (id TEXT PRIMARY KEY NOT NULL,project_id TEXT NOT NULL REFERENCES automatic_projects(id),tag TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'ACTIVE',owner_id TEXT,execution_id TEXT,ttl_seconds INTEGER,last_seen_at INTEGER,lease_expires_at INTEGER,metadata_json TEXT NOT NULL DEFAULT '{}',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,ended_at INTEGER)`);
     await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_unique ON v2_project_workflow_tags(project_id,tag)");
     repaired.push("table:v2_project_workflow_tags");
   }
-  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_download_packages","v2_ingest_operations","v2_ingest_events","v2_production_slots","v2_production_slot_history"]){
+  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_download_packages","v2_ingest_operations","v2_ingest_events","v2_production_slots","v2_production_slot_history","v2_mcp_route_telemetry"]){
     if(!(await tableExists(token,accountId,databaseId,table))) missingTables.push(table);
   }
-  if(missingTables.length) return {ready:false,contractVersion:"2.26.0",missingTables,missingColumns:[],repaired};
+  if(missingTables.length) return {ready:false,contractVersion:"2.27.0",missingTables,missingColumns:[],repaired};
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     let columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs){
@@ -131,13 +138,34 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_pslot_candidate ON v2_production_slots(candidate_id) WHERE candidate_id IS NOT NULL");
   await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_pslot_history_operation ON v2_production_slot_history(project_id,slot_id,event,operation_id) WHERE operation_id IS NOT NULL AND operation_id<>''");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_pslot_history_slot ON v2_production_slot_history(project_id,slot_id,created_at DESC)");
-  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.26.0',?)",[Date.now()]);
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_automatic_projects_actionable ON automatic_projects(queue_priority DESC,updated_at ASC,id ASC) WHERE COALESCE(lifecycle_status,'ACTIVE')='ACTIVE' AND next_action IS NOT NULL");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_items_project_status ON automatic_project_items(project_id,status,priority DESC,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_items_project_priority ON automatic_project_items(project_id,priority DESC,created_at ASC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_files_project_role ON automatic_project_files(project_id,role,version DESC,created_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_project_events_project_created ON automatic_project_events(project_id,created_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_worker_ready_claim ON worker_work_items(worker_type,project_domain,resume_priority DESC,priority DESC,original_ready_at ASC,ready_at ASC) WHERE status='READY'");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_worker_project_item_active ON worker_work_items(project_id,item_id,status,worker_type,stage)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_worker_project_status ON worker_work_items(project_id,status,worker_type,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_worker_lease_expiry ON worker_work_items(status,lease_expires_at) WHERE status='LEASED'");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_worker_status_type_domain ON worker_work_items(status,worker_type,project_domain)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_worker_sessions_status_type_domain ON worker_sessions(status,worker_type,worker_domain)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_ingest_candidates_project_status ON v2_ingest_candidates(project_id,status,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_slot_access_project ON v2_project_slot_access(project_id,slot_key)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_operational_policies_active_scope ON operational_policies(rule_type,status,scope_level,project_id,preset,priority DESC,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_production_slot_project_version_status ON v2_production_slots(project_id,version,status,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_production_slot_reference_pool ON v2_production_slots(reference_pool_id,status)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_lookup ON v2_project_workflow_tags(project_id,status,tag,lease_expires_at,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_slot_tags_project_key_active ON v2_slot_tags(project_id,tag_key,active,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_media_lookup ON v2_project_media(project_id,kind,status,selected,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_titles_lookup ON v2_project_titles(project_id,status,slot_index,updated_at DESC)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_download_packages_project_type_status ON v2_download_packages(project_id,type,status,created_at DESC)");
+  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.27.0',?)",[Date.now()]);
   const missingColumns:Array<{table:string;column:string}>=[];
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     const columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs) if(!columns.has(spec.name)) missingColumns.push({table,column:spec.name});
   }
-  return {ready:missingColumns.length===0,contractVersion:"2.26.0",missingTables:[],missingColumns,repaired};
+  return {ready:missingColumns.length===0,contractVersion:"2.27.0",missingTables:[],missingColumns,repaired};
 }
 
 async function migrationFiles() {
@@ -190,7 +218,7 @@ const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
   "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql", "2.19.0":"9019_v2_project_slots_workflow.sql",
-  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql", "2.26.0":"9026_v2_qa_by_rejection.sql",
+  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql", "2.26.0":"9026_v2_qa_by_rejection.sql", "2.27.0":"9027_v2_d1_read_optimization.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
@@ -257,6 +285,14 @@ async function applyPendingMigrations(token: string, accountId: string, database
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[qaByRejectionMigration.name,checksum,now]);
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[qaByRejectionMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
     applied.add(qaByRejectionMigration.name);
+  }
+  const d1ReadOptimizationMigration=files.find(item=>item.name==="9027_v2_d1_read_optimization.sql");
+  if(preSchemaContract?.ready && d1ReadOptimizationMigration && !applied.has(d1ReadOptimizationMigration.name)){
+    const checksum=createHash("sha256").update(d1ReadOptimizationMigration.sql).digest("hex");
+    const now=Date.now();
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[d1ReadOptimizationMigration.name,checksum,now]);
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[d1ReadOptimizationMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
+    applied.add(d1ReadOptimizationMigration.name);
   }
 
   for (const item of files) {

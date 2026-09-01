@@ -60,9 +60,46 @@ export async function applyPersistentPolicyToProject(env:Env,input:{projectId:st
   await env.DB.prepare("INSERT INTO v2_project_policy_links(id,project_id,policy_id,active,created_by,created_at,updated_at) VALUES (?,?,?,1,?,?,?)").bind(linkId,input.projectId,input.policyId,clean(input.createdBy)||"SUPERVISOR_MCP",ts,ts).run();await touchPolicyRevision(env,input.projectId);return {linked:true,idempotent:false,link_id:linkId,policy:normalizeRow(policy,true)};}
 export async function removePersistentPolicyFromProject(env:Env,input:{projectId:string;policyId:string}){const row=await env.DB.prepare("SELECT * FROM v2_project_policy_links WHERE project_id=? AND policy_id=? LIMIT 1").bind(clean(input.projectId),clean(input.policyId)).first<Record<string,unknown>>();if(!row)return {removed:false,idempotent:true};const ts=nowMs();if(Number(row.active||0)===1)await env.DB.prepare("UPDATE v2_project_policy_links SET active=0,removed_at=?,updated_at=? WHERE id=?").bind(ts,ts,row.id).run();await touchPolicyRevision(env,input.projectId);return {removed:true,idempotent:Number(row.active||0)!==1,link_id:row.id};}
 
-export async function resolveApplicablePolicies(env:Env,input:{projectId:string;slotId?:string;preset?:string;visualRole?:string}){const projectId=clean(input.projectId),slotId=clean(input.slotId),preset=upper(input.preset),visualRole=upper(input.visualRole);const rows=await env.DB.prepare(`SELECT p.* FROM operational_policies p WHERE p.rule_type=? AND p.status='ACTIVE' AND (
-    p.scope_level='GLOBAL' OR (p.scope_level='PRESET' AND upper(COALESCE(p.preset,''))=?) OR (p.scope_level='PROJECT' AND p.project_id=?) OR (p.scope_level='SLOT' AND p.project_id=? AND json_extract(p.condition_json,'$.slot_id')=?) OR p.id IN (SELECT policy_id FROM v2_project_policy_links WHERE project_id=? AND active=1)
-  ) ORDER BY p.priority DESC,p.updated_at DESC`).bind(RULE_TYPE,preset,projectId,projectId,slotId,projectId).all<Record<string,unknown>>();const links=await env.DB.prepare("SELECT policy_id FROM v2_project_policy_links WHERE project_id=? AND active=1").bind(projectId).all<{policy_id:string}>().catch(()=>({results:[]} as unknown as D1Result<{policy_id:string}>));const linked=new Set((links.results||[]).map(row=>String(row.policy_id)));const normalized=(rows.results||[]).map(row=>normalizeRow(row,linked.has(String(row.id)))).filter((policy:any)=>{const applies=(policy.applies_to||[]).map((value:string)=>upper(value));return !visualRole||!applies.length||applies.includes(visualRole)||applies.includes(visualRole.replace(/^IMAGE/,"IMAGEM"));});normalized.sort((a:any,b:any)=>Number(b.effective_rank)-Number(a.effective_rank)||Number(b.priority)-Number(a.priority)||Number(b.version)-Number(a.version));const byKey=new Map<string,any>();for(const policy of normalized){const key=String(policy.policy_key);if(!byKey.has(key))byKey.set(key,policy);}const policies=[...byKey.values()];let assetRequirement:string|null=null;for(const policy of policies){const reqs=policy.asset_requirements as Record<string,string>|null;const direct=clean(policy.asset_requirement);const applies=(policy.applies_to||[]).map((value:string)=>upper(value));const roleCandidates=[visualRole,upper(slotId),upper(slotId.replace(/^SLOT-/i,""))].filter(Boolean);if(reqs){for(const role of roleCandidates){const exact=reqs[role]||reqs[role.replace(/^IMAGE/,"IMAGEM")];if(exact){assetRequirement=String(exact);break;}}if(assetRequirement)break;}if(direct){if(applies.length&&!roleCandidates.some(role=>applies.includes(role)||applies.includes(role.replace(/^IMAGE/,"IMAGEM"))))continue;assetRequirement=direct;break;}}
-  const revision=await env.DB.prepare("SELECT value FROM v2_schema_meta WHERE key='operational_policy_revision'").first<{value:string}>().catch(()=>null);return {project_id:projectId,slot_id:slotId||null,visual_role:visualRole||null,preset:preset||null,policy_revision:revision?.value||null,asset_requirement:assetRequirement,policies};}
+function resolvePolicySet(rows:Record<string,unknown>[],linked:Set<string>,input:{projectId:string;slotId?:string;preset?:string;visualRole?:string},revision:string|null){
+  const projectId=clean(input.projectId),slotId=clean(input.slotId),preset=upper(input.preset),visualRole=upper(input.visualRole);
+  const normalized=rows.filter(row=>{
+    const scope=upper(row.scope_level),rowProject=clean(row.project_id),rowPreset=upper(row.preset),policyId=String(row.id||"");
+    if(linked.has(policyId))return true;
+    if(scope==="GLOBAL")return true;
+    if(scope==="PRESET")return Boolean(preset)&&rowPreset===preset;
+    if(scope==="PROJECT")return rowProject===projectId;
+    if(scope==="SLOT"){
+      if(rowProject!==projectId)return false;
+      const condition=parseJson(row.condition_json,{});
+      return clean(condition.slot_id)===slotId;
+    }
+    return false;
+  }).map(row=>normalizeRow(row,linked.has(String(row.id)))).filter((policy:any)=>{
+    const applies=(policy.applies_to||[]).map((value:string)=>upper(value));
+    return !visualRole||!applies.length||applies.includes(visualRole)||applies.includes(visualRole.replace(/^IMAGE/,"IMAGEM"));
+  });
+  normalized.sort((a:any,b:any)=>Number(b.effective_rank)-Number(a.effective_rank)||Number(b.priority)-Number(a.priority)||Number(b.version)-Number(a.version));
+  const byKey=new Map<string,any>();for(const policy of normalized){const key=String(policy.policy_key);if(!byKey.has(key))byKey.set(key,policy);}const policies=[...byKey.values()];
+  let assetRequirement:string|null=null;
+  for(const policy of policies){const reqs=policy.asset_requirements as Record<string,string>|null;const direct=clean(policy.asset_requirement);const applies=(policy.applies_to||[]).map((value:string)=>upper(value));const roleCandidates=[visualRole,upper(slotId),upper(slotId.replace(/^SLOT-/i,""))].filter(Boolean);if(reqs){for(const role of roleCandidates){const exact=reqs[role]||reqs[role.replace(/^IMAGE/,"IMAGEM")];if(exact){assetRequirement=String(exact);break;}}if(assetRequirement)break;}if(direct){if(applies.length&&!roleCandidates.some(role=>applies.includes(role)||applies.includes(role.replace(/^IMAGE/,"IMAGEM"))))continue;assetRequirement=direct;break;}}
+  return {project_id:projectId,slot_id:slotId||null,visual_role:visualRole||null,preset:preset||null,policy_revision:revision,asset_requirement:assetRequirement,policies};
+}
+
+export async function resolveApplicablePoliciesBatch(env:Env,input:{projectId:string;slots:Array<{slotId?:string;preset?:string;visualRole?:string}>}){
+  const projectId=clean(input.projectId);const slots=input.slots.slice(0,100);const presets=[...new Set(slots.map(slot=>upper(slot.preset)).filter(Boolean))];
+  const presetClause=presets.length?` OR (p.scope_level='PRESET' AND upper(COALESCE(p.preset,'')) IN (${presets.map(()=>"?").join(",")}))`:"";
+  const [rowsResult,linksResult,revisionResult]=await env.DB.batch<Record<string,unknown>>([
+    env.DB.prepare(`SELECT p.* FROM operational_policies p WHERE p.rule_type=? AND p.status='ACTIVE' AND (p.scope_level='GLOBAL' OR (p.scope_level IN ('PROJECT','SLOT') AND p.project_id=?)${presetClause} OR p.id IN (SELECT policy_id FROM v2_project_policy_links WHERE project_id=? AND active=1)) ORDER BY p.priority DESC,p.updated_at DESC`).bind(RULE_TYPE,projectId,...presets,projectId),
+    env.DB.prepare("SELECT policy_id FROM v2_project_policy_links WHERE project_id=? AND active=1").bind(projectId),
+    env.DB.prepare("SELECT value FROM v2_schema_meta WHERE key='operational_policy_revision'"),
+  ]);
+  const rows=rowsResult.results||[],linked=new Set((linksResult.results||[]).map(row=>String(row.policy_id||""))),revision=String(revisionResult.results?.[0]?.value||"")||null;
+  return slots.map(slot=>resolvePolicySet(rows,linked,{projectId,slotId:slot.slotId,preset:slot.preset,visualRole:slot.visualRole},revision));
+}
+
+export async function resolveApplicablePolicies(env:Env,input:{projectId:string;slotId?:string;preset?:string;visualRole?:string}){
+  const [result]=await resolveApplicablePoliciesBatch(env,{projectId:input.projectId,slots:[{slotId:input.slotId,preset:input.preset,visualRole:input.visualRole}]});
+  return result;
+}
 
 export async function listProjectPersistentPolicies(env:Env,projectId:string){const direct=await listPersistentPolicies(env,{scope:"PROJECT",targetId:projectId,limit:500});const links=await env.DB.prepare("SELECT l.*,p.* FROM v2_project_policy_links l JOIN operational_policies p ON p.id=l.policy_id WHERE l.project_id=? AND l.active=1 AND p.rule_type=? AND p.status!='DELETED' ORDER BY l.updated_at DESC").bind(clean(projectId),RULE_TYPE).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>));return {project_id:projectId,direct,linked:(links.results||[]).map(row=>normalizeRow(row,true))};}

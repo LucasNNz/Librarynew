@@ -1,6 +1,6 @@
 {
   "name": "corvo-core-v2",
-  "version": "0.20.51",
+  "version": "0.20.53",
   "private": true,
   "type": "module",
   "scripts": {

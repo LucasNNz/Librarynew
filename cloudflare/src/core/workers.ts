@@ -164,3 +164,37 @@ export async function configureWorkerLimit(env: Env, input: { workerType: string
   }
   return env.DB.prepare("SELECT * FROM worker_capacity_limits WHERE worker_type=? AND worker_domain=? ORDER BY updated_at DESC LIMIT 1").bind(input.workerType,domain).first<Record<string,unknown>>();
 }
+
+export async function compactWorkerQueue(env: Env) {
+  const ts=nowMs();
+  // Historical orphan rows are preserved for audit but can never be claimed. Move them out of the hot READY set.
+  const orphanParents=await env.DB.prepare(`UPDATE worker_work_items SET status='CANCELLED',last_action='QUEUE_COMPACT_ORPHAN_PARENT',completed_at=COALESCE(completed_at,?),updated_at=?
+    WHERE status='READY' AND ((item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM automatic_project_items i WHERE i.id=worker_work_items.item_id))
+      OR (project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM automatic_projects p WHERE p.id=worker_work_items.project_id)))`).bind(ts,ts).run();
+  // Closed/rejected projects can retain historical READY rows after a deploy or legacy restore.
+  // Cancel them in place instead of deleting history, so queue scans stay bounded.
+  const closedProjects=await env.DB.prepare(`UPDATE worker_work_items SET status='CANCELLED',last_action='QUEUE_COMPACT_CLOSED_PROJECT',completed_at=COALESCE(completed_at,?),updated_at=?
+    WHERE status='READY' AND project_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM automatic_projects p WHERE p.id=worker_work_items.project_id
+      AND (COALESCE(p.lifecycle_status,'ACTIVE')<>'ACTIVE' OR upper(COALESCE(p.status,'')) IN ('COMPLETED','DONE','CONCLUIDO','CONCLUÍDO','REJECTED','REJEITADO','CANCELLED','CANCELADO'))
+    )`).bind(ts,ts).run();
+  // Remove READY work that cannot be actionable because its parent item already reached a terminal/provisional-QA state.
+  const stale=await env.DB.prepare(`UPDATE worker_work_items SET status='CANCELLED',last_action='QUEUE_COMPACT_TERMINAL_PARENT',completed_at=COALESCE(completed_at,?),updated_at=?
+    WHERE status='READY' AND item_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM automatic_project_items i WHERE i.id=worker_work_items.item_id
+      AND upper(COALESCE(i.status,'')) IN ('APROVADO','APPROVED','CONCLUIDO','CONCLUÍDO','COMPLETED','FROZEN','CONGELADO','ASSIGNED_FOR_QA','CANCELADO','CANCELLED')
+    )`).bind(ts,ts).run();
+  // Keep only one READY row for the same logical work. Historical duplicates remain as CANCELLED audit records.
+  const duplicates=await env.DB.prepare(`UPDATE worker_work_items SET status='CANCELLED',last_action='QUEUE_COMPACT_DUPLICATE',completed_at=COALESCE(completed_at,?),updated_at=?
+    WHERE id IN (
+      SELECT id FROM (
+        SELECT id,ROW_NUMBER() OVER (
+          PARTITION BY project_id,item_id,worker_type,stage
+          ORDER BY priority DESC,resume_priority DESC,original_ready_at ASC,created_at ASC,id ASC
+        ) AS rn
+        FROM worker_work_items WHERE status='READY' AND item_id IS NOT NULL
+      ) ranked WHERE rn>1
+    )`).bind(ts,ts).run();
+  const ready=await env.DB.prepare("SELECT worker_type,COUNT(*) AS count FROM worker_work_items WHERE status='READY' GROUP BY worker_type").all<Record<string,unknown>>();
+  return {ok:true,cancelled_orphan_parents:Number(orphanParents.meta?.changes||0),cancelled_closed_projects:Number(closedProjects.meta?.changes||0),cancelled_terminal_parent:Number(stale.meta?.changes||0),cancelled_duplicates:Number(duplicates.meta?.changes||0),ready_by_type:ready.results||[],compacted_at:ts};
+}

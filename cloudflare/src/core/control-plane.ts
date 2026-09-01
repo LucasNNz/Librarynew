@@ -321,6 +321,11 @@ export async function applyMigrationsFromApp(env: Env) {
     await registerMigration(env,qaByRejectionMigration,"APPLIED","schema_contract_reconciled");
     applied.add(qaByRejectionMigration.name);
   }
+  const d1ReadOptimizationMigration=items.find(item=>item.name==="9027_v2_d1_read_optimization.sql");
+  if(preSchemaContract?.ready&&d1ReadOptimizationMigration&&!applied.has(d1ReadOptimizationMigration.name)){
+    await registerMigration(env,d1ReadOptimizationMigration,"APPLIED","schema_contract_reconciled");
+    applied.add(d1ReadOptimizationMigration.name);
+  }
 
   for(const item of items){
     if(applied.has(item.name)) continue;

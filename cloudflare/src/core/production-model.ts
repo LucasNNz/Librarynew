@@ -281,9 +281,13 @@ export async function finalizeProjectQa(env:Env,input:{projectId:string;operatio
 
 
 export async function reconcileLegacyProjectItemsFromProduction(env:Env,projectId:string){
-  const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
+  const project=await env.DB.prepare("SELECT active_version,production_reconciled_at FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
   if(!project)return {error:"PROJECT_NOT_FOUND",status:404,changed:0} as const;
   const version=Number(project.active_version||1),ts=nowMs();
+  const slotClock=await env.DB.prepare("SELECT MAX(updated_at) AS latest FROM v2_production_slots WHERE project_id=? AND version=?").bind(projectId,version).first<Record<string,unknown>>();
+  const latestSlotUpdate=Number(slotClock?.latest||0),lastReconciled=Number(project.production_reconciled_at||0);
+  if(!latestSlotUpdate)return {project_id:projectId,version,changed:0,matched:0,reason:"NO_PRODUCTION_SLOTS"};
+  if(lastReconciled>=latestSlotUpdate)return {project_id:projectId,version,changed:0,matched:0,reason:"UP_TO_DATE",production_reconciled_at:lastReconciled,latest_slot_update:latestSlotUpdate};
   const [itemsResult,scenesResult,slotsResult]=await env.DB.batch<Record<string,unknown>>([
     env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? AND version=? ORDER BY created_at,id").bind(projectId,version),
     env.DB.prepare("SELECT id,scene_key FROM v2_production_scenes WHERE project_id=? AND version=?").bind(projectId,version),
@@ -316,7 +320,8 @@ export async function reconcileLegacyProjectItemsFromProduction(env:Env,projectI
   }
   for(let offset=0;offset<statements.length;offset+=50)await env.DB.batch(statements.slice(offset,offset+50));
   if(changed)await env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"LEGACY_PITEMS_RECONCILED_FROM_PSLOTS","OK",JSON.stringify({version,matched,changed,summary,source_of_truth:"PRODUCTION_SLOT"}),ts).run().catch(()=>undefined);
-  return {project_id:projectId,version,matched,changed,summary,source_of_truth:"PRODUCTION_SLOT"};
+  await env.DB.prepare("UPDATE automatic_projects SET production_reconciled_at=? WHERE id=?").bind(ts,projectId).run();
+  return {project_id:projectId,version,matched,changed,summary,source_of_truth:"PRODUCTION_SLOT",production_reconciled_at:ts,latest_slot_update:latestSlotUpdate};
 }
 export async function productionCompletionGate(env:Env,projectId:string){
   const counts=await productionModelCounts(env,projectId);

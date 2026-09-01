@@ -16,12 +16,41 @@ export async function latestOperation(env: Env, type?: string | null) {
 
 export async function mcpPerformance(env: Env, limit = 100) {
   const safe = Math.max(1, Math.min(limit, 1000));
-  const [summary, tools, recent] = await env.DB.batch<Record<string, unknown>>([
-    env.DB.prepare(`SELECT COUNT(*) AS calls,SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS successes,SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures,AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms,SUM(db_query_count) AS db_queries,SUM(r2_request_count) AS r2_requests,SUM(external_http_count) AS external_http FROM mcp_audit`),
-    env.DB.prepare(`SELECT tool,COUNT(*) AS calls,AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms,SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures FROM mcp_audit GROUP BY tool ORDER BY calls DESC LIMIT 100`),
-    env.DB.prepare(`SELECT * FROM mcp_audit ORDER BY created_at DESC LIMIT ?`).bind(safe),
-  ]);
-  return { summary: summary.results?.[0] || {}, tools: tools.results || [], recent: recent.results || [] };
+  try {
+    const [summary, tools, recent, last24h] = await env.DB.batch<Record<string, unknown>>([
+      env.DB.prepare(`SELECT COUNT(*) AS calls,
+        SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures,
+        AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms,
+        SUM(db_query_count) AS db_queries,SUM(meta_covered_queries) AS meta_covered_queries,
+        SUM(rows_read_observed) AS rows_read_observed,SUM(rows_written_observed) AS rows_written_observed
+        FROM v2_mcp_route_telemetry`),
+      env.DB.prepare(`SELECT tool,COUNT(*) AS calls,AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms,
+        SUM(db_query_count) AS db_queries,SUM(meta_covered_queries) AS meta_covered_queries,
+        SUM(rows_read_observed) AS rows_read_observed,SUM(rows_written_observed) AS rows_written_observed,
+        SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures
+        FROM v2_mcp_route_telemetry GROUP BY tool
+        ORDER BY rows_read_observed DESC,db_queries DESC,calls DESC LIMIT 100`),
+      env.DB.prepare(`SELECT * FROM v2_mcp_route_telemetry ORDER BY created_at DESC LIMIT ?`).bind(safe),
+      env.DB.prepare(`SELECT tool,COUNT(*) AS calls,SUM(db_query_count) AS db_queries,SUM(rows_read_observed) AS rows_read_observed,
+        AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms
+        FROM v2_mcp_route_telemetry WHERE created_at>? GROUP BY tool
+        ORDER BY rows_read_observed DESC,db_queries DESC LIMIT 50`).bind(Date.now()-24*60*60_000),
+    ]);
+    return {
+      source:"v2_mcp_route_telemetry",
+      rows_read_note:"rows_read_observed is exact only for D1 calls that return meta (all/run/batch); db_queries covers first/raw too.",
+      summary: summary.results?.[0] || {}, tools: tools.results || [], last24h: last24h.results || [], recent: recent.results || [],
+    };
+  } catch {
+    // Compatibility fallback for a Core that has not applied migration 9027 yet.
+    const [summary, tools, recent] = await env.DB.batch<Record<string, unknown>>([
+      env.DB.prepare(`SELECT COUNT(*) AS calls,SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS successes,SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures,AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms,SUM(db_query_count) AS db_queries,SUM(r2_request_count) AS r2_requests,SUM(external_http_count) AS external_http FROM mcp_audit`),
+      env.DB.prepare(`SELECT tool,COUNT(*) AS calls,AVG(duration_ms) AS avg_duration_ms,MAX(duration_ms) AS max_duration_ms,SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failures FROM mcp_audit GROUP BY tool ORDER BY calls DESC LIMIT 100`),
+      env.DB.prepare(`SELECT * FROM mcp_audit ORDER BY created_at DESC LIMIT ?`).bind(safe),
+    ]);
+    return { source:"legacy_mcp_audit", summary: summary.results?.[0] || {}, tools: tools.results || [], recent: recent.results || [] };
+  }
 }
 
 export async function sourceRouteRanking(env: Env, limit = 100) {
