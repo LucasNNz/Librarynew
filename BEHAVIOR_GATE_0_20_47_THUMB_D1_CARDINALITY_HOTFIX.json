@@ -3,9 +3,9 @@
   "schema": "2.26.0",
   "feature": "THUMB D1 cardinality hotfix + Post-QA closure + direct MCP thumb file + internal imagens.zip manifest gate",
   "checks": {
-    "version_0_20_47_everywhere": true,
+    "version_0_20_47_everywhere": false,
     "schema_stays_2_26": true,
-    "source_bundle_is_unbuilt_0_20_47": true,
+    "source_bundle_is_unbuilt_0_20_47": false,
     "thumb_file_route_exists": true,
     "thumb_file_route_no_prepared_ticket": true,
     "thumb_accepts_inline_base64_and_resource_blob": true,
@@ -69,5 +69,5 @@
     "flat": false,
     "ok": false
   },
-  "pass": true
+  "pass": false
 }

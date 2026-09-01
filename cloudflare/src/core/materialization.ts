@@ -95,12 +95,21 @@ export async function probeRemoteUrl(env: Env, value: string, timeoutMs = 10000)
   let detail: string | null = null;
   let finalUrl = url.toString();
   try {
-    const response = await fetch(url.toString(), { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(Math.max(1000, Math.min(timeoutMs, 30000))), headers: { "user-agent": "CorvoLibraryV2/1.0" } });
+    const timeout=Math.max(1000, Math.min(timeoutMs, 30000));
+    let response = await fetch(url.toString(), { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(timeout), headers: { "user-agent": "CorvoLibraryV2/1.0" } });
+    // HEAD is only a probe optimization. Some otherwise valid image/file routes
+    // intentionally implement GET only, so retry with a one-byte GET before
+    // declaring the URL broken. This also keeps historical source probing sane.
+    if (!response.ok && [400,403,404,405,501].includes(response.status)) {
+      try { await response.body?.cancel(); } catch { /* no-op */ }
+      response = await fetch(url.toString(), { method: "GET", redirect: "follow", signal: AbortSignal.timeout(timeout), headers: { "user-agent": "CorvoLibraryV2/1.0", range:"bytes=0-0" } });
+    }
     httpStatus = response.status;
     contentType = response.headers.get("content-type");
     finalUrl = response.url || finalUrl;
     status = response.ok ? "OK" : "HTTP_ERROR";
     detail = response.statusText || null;
+    try { await response.body?.cancel(); } catch { /* no-op */ }
   } catch (error) {
     detail = error instanceof Error ? error.message.slice(0, 300) : "PROBE_FAILED";
   }

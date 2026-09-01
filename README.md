@@ -1,4 +1,17 @@
-# Corvo Library V2 0.20.49 — Project List Geometry + Optional Publication
+# Corvo Library V2 0.20.50 — Signed Preview HEAD Delivery
+
+## Destaques 0.20.50
+
+- Previews assinados agora respondem `GET` **e `HEAD`**.
+- Corrige 404 em `/candidate-files/:id` e `/thumbs/:id` durante preflight/scanners.
+- HEAD valida D1 + R2 sem transportar o corpo da imagem.
+- `testar_url` faz fallback GET de 1 byte para hosts externos sem suporte a HEAD.
+- Headers de diagnóstico identificam rota e versão do Core.
+- Schema D1 permanece 2.26.0.
+
+---
+
+## Histórico 0.20.49 — Project List Geometry + Optional Publication
 
 ## Destaques 0.20.49
 - corrige a regressão que achatava os cards da lista de projetos quando havia muitos registros;

@@ -60,6 +60,27 @@ export async function serveAssetThumbnail(request: Request, assetId: string, env
   if (!String(row.mime_type || "").toLowerCase().startsWith("image/")) return new Response("NOT_AN_IMAGE", { status: 415 });
 
   const thumbKey = `thumbs/assets/${assetId}.webp`;
+  if (request.method === "HEAD") {
+    const cachedHead = await env.MEDIA.head(thumbKey);
+    if (cachedHead) {
+      const headers = new Headers({
+        "content-type": String((cachedHead.httpMetadata as { contentType?: string } | undefined)?.contentType || "image/webp"),
+        "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
+        "x-corvo-thumbnail": "R2_HEAD",
+      });
+      headers.set("etag", cachedHead.httpEtag);
+      return new Response(null,{status:200,headers});
+    }
+    const originalHead = await env.MEDIA.head(String(row.r2_key || ""));
+    if (!originalHead) return new Response("OBJECT_MISSING", { status: 404 });
+    const headers = new Headers({
+      "content-type": String((originalHead.httpMetadata as { contentType?: string } | undefined)?.contentType || row.mime_type || "application/octet-stream"),
+      "cache-control": "public, max-age=900, stale-while-revalidate=3600",
+      "x-corvo-thumbnail": "ORIGINAL_HEAD",
+    });
+    headers.set("etag", originalHead.httpEtag);
+    return new Response(null,{status:200,headers});
+  }
   const cached = await cachedThumbnail(env, thumbKey);
   if (cached) return cached;
 

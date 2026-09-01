@@ -1,0 +1,11 @@
+{
+  "head_status": 200,
+  "head_body_bytes": 0,
+  "head_route": "candidate-file",
+  "head_version": "0.20.50",
+  "head_type": "image/png",
+  "get_status": 200,
+  "get_body_bytes": 4,
+  "get_route": "candidate-file",
+  "ok": true
+}
