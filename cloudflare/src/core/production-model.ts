@@ -223,11 +223,11 @@ export async function rejectProductionSlotsBatch(env:Env,input:{projectId:string
   return {project_id:input.projectId,operation_id:operationId,requested:requested.length,rejected,already_relink_required:alreadyRelinkRequired,not_found:0,results,counts,atomic:true,committed:true,mutation_applied:stateChanged>0,collector_eligible_status:"RELINK_REQUIRED",next_action:counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":"ASSIGN_ASSETS_TO_SLOTS",preserved_ast:true,preserved_r2:true,preserved_history:true,previous_exports_preserved:true};
 }
 
-export async function listProductionSlotsForQa(request:Request,env:Env,projectId:string,limit=200){
+export async function listProductionSlotsForQa(request:Request,env:Env,projectId:string,limit=200,offset=0){
   const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
   if(!project)return {error:"PROJECT_NOT_FOUND",status:404} as const;
-  const version=Number(project.active_version||1),safeLimit=Math.max(1,Math.min(Number(limit||200),500));
-  const rows=await env.DB.prepare(`SELECT s.*,a.name asset_name,a.mime_type asset_mime_type,a.r2_key asset_r2_key,c.status candidate_status,c.mime_type candidate_mime_type,c.r2_key candidate_r2_key,c.source_url candidate_source_url,c.subject candidate_subject FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id LEFT JOIN v2_ingest_candidates c ON c.id=s.candidate_id WHERE s.project_id=? AND s.version=? AND s.status='ASSIGNED_FOR_QA' ORDER BY s.assigned_for_qa_at ASC,s.updated_at ASC,s.id ASC LIMIT ?`).bind(projectId,version,safeLimit).all<Record<string,unknown>>();
+  const version=Number(project.active_version||1),safeLimit=Math.max(1,Math.min(Number(limit||200),500)),safeOffset=Math.max(0,Number(offset||0));
+  const rows=await env.DB.prepare(`SELECT s.*,a.name asset_name,a.mime_type asset_mime_type,a.r2_key asset_r2_key,c.status candidate_status,c.mime_type candidate_mime_type,c.r2_key candidate_r2_key,c.source_url candidate_source_url,c.subject candidate_subject FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id LEFT JOIN v2_ingest_candidates c ON c.id=s.candidate_id WHERE s.project_id=? AND s.version=? AND s.status='ASSIGNED_FOR_QA' ORDER BY s.assigned_for_qa_at ASC,s.updated_at ASC,s.id ASC LIMIT ? OFFSET ?`).bind(projectId,version,safeLimit,safeOffset).all<Record<string,unknown>>();
   const items:Record<string,unknown>[]=[];
   for(const row of rows.results||[]){
     const assetId=clean(row.asset_id),candidateId=clean(row.candidate_id);
@@ -235,7 +235,7 @@ export async function listProductionSlotsForQa(request:Request,env:Env,projectId
     items.push({...row,source_type:assetId?"LIBRARY_ASSET":candidateId?"EXTERNAL_CANDIDATE":"INVALID",preview_url:previewUrl,qa_action:"REJECT_ONLY_IF_NONCONFORMING"});
   }
   const counts=await productionModelCounts(env,projectId);
-  return {project_id:projectId,version,mode:"QA_BY_REJECTION",items,returned:items.length,total_assigned_for_qa:counts.production_slots_assigned_for_qa,counts,next_action:items.length?"REJECT_NONCONFORMING_OR_FINALIZE_QA":counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":counts.complete?"GENERATE_PACKAGE":"ASSIGN_ASSETS_TO_SLOTS"};
+  return {project_id:projectId,version,mode:"QA_BY_REJECTION",items,returned:items.length,offset:safeOffset,total_assigned_for_qa:counts.production_slots_assigned_for_qa,counts,next_action:items.length?"REJECT_NONCONFORMING_OR_FINALIZE_QA":counts.production_slots_relink_required>0?"RELINK_PRODUCTION_SLOTS":counts.complete?"GENERATE_PACKAGE":"ASSIGN_ASSETS_TO_SLOTS"};
 }
 
 export async function listProductionRelinkGaps(env:Env,projectId:string,limit=500){

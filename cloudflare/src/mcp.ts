@@ -43,12 +43,113 @@ const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
 });
 
+const INLINE_QA_DEFAULT_LIMIT = 6;
+const INLINE_QA_MAX_LIMIT = 12;
+const INLINE_QA_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const INLINE_QA_MAX_TOTAL_BYTES = 36 * 1024 * 1024;
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunk, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+function inlineImageMime(value: unknown) {
+  const mime = String(value || "").toLowerCase().split(";")[0].trim();
+  if (["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime)) return mime;
+  return "image/jpeg";
+}
+
+async function outputProductionSlotsQaInline(request: Request, env: Env, projectId: string, limit?: number, offset?: number) {
+  const safeLimit = Math.max(1, Math.min(Number(limit || INLINE_QA_DEFAULT_LIMIT), INLINE_QA_MAX_LIMIT));
+  const safeOffset = Math.max(0, Number(offset || 0));
+  const result = await listProductionSlotsForQa(request, env, projectId, safeLimit, safeOffset);
+  if ((result as any)?.error) return output(result);
+
+  const items = Array.isArray((result as any).items) ? (result as any).items as Record<string, unknown>[] : [];
+  const metadataItems = items.map((item) => {
+    const diagnosticPreviewUrl = item.preview_url || null;
+    return {
+      ...item,
+      preview_url: null,
+      diagnostic_preview_url: diagnosticPreviewUrl,
+      preview_delivery: "INLINE_MCP_IMAGE_CONTENT",
+      browser_required: false,
+      permission_required: false,
+      preview_url_role: "DIAGNOSTIC_ONLY_DO_NOT_OPEN_FOR_QA",
+    };
+  });
+  const totalAssigned = Number((result as any).total_assigned_for_qa || 0);
+  const nextOffset = safeOffset + items.length;
+  const hasMore = nextOffset < totalAssigned;
+  const content: any[] = [{
+    type: "text",
+    text: JSON.stringify({
+      ...(result as any),
+      items: metadataItems,
+      delivery: {
+        mode: "INLINE_MCP_IMAGE_CONTENT",
+        browser_required: false,
+        permission_required: false,
+        instruction: "Faça o QA usando as imagens inline retornadas nesta própria ferramenta. NÃO abra preview_url e NÃO peça permissão ao usuário para acessar domínio externo.",
+        page_limit: safeLimit,
+        offset: safeOffset,
+        next_offset: hasMore ? nextOffset : null,
+        has_more: hasMore,
+      },
+    }, null, 2),
+  }];
+
+  let totalBytes = 0;
+  let delivered = 0;
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    const r2Key = String(item.asset_r2_key || item.candidate_r2_key || "").trim();
+    const slotId = String(item.id || "");
+    const targetFile = String(item.target_file || "");
+    if (!r2Key) {
+      content.push({ type: "text", text: `QA_INLINE_PREVIEW_UNAVAILABLE | slot=${slotId} | target_file=${targetFile} | reason=R2_KEY_MISSING` });
+      continue;
+    }
+    const object = await env.MEDIA.get(r2Key).catch(() => null);
+    if (!object) {
+      content.push({ type: "text", text: `QA_INLINE_PREVIEW_UNAVAILABLE | slot=${slotId} | target_file=${targetFile} | reason=R2_OBJECT_NOT_FOUND` });
+      continue;
+    }
+    const size = Number((object as any).size || 0);
+    if (size > INLINE_QA_MAX_IMAGE_BYTES || totalBytes + size > INLINE_QA_MAX_TOTAL_BYTES) {
+      content.push({ type: "text", text: `QA_INLINE_PREVIEW_DEFERRED | slot=${slotId} | target_file=${targetFile} | reason=INLINE_PAYLOAD_LIMIT | bytes=${size} | next_action=CALL_NEXT_QA_PAGE_NO_BROWSER` });
+      continue;
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (bytes.byteLength > INLINE_QA_MAX_IMAGE_BYTES || totalBytes + bytes.byteLength > INLINE_QA_MAX_TOTAL_BYTES) {
+      content.push({ type: "text", text: `QA_INLINE_PREVIEW_DEFERRED | slot=${slotId} | target_file=${targetFile} | reason=INLINE_PAYLOAD_LIMIT | bytes=${bytes.byteLength} | next_action=CALL_NEXT_QA_PAGE_NO_BROWSER` });
+      continue;
+    }
+    const mimeType = inlineImageMime(item.asset_mime_type || item.candidate_mime_type || (object as any).httpMetadata?.contentType);
+    content.push({ type: "text", text: `QA_IMAGE ${index + 1}/${items.length} | slot=${slotId} | target_file=${targetFile} | source=${String(item.source_type || "")}` });
+    content.push({ type: "image", data: bytesToBase64(bytes), mimeType });
+    totalBytes += bytes.byteLength;
+    delivered++;
+  }
+  content[0].text = JSON.stringify({
+    ...(JSON.parse(content[0].text)),
+    inline_images_delivered: delivered,
+    inline_bytes_delivered: totalBytes,
+  }, null, 2);
+  return { content } as any;
+}
+
+
 function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
   return new Request(new URL(path, baseRequest.url), init);
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.50" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.51" });
 
   server.registerTool("verificar_saude", {
     description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
@@ -983,8 +1084,8 @@ function createServer(env: Env, request: Request) {
   server.registerTool("atualizar_configuracao", { description:"Atualiza apenas chave operacional permitida; rejeita secrets/tokens/credenciais e configuração Cloudflare.", inputSchema:{ chave:z.string().min(1), valor:z.union([z.string(),z.number(),z.boolean()]) } }, async(v)=>output(await updateSafeSetting(env,v.chave,v.valor)));
 
   // --- V2 0.7: control plane, production delivery, plans and automatic collection ---
-  server.registerTool("obter_modo_entrega_chat", { description:"Retorna a política de entrega da V2. Binários permanecem no R2 e o MCP devolve links temporários, nunca arquivos em chat.", inputSchema:{} }, async()=>output({mode:"LINKS_ONLY",chat_file_delivery:false,direct_to_pc:true}));
-  server.registerTool("configurar_modo_entrega_chat", { description:"Compatibilidade histórica. Na V2 o modo seguro LINKS_ONLY é fixo e não pode habilitar transporte de binários pelo MCP.", inputSchema:{ modo:z.string().optional() } }, async()=>output({mode:"LINKS_ONLY",changed:false,reason:"V2_SECURITY_POLICY"}));
+  server.registerTool("obter_modo_entrega_chat", { description:"Retorna a política de entrega da V2. Downloads permanecem por links temporários, mas previews de QA de PRODUCTION_SLOT são entregues inline como ImageContent pelo próprio MCP, sem navegador e sem pedir permissão no chat.", inputSchema:{} }, async()=>output({mode:"INLINE_QA_IMAGES_WITH_LINK_DOWNLOADS",qa_visual_delivery:"INLINE_MCP_IMAGE_CONTENT",qa_browser_required:false,qa_permission_required:false,chat_file_delivery:false,direct_to_pc:true}));
+  server.registerTool("configurar_modo_entrega_chat", { description:"Compatibilidade histórica. A política é fixa: previews de QA são ImageContent inline; downloads continuam por links. Nenhuma confirmação/permissão de domínio é necessária para QA.", inputSchema:{ modo:z.string().optional() } }, async()=>output({mode:"INLINE_QA_IMAGES_WITH_LINK_DOWNLOADS",changed:false,qa_visual_delivery:"INLINE_MCP_IMAGE_CONTENT",qa_permission_required:false,reason:"V2_FIXED_DELIVERY_POLICY"}));
   server.registerTool("fast_visual_packet", { description:"Retorna candidatas materializadas com previews temporários para decisão visual rápida.", inputSchema:{ status:z.string().optional(), limite:z.number().int().min(1).max(100).optional() } }, async(v)=>output({items:await listCandidates(requestFor(request,`/candidates?status=${encodeURIComponent(v.status||"MATERIALIZED")}&limit=${v.limite||50}`),env)}));
   server.registerTool("exportar_pacote_qa_json", { description:"Exporta o pacote de QA como JSON lógico com metadados e links; não materializa arquivo no chat.", inputSchema:{ status:z.string().optional(), limite:z.number().int().min(1).max(200).optional() } }, async(v)=>output({format:"JSON",items:await listCandidates(requestFor(request,`/candidates?status=${encodeURIComponent(v.status||"MATERIALIZED")}&limit=${v.limite||100}`),env)}));
   server.registerTool("gerar_grid_candidatas", { description:"Compatibilidade visual: devolve candidatos e seus links temporários para que o cliente componha a grade sem gerar imagem intermediária.", inputSchema:{ limite:z.number().int().min(1).max(100).optional() } }, async(v)=>output({render:"CLIENT_GRID",items:await listCandidates(requestFor(request,`/candidates?status=MATERIALIZED&limit=${v.limite||40}`),env)}));
@@ -1026,9 +1127,9 @@ function createServer(env: Env, request: Request) {
 
 
   server.registerTool("obter_production_slots_para_qa", {
-    description:"Caminho preferencial do QA por rejeição: retorna apenas PSLOTs ASSIGNED_FOR_QA com preview assinado, unificando AST da Biblioteca e candidate MATERIALIZED externo. O QA rejeita somente os não conformes e depois chama finalizar_qa_projeto.",
-    inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(500).optional() },
-  }, async(v)=>output(await listProductionSlotsForQa(request,env,v.projeto_id,v.limite||200)));
+    description:"CAMINHO VISUAL OBRIGATÓRIO DO QA POR REJEIÇÃO: retorna PSLOTs ASSIGNED_FOR_QA e os próprios pixels como ImageContent inline do MCP, lidos diretamente do R2. Não depende de navegador, preview_url, domínio workers.dev, clique, confirmação ou permissão no chat. O QA deve inspecionar as imagens inline, rejeitar apenas não conformes e depois chamar finalizar_qa_projeto. Use offset para continuar lotes maiores.",
+    inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(12).optional(), offset:z.number().int().min(0).optional() },
+  }, async(v)=>outputProductionSlotsQaInline(request,env,v.projeto_id,v.limite,v.offset));
   server.registerTool("finalizar_qa_projeto", {
     description:"Fecha a rodada de QA por rejeição e automatiza o pós-QA: o QA rejeita apenas os não conformes e os sobreviventes viram FROZEN. Promove externas sobreviventes, reconcilia PITEMs pela verdade dos PSLOTs e, somente quando RELINK_REQUIRED/PENDING/ASSIGNED_FOR_QA e tags REVISAR/REVISADO_PARA_QA estiverem zerados, enfileira imagens.zip para geração + validação interna antes de READY_FOR_DOWNLOAD. Idempotente por operation_id.",
     inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), finalizado_por:z.string().optional() },

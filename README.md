@@ -1,3 +1,20 @@
+# Corvo Library V2 0.20.51 — Inline MCP QA Previews
+
+## Destaques 0.20.51
+
+- `obter_production_slots_para_qa` entrega os próprios pixels como `ImageContent` inline do MCP;
+- QA não depende mais de navegador, `workers.dev`, clique, confirmação ou permissão no chat;
+- bytes são lidos diretamente do R2 pelo Core;
+- `preview_url` vira somente diagnóstico (`diagnostic_preview_url`);
+- paginação visual: 6 por padrão, 12 no máximo, com `offset/next_offset`;
+- limites de payload evitam respostas MCP excessivas sem reintroduzir autorização humana;
+- GET+HEAD da 0.20.50 continua preservado para diagnóstico e uso humano;
+- schema D1 permanece 2.26.0.
+
+Consulte `RELEASE_0_20_51_INLINE_MCP_QA_PREVIEWS.md` e `VALIDATION_0_20_51_INLINE_MCP_QA_PREVIEWS.md`.
+
+---
+
 # Corvo Library V2 0.20.50 — Signed Preview HEAD Delivery
 
 ## Destaques 0.20.50
