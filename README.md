@@ -1,3 +1,20 @@
+# Corvo Library V2 0.20.54 — App/Core Version Sync
+
+## Destaques 0.20.54
+
+- Configurações mostra permanentemente a versão do **APP** e do **CORE / WORKER**;
+- divergência mostra `CORE DESATUALIZADO` e o botão **Atualizar Core agora**;
+- a checagem usa `GET /version`, que não consulta D1, R2 ou Queue;
+- o status de versão continua funcionando mesmo durante bloqueio da cota diária do D1;
+- `verificar_saude` expõe `core_version` e usa probes mínimos, sem `catalogStats`;
+- nova ferramenta MCP `obter_versao_core`, sem leitura D1;
+- o auto-update seguro do boot é preservado, com atualização manual como fallback explícito;
+- schema permanece **2.27.0**, sem migration nova.
+
+Consulte `RELEASE_0_20_54_APP_CORE_VERSION_SYNC.md` e `VALIDATION_0_20_54_APP_CORE_VERSION_SYNC.md`.
+
+---
+
 # Corvo Library V2 0.20.53 — D1 Read Optimization
 
 ## Destaques 0.20.53

@@ -150,18 +150,22 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.53" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.54" });
 
   server.registerTool("verificar_saude", {
-    description: "Verifica o núcleo da Corvo Library V2 e confirma acesso ao D1/R2.",
+    description: "Health check leve do Core. Sempre expõe core_version; D1/R2 são probes mínimos e não fazem varredura de catálogo.",
     inputSchema: {},
   }, async () => {
-    const [stats, firstObject] = await Promise.all([
-      catalogStats(env),
-      env.MEDIA.list({ limit: 1 }).then(() => true).catch(() => false),
+    const [d1Ok,r2Ok] = await Promise.all([
+      env.DB.prepare("SELECT 1 AS ok").first().then(()=>true).catch(()=>false),
+      env.MEDIA.list({ limit: 1 }).then(()=>true).catch(()=>false),
     ]);
-    return output({ ok: firstObject, architecture: "D1_R2_QUEUE", stats });
+    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.54", core_version:"0.20.54", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
   });
+  server.registerTool("obter_versao_core", {
+    description: "Retorna a versão implantada do Core sem consultar D1, R2 ou Queue. Use para confirmar sincronização App ↔ Core mesmo durante bloqueio de cota D1.",
+    inputSchema: {},
+  }, async () => output({ok:true,service:"corvo-core",version:"0.20.54",core_version:"0.20.54",schema_contract_version:"2.27.0",d1_read_required:false}));
 
   server.registerTool("auditar_integridade_d1", {
     description: "Audita integridade lógica do D1 sem alterar dados. Separa orfandades históricas preservadas de inconsistências criadas pela V2.",

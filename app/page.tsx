@@ -82,7 +82,8 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const EXPECTED_CORE_VERSION = "0.20.53";
+const APP_VERSION = "0.20.54";
+const EXPECTED_CORE_VERSION = APP_VERSION;
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
 
@@ -447,6 +448,8 @@ export default function Home() {
   const [autoSetupStage, setAutoSetupStage] = useState("");
   const [autoSetupBusy, setAutoSetupBusy] = useState(false);
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
+  const [detectedCoreVersion, setDetectedCoreVersion] = useState<string | null>(null);
+  const [coreVersionBusy, setCoreVersionBusy] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpCopied, setMcpCopied] = useState<""|"url"|"gpt">("");
   const [mcpKeyBusy, setMcpKeyBusy] = useState(false);
@@ -476,6 +479,29 @@ export default function Home() {
       setHealth({app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:connected,core:{ok:false,error:isTransientFetchError(error)?"CORE_TEMPORARILY_UNREACHABLE":(error instanceof Error?error.message:"CORE_HEALTH_FAILED")}});
     }
   }, []);
+
+  const refreshCoreVersion = useCallback(async () => {
+    if (!readBrowserConnection()) { setDetectedCoreVersion(null); return null; }
+    setCoreVersionBusy(true);
+    try {
+      // /version is intentionally D1-free. It must keep working even when the
+      // account has exhausted D1 rows_read or the schema is temporarily unhealthy.
+      let response = await fetch("/api/version", { cache:"no-store" });
+      let value:any = response.ok ? await response.json().catch(()=>({})) : {};
+      let version = String(value?.core_version || value?.version || "").trim();
+      if (!version) {
+        response = await fetch("/api/health", { cache:"no-store" });
+        value = response.ok ? await response.json().catch(()=>({})) : {};
+        version = String(unwrapCoreHealth(value).version || "").trim();
+      }
+      setDetectedCoreVersion(version || null);
+      return version || null;
+    } catch {
+      const fallback=health?.core.version || null;
+      if (fallback) setDetectedCoreVersion(fallback);
+      return fallback;
+    } finally { setCoreVersionBusy(false); }
+  }, [health?.core.version]);
 
   const refreshStats = useCallback(async () => {
     const [statsResponse, universeResponse] = await Promise.all([
@@ -1038,6 +1064,7 @@ export default function Home() {
         ? value.health as Health
         : { app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:unwrapCoreHealth(value?.health||value) } as Health;
       setHealth(nextHealth);
+      if(nextHealth.core.version) setDetectedCoreVersion(nextHealth.core.version);
       if(value?.stats)setStats(value.stats as CatalogStats);
       const projectValue=value?.projects;
       setProjects(Array.isArray(projectValue?.items)?projectValue.items as AutomaticProject[]:[]);
@@ -1125,6 +1152,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!connectionResolved || !localConnection) return;
+    void refreshCoreVersion();
+  }, [connectionResolved, localConnection, refreshCoreVersion]);
+
+  useEffect(() => {
     if (!connectionResolved || !localConnection || releaseGateState !== "idle") return;
     void loadAuthoritativeBootstrap();
   }, [connectionResolved, localConnection, releaseGateState, loadAuthoritativeBootstrap]);
@@ -1150,8 +1182,8 @@ export default function Home() {
     if (currentView === "Operação") void refreshOperations();
     if (currentView === "Políticas") void refreshPolicies();
     if (currentView === "Estoque & giro") void refreshStock();
-    if (currentView === "Configurações") void refreshSettings();
-  }, [currentView, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings, localConnection]);
+    if (currentView === "Configurações") { void refreshSettings(); void refreshHealth(); void refreshCoreVersion(); }
+  }, [currentView, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings, refreshHealth, refreshCoreVersion, localConnection]);
 
   useEffect(() => {
     if (!operation || ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(operation.status)) return;
@@ -1558,6 +1590,7 @@ export default function Home() {
           const raw = await probe.json();
           const version = unwrapCoreHealth(raw).version;
           if (version === EXPECTED_CORE_VERSION) {
+            setDetectedCoreVersion(version);
             const migrationResponse=await fetchWithNetworkRetry("/api/control/apply-migrations",{method:"POST"},{attempts:6,baseDelayMs:700});
             const migration=await migrationResponse.json().catch(()=>({})) as any;
             if(!migrationResponse.ok)throw new Error(migration.error||`MIGRATION_HTTP_${migrationResponse.status}`);
@@ -1583,9 +1616,14 @@ export default function Home() {
         }
       }
       if(!ready) throw new Error(`CORE_UPDATE_TIMEOUT${responseLost?":response_lost":""}`);
-      await refreshHealth();
+      await Promise.all([refreshHealth(), refreshCoreVersion()]);
     } catch(error) {
-      setInfraMessage(isTransientFetchError(error)?"Core temporariamente inacessível após várias tentativas. A configuração foi preservada; tente novamente em instantes.":(error instanceof Error ? error.message : "CORE_UPDATE_FAILED"));
+      const confirmedVersion=await refreshCoreVersion().catch(()=>null);
+      if(confirmedVersion===EXPECTED_CORE_VERSION){
+        setInfraMessage(`Core atualizado para ${EXPECTED_CORE_VERSION}. A verificação/migration do D1 ficou pendente (${error instanceof Error?error.message:"D1_UNAVAILABLE"}); nenhuma configuração foi perdida.`);
+      }else{
+        setInfraMessage(isTransientFetchError(error)?"Core temporariamente inacessível após várias tentativas. A configuração foi preservada; tente novamente em instantes.":(error instanceof Error ? error.message : "CORE_UPDATE_FAILED"));
+      }
     } finally { setCoreUpdateBusy(false); }
   }
 
@@ -1631,6 +1669,11 @@ Tudo é configurado pela própria tela Configurações.
 
 
   const greeting = new Date().getHours() < 12 ? "Bom dia" : new Date().getHours() < 18 ? "Boa tarde" : "Boa noite";
+
+  const visibleCoreVersion = detectedCoreVersion || health?.core.version || "";
+  const coreVersionMismatch = Boolean(visibleCoreVersion && visibleCoreVersion !== EXPECTED_CORE_VERSION);
+  const coreVersionSynced = visibleCoreVersion === EXPECTED_CORE_VERSION;
+  const coreVersionStatus = !visibleCoreVersion ? "UNKNOWN" : coreVersionMismatch ? "OUTDATED" : health?.core.ok === false ? "SYNCED_WITH_ALERT" : "SYNCED";
 
   return <main className="shell shellV18">
     <aside className="sidebar sidebarV18">
@@ -1974,7 +2017,17 @@ Tudo é configurado pela própria tela Configurações.
           {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
           <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || localConnection?.d1DatabaseName || "corvo-library-v2"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || localConnection?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || localConnection?.queueName || "corvo-materialize-v2"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>APP AUTH</b><span>Chave de sessão da Library · não é credencial Cloudflare</span><em>{health?.core.appAuth || (localConnection ? "salva" : "aguardando")}</em></div><div><b>CONTROLE</b><span>API Token Cloudflare · secret exclusivo do Worker</span><em>{health?.core.control || "aguardando"}</em></div></div>
           {localConnection && <div className="notice compact"><strong>Conexão deste navegador salva</strong><span>{localConnection.coreUrl} · atualizações do frontend não apagam esta conexão.</span></div>}
-          {health?.core.ok && health.core.version && health.core.version !== EXPECTED_CORE_VERSION && <div className="setupCallout updateCallout"><div><strong>Atualização do Core disponível</strong><span>Worker {health.core.version} → {EXPECTED_CORE_VERSION}. A atualização usa o token já guardado no próprio Worker e não pede nova configuração.</span></div><button className="primary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : "Atualizar Core"}</button></div>}
+          <div className={`coreVersionPanel ${coreVersionStatus.toLowerCase()}`}>
+            <div className="coreVersionGrid">
+              <div><span>APP</span><strong>{APP_VERSION}</strong><small>frontend publicado</small></div>
+              <div><span>CORE / WORKER</span><strong>{visibleCoreVersion || "não detectado"}</strong><small>{localConnection?.workerName || infraProfile?.workerName || "corvo-core-v2"}</small></div>
+              <div><span>STATUS</span><strong>{coreVersionSynced ? (health?.core.ok === false ? "SINCRONIZADO · ALERTA" : "SINCRONIZADO") : coreVersionMismatch ? "CORE DESATUALIZADO" : "AGUARDANDO CORE"}</strong><small>{coreVersionMismatch ? `${visibleCoreVersion} → ${EXPECTED_CORE_VERSION}` : coreVersionSynced ? "App e Core na mesma release" : "versão ainda não confirmada"}</small></div>
+            </div>
+            <div className="coreVersionAction">
+              <div><strong>{coreVersionMismatch ? "Atualização do Core disponível" : coreVersionSynced ? "App e Core sincronizados" : "Confirmar versão do Core"}</strong><span>{coreVersionMismatch ? "O app tenta sincronizar automaticamente no boot. Este botão força a atualização agora usando o token guardado no próprio Worker, sem alterar D1/R2/Queue." : coreVersionSynced ? "Nenhuma ação necessária. A versão do Worker é conferida por uma rota que não consome leitura do D1." : "A checagem de versão é independente do D1 e continua disponível mesmo quando a cota diária estiver bloqueada."}</span></div>
+              {coreVersionMismatch ? <button className="primary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando Core…" : "Atualizar Core agora"}</button> : <button className="secondary" disabled={coreVersionBusy} onClick={()=>void refreshCoreVersion()}>{coreVersionBusy ? "Verificando…" : "Verificar versões"}</button>}
+            </div>
+          </div>
           <div className="notice compact"><strong>Regra de persistência</strong><span>Atualizar/reabrir = preservar · alterar = somente por ação explícita · credenciais R2 no D1: {String(bindingStatus?.r2CredentialsStoredInD1??false)}</span></div>
           {infraEvents.length>0 && <div className="recordList wide">{infraEvents.slice(0,8).map((item,index)=><article key={`${String(item.id)}-${index}`}><div><strong>{String(item.event_type||"EVENT")}</strong><span>revisão {String(item.next_revision||"")} · {new Date(Number(item.created_at||0)).toLocaleString("pt-BR")}</span></div><code>{String(item.source||"")}</code></article>)}</div>}
           <div className="recordList wide">{safeSettings.slice(0,60).map(item=><article key={item.key}><div><strong>{item.key}</strong><span>setting operacional persistente</span></div><code>{item.value}</code></article>)}</div>
@@ -2006,7 +2059,7 @@ Tudo é configurado pela própria tela Configurações.
               <div className={health?.core.ok && infraProfile ? "done" : "waiting"}><b>3</b><span>Gravado</span><small>{infraProfile ? `LOCKED · revisão ${infraProfile.revision}` : "Persistente nas próximas versões"}</small></div>
             </div>
 
-            {infraProfile && !infraEditing ? <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId} · nada é redefinido por atualização.</small></div><div className="lockedActions">{health?.core.version && health.core.version !== EXPECTED_CORE_VERSION && <button className="secondary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : `Atualizar Core ${EXPECTED_CORE_VERSION}`}</button>}<button className="secondary" disabled={setupBusy} onClick={()=>void recheckInfrastructure()}>{setupBusy ? "Verificando…" : "Verificar agora"}</button><button className="primary" onClick={()=>{setInfraEditing(true);setCloudflareToken("");setAutoSetupStage("");}}>Alterar configuração</button></div></div> : <>
+            {infraProfile && !infraEditing ? <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId} · nada é redefinido por atualização.</small></div><div className="lockedActions">{coreVersionMismatch && <button className="secondary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : `Atualizar Core ${EXPECTED_CORE_VERSION}`}</button>}<button className="secondary" disabled={setupBusy} onClick={()=>void recheckInfrastructure()}>{setupBusy ? "Verificando…" : "Verificar agora"}</button><button className="primary" onClick={()=>{setInfraEditing(true);setCloudflareToken("");setAutoSetupStage("");}}>Alterar configuração</button></div></div> : <>
               <div className="selfSetupCard">
                 <div className="selfSetupCopy"><span className="eyebrow">ÚNICA ENTRADA NECESSÁRIA</span><h3>API Token da Cloudflare</h3><p>Use um API Token da sua conta. Ele é usado pelo setup e depois fica guardado como <b>secret do próprio Worker</b>. Não é salvo no D1, não fica em variável da hospedagem e é removido do campo ao terminar.</p><div className="tokenPermissions"><b>Permissões do token</b><span>Workers Scripts Write · D1 Write · Workers R2 Storage Write · Queues Write</span><a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Abrir criação de API Token na Cloudflare ↗</a></div></div>
                 <label className="tokenField"><span>API Token</span><input type="password" autoComplete="off" value={cloudflareToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setCloudflareToken(event.target.value)} placeholder="Cole aqui o token da Cloudflare" /></label>

@@ -77,17 +77,17 @@ async function health(env: Env) {
     // Queue metrics are diagnostic only; queue send/consumer remains the functional check.
   }
   const infrastructure = await getInfrastructureProfile(env).catch(() => ({ initialized:false, profile:null }));
-  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.53", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
+  return { ok: d1 === "ok" && r2 === "ok" && schema === "ok" && signing === "ok" && appAuth === "ok", service: "corvo-core", version: "0.20.54", core_version: "0.20.54", d1, r2, schema, schemaContract, queue: "ok" as const, signing, appAuth, control, queueBacklog, infrastructure: { initialized: infrastructure.initialized, profile: infrastructure.profile } };
 }
 
-const FAST_READ_CACHE_NAMESPACE = "0.20.53";
+const FAST_READ_CACHE_NAMESPACE = "0.20.54";
 
 async function fastReadJson(request:Request,ctx:ExecutionContext,ttlSeconds:number,producer:()=>Promise<unknown>) {
   const started=Date.now();
   const keyUrl=new URL(request.url);
   keyUrl.searchParams.delete("_");
   // Cache API entries can survive a Worker deployment. Namespace every fast
-  // read by the running Core release so an older snapshot can never satisfy a 0.20.53
+  // read by the running Core release so an older snapshot can never satisfy a 0.20.54
   // health/schema gate after self-update.
   keyUrl.searchParams.set("__corvo_release",FAST_READ_CACHE_NAMESPACE);
   const cacheKey=new Request(keyUrl.toString(),{method:"GET"});
@@ -133,20 +133,20 @@ export default {
 
     const signedMediaMethod = request.method === "GET" || request.method === "HEAD";
     if (url.pathname.startsWith("/files/") && signedMediaMethod) {
-      return withCors(await publicMediaResponse(request,"asset-file","0.20.53",()=>serveFile(request, decodeURIComponent(url.pathname.slice(7)), env)), request);
+      return withCors(await publicMediaResponse(request,"asset-file","0.20.54",()=>serveFile(request, decodeURIComponent(url.pathname.slice(7)), env)), request);
     }
     if (url.pathname.startsWith("/thumbs/") && signedMediaMethod) {
-      return withCors(await publicMediaResponse(request,"asset-thumb","0.20.53",()=>serveAssetThumbnail(request, decodeURIComponent(url.pathname.slice(8)), env)), request);
+      return withCors(await publicMediaResponse(request,"asset-thumb","0.20.54",()=>serveAssetThumbnail(request, decodeURIComponent(url.pathname.slice(8)), env)), request);
     }
     if (url.pathname.startsWith("/candidate-files/") && signedMediaMethod) {
-      return withCors(await publicMediaResponse(request,"candidate-file","0.20.53",()=>serveCandidateFile(request, decodeURIComponent(url.pathname.slice(17)), env)), request);
+      return withCors(await publicMediaResponse(request,"candidate-file","0.20.54",()=>serveCandidateFile(request, decodeURIComponent(url.pathname.slice(17)), env)), request);
     }
     if (url.pathname.startsWith("/supervisor-candidate-files/") && signedMediaMethod) {
-      return withCors(await publicMediaResponse(request,"supervisor-candidate-file","0.20.53",()=>serveSupervisorCandidateFile(request, decodeURIComponent(url.pathname.slice(28)), env)), request);
+      return withCors(await publicMediaResponse(request,"supervisor-candidate-file","0.20.54",()=>serveSupervisorCandidateFile(request, decodeURIComponent(url.pathname.slice(28)), env)), request);
     }
-    if (url.pathname.startsWith("/package-files/") && signedMediaMethod) return withCors(await publicMediaResponse(request,"package-file","0.20.53",()=>servePackageFile(request,decodeURIComponent(url.pathname.slice(15)),env)),request);
-    if (url.pathname.startsWith("/project-media/") && signedMediaMethod) return withCors(await publicMediaResponse(request,"project-media","0.20.53",()=>serveProjectMedia(request,decodeURIComponent(url.pathname.slice(15)),env)),request);
-    if (url.pathname.startsWith("/project-files/") && signedMediaMethod) return withCors(await publicMediaResponse(request,"project-file","0.20.53",()=>serveProjectFile(request,decodeURIComponent(url.pathname.slice(15)),env)),request);
+    if (url.pathname.startsWith("/package-files/") && signedMediaMethod) return withCors(await publicMediaResponse(request,"package-file","0.20.54",()=>servePackageFile(request,decodeURIComponent(url.pathname.slice(15)),env)),request);
+    if (url.pathname.startsWith("/project-media/") && signedMediaMethod) return withCors(await publicMediaResponse(request,"project-media","0.20.54",()=>serveProjectMedia(request,decodeURIComponent(url.pathname.slice(15)),env)),request);
+    if (url.pathname.startsWith("/project-files/") && signedMediaMethod) return withCors(await publicMediaResponse(request,"project-file","0.20.54",()=>serveProjectFile(request,decodeURIComponent(url.pathname.slice(15)),env)),request);
     if (/^\/asset-exports\/[^/]+$/.test(url.pathname) && request.method === "GET") return withCors(await serveAssetExport(request,env,decodeURIComponent(url.pathname.slice(15))),request);
     if (/^\/uploads\/[^/]+$/.test(url.pathname) && request.method === "PUT") {
       return withCors(await receiveDirectUpload(request, decodeURIComponent(url.pathname.split("/")[2]), env), request);
@@ -164,7 +164,7 @@ export default {
     if (url.pathname === "/ui/boot" && request.method === "GET") {
       response=await fastReadJson(request,ctx,12,async()=>{
         const [coreHealth,overview]=await Promise.all([health(env),uiOverviewSnapshot(env)]);
-        return {ok:true,version:"0.20.53",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
+        return {ok:true,version:"0.20.54",health:{app:"ok",architecture:"CLOUDFLARE_CORE",coreConfigured:true,core:coreHealth},...overview};
       });
       ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined));
     }
@@ -190,12 +190,13 @@ export default {
       response = json({
         ok:true,
         authoritative:true,
-        version:"0.20.53",
+        version:"0.20.54",
         health:{ app:"ok", architecture:"CLOUDFLARE_CORE", coreConfigured:true, core:coreHealth },
         factoryZero:{ executed:false, status:await factoryZeroStatus(env) },
         stats, universes, catalog, projects:projectPage, operations,
       });
     }
+    else if (url.pathname === "/version" && request.method === "GET") response = json({ok:true,service:"corvo-core",version:"0.20.54",core_version:"0.20.54",schema_contract_version:"2.27.0",d1_read_required:false});
     else if (url.pathname === "/health" && request.method === "GET") { ctx.waitUntil(runPendingMaintenance(env).catch(()=>undefined)); response = json(await health(env)); }
     else if (url.pathname === "/control/update-core" && request.method === "POST") response = json(await selfUpdateCore(env), { status: 202 });
     else if (url.pathname === "/control/apply-migrations" && request.method === "POST") response = json(await applyMigrationsFromApp(env));
