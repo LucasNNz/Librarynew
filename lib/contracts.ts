@@ -211,7 +211,7 @@ export type ProjectSlotSnapshot = {
   thumbs: {count:number;selected:number;max:number};
   titles: {count:number;selected:number;max:number};
   items: Record<string,unknown>;
-  production?: {reference_pools_total:number;production_scenes_total:number;production_slots_total:number;production_slots_resolved:number;production_slots_relink_required?:number};
+  production?: {reference_pools_total:number;production_scenes_total:number;production_slots_total:number;production_slots_resolved:number;production_slots_assigned_for_qa?:number;production_slots_frozen?:number;production_slots_relink_required?:number;production_slots_pending?:number};
   candidates: Record<string,unknown>;
   package?: Record<string,unknown>|null;
   finalArtifacts?: {imagens?:Record<string,unknown>|null;roteiro?:Record<string,unknown>|null;publicacao?:Record<string,unknown>|null};

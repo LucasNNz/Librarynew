@@ -3,7 +3,7 @@
   "schema": "2.25.0",
   "feature": "Living overview + project profile media + reliable thumb upload",
   "checks": {
-    "version_at_least_0_20_43": true,
+    "version_at_least_0_20_43": false,
     "schema_remains_2_25_no_new_migration": true,
     "profile_reuses_project_media": true,
     "profile_preserves_old_media": true,
@@ -27,5 +27,5 @@
     "projects_list_exposes_profile_id": true,
     "bundle_version_from_package": true
   },
-  "pass": true
+  "pass": false
 }

@@ -1,3 +1,28 @@
+# Corvo Library V2 0.20.57 — Legacy PSLOT Retirement
+
+Hotfix para aposentar PSLOTs legados que não existem mais no SCRIPT atual, preservando histórico/assets/R2 e evitando `qa_status = NULL` na reconciliação.
+
+Veja `RELEASE_0_20_57_LEGACY_PSLOT_RETIREMENT.md` e `VALIDATION_0_20_57_LEGACY_PSLOT_RETIREMENT.md`.
+
+---
+
+# Corvo Library V2 0.20.56 — Project Refresh + Blocker Summary
+
+## Destaques 0.20.56
+
+- botão **Atualizar** no projeto sem recarregar a página;
+- rechecagem usa `state_version/not_modified` antes de buscar detalhe;
+- polling automático da tela Projetos removido para poupar D1;
+- novo painel **O que falta para concluir** com blockers e próxima frente;
+- Coleta passa a refletir PRODUCTION_SLOT, evitando percentual legado enganoso;
+- nova MCP `obter_pendencias_projeto`, rápida e sem R2/candidatas/políticas/logs;
+- thumbs e títulos continuam opcionais;
+- schema permanece **2.27.0**, sem migration nova.
+
+Consulte `RELEASE_0_20_56_PROJECT_REFRESH_BLOCKERS.md` e `VALIDATION_0_20_56_PROJECT_REFRESH_BLOCKERS.md`.
+
+---
+
 # Corvo Library V2 0.20.55 — Auth Recovery + Settings Bypass
 
 ## Destaques 0.20.55

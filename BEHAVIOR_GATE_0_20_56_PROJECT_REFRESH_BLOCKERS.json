@@ -1,0 +1,148 @@
+{
+  "version": "0.20.56",
+  "passed": 34,
+  "total": 35,
+  "ok": false,
+  "checks": [
+    {
+      "name": "app version 0.20.56",
+      "ok": false
+    },
+    {
+      "name": "core version 0.20.56",
+      "ok": true
+    },
+    {
+      "name": "schema remains 2.27.0",
+      "ok": true
+    },
+    {
+      "name": "manual refresh state exists",
+      "ok": true
+    },
+    {
+      "name": "manual refresh button exists",
+      "ok": true
+    },
+    {
+      "name": "refresh uses short state-version probe",
+      "ok": true
+    },
+    {
+      "name": "no project slot background timer",
+      "ok": true
+    },
+    {
+      "name": "no projects 8s polling",
+      "ok": true
+    },
+    {
+      "name": "explicit no-polling note",
+      "ok": true
+    },
+    {
+      "name": "short HTTP app route exists",
+      "ok": true
+    },
+    {
+      "name": "short HTTP core route exists",
+      "ok": true
+    },
+    {
+      "name": "blockers HTTP app route exists",
+      "ok": true
+    },
+    {
+      "name": "blockers HTTP core route exists",
+      "ok": true
+    },
+    {
+      "name": "MCP blocker route exists",
+      "ok": true
+    },
+    {
+      "name": "MCP blocker route marked fast",
+      "ok": true
+    },
+    {
+      "name": "blocker summary avoids R2",
+      "ok": true
+    },
+    {
+      "name": "blockers include pending",
+      "ok": true
+    },
+    {
+      "name": "blockers include relink",
+      "ok": true
+    },
+    {
+      "name": "blockers include QA",
+      "ok": true
+    },
+    {
+      "name": "blockers include final images zip",
+      "ok": true
+    },
+    {
+      "name": "blockers include final script txt",
+      "ok": true
+    },
+    {
+      "name": "thumb/title marked optional in blocker output",
+      "ok": true
+    },
+    {
+      "name": "production pending exposed in contract",
+      "ok": true
+    },
+    {
+      "name": "project slot query computes pending",
+      "ok": true
+    },
+    {
+      "name": "collector slot follows production truth",
+      "ok": true
+    },
+    {
+      "name": "UI has obvious blocker heading",
+      "ok": true
+    },
+    {
+      "name": "UI shows next owner",
+      "ok": true
+    },
+    {
+      "name": "UI labels optional media",
+      "ok": true
+    },
+    {
+      "name": "slot header separates required/optional",
+      "ok": true
+    },
+    {
+      "name": "overall header uses required progress",
+      "ok": true
+    },
+    {
+      "name": "refresh UI explains D1 savings",
+      "ok": true
+    },
+    {
+      "name": "refresh CSS exists",
+      "ok": true
+    },
+    {
+      "name": "blocker CSS exists",
+      "ok": true
+    },
+    {
+      "name": "CSS braces balanced",
+      "ok": true
+    },
+    {
+      "name": "core version exposed 0.20.56",
+      "ok": true
+    }
+  ]
+}

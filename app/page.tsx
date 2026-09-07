@@ -82,7 +82,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const APP_VERSION = "0.20.55";
+const APP_VERSION = "0.20.57";
 const EXPECTED_CORE_VERSION = APP_VERSION;
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
@@ -177,9 +177,9 @@ function projectStageState(snapshot:ProjectSlotSnapshot,key:ProjectStageKey):Pro
   const slot=(slotKey:string)=>snapshot.slots.find(item=>item.key===slotKey);
   if(key==="script")return String(slot("script")?.state||"").toUpperCase()==="READY"?"done":"waiting";
   if(key==="reference")return tags.has("REFERENCE_CHECKED")?"done":tags.has("REFERENCE_ANALYSIS_WORKING")?"working":"waiting";
-  if(key==="collector")return tags.has("COLLECTOR_FINISHED")?"done":tags.has("COLLECTOR_WORKING")?"working":"waiting";
-  if(key==="visual")return tags.has("VISUAL_ANALYST_FINISHED")?"done":tags.has("VISUAL_ANALYST_WORKING")?"working":"waiting";
-  if(key==="downloader")return tags.has("DOWNLOADER_COMPLETED")||String(slot("zip")?.state||"").toUpperCase()==="READY"?"done":tags.has("DOWNLOADER_WORKING")?"working":"waiting";
+  if(key==="collector"){const state=String(slot("candidates")?.state||"").toUpperCase();return state==="READY"?"done":state==="WORKING"||tags.has("COLLECTOR_WORKING")?"working":"waiting";}
+  if(key==="visual"){const state=String(slot("approved")?.state||"").toUpperCase();return state==="READY"?"done":state==="WORKING"||tags.has("VISUAL_ANALYST_WORKING")?"working":"waiting";}
+  if(key==="downloader")return String(slot("zip")?.state||"").toUpperCase()==="READY"||tags.has("DOWNLOADER_COMPLETED")?"done":tags.has("DOWNLOADER_WORKING")?"working":"waiting";
   return "waiting";
 }
 
@@ -404,6 +404,8 @@ export default function Home() {
   const [projectSlotLoading, setProjectSlotLoading] = useState(false);
   const [projectBulkBusy, setProjectBulkBusy] = useState(false);
   const [projectMessage, setProjectMessage] = useState("");
+  const [projectRefreshBusy, setProjectRefreshBusy] = useState(false);
+  const [projectLastRefreshAt, setProjectLastRefreshAt] = useState<number | null>(null);
   const [integrity, setIntegrity] = useState<{checked:number;present:number;missing:number;missingItems:Array<{id:string;r2Key:string;exists:boolean}>}|null>(null);
   const [dataHealth, setDataHealth] = useState<{ok:boolean;v2Orphans:number;activeHistoricalOrphans:number;catalog:{assetsMissingR2Key:number;duplicateAssetR2Keys:number};historical:Record<string,number>;activeHistoricalRisk:Record<string,number>;v2:Record<string,number>}|null>(null);
   const [r2Objects, setR2Objects] = useState<Array<{key:string;size:number;etag:string;uploaded:string}>>([]);
@@ -915,6 +917,22 @@ export default function Home() {
     } catch { setFinalProjectFiles(null); }
   },[]);
 
+  const refreshSelectedProject = useCallback(async () => {
+    if(!selectedProjectId)return;
+    setProjectRefreshBusy(true);setProjectMessage("");
+    try {
+      const version=Number(projectSlot?.project.state_version||0);
+      if(version>0){
+        const probe=await fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}/short?sinceVersion=${version}`,{cache:"no-store"});
+        const probeValue=await probe.json().catch(()=>null);
+        if(probe.ok&&probeValue?.not_modified){setProjectLastRefreshAt(Date.now());setProjectMessage("Sem mudanças desde a última leitura.");return;}
+      }
+      await Promise.all([refreshProjectSlot(selectedProjectId),refreshProjectArtifacts(selectedProjectId),refreshFinalProjectFiles(selectedProjectId),refreshRecords("Projetos")]);
+      setProjectLastRefreshAt(Date.now());setProjectMessage("Projeto atualizado.");
+    } catch(error){setProjectMessage(error instanceof Error?error.message:"PROJECT_REFRESH_FAILED");}
+    finally{setProjectRefreshBusy(false);}
+  },[selectedProjectId,projectSlot?.project.state_version,refreshProjectSlot,refreshProjectArtifacts,refreshFinalProjectFiles,refreshRecords]);
+
   const downloadFinalProjectArtifact = useCallback(async (projectId:string,type:string,key:"imagens"|"roteiro"|"publicacao") => {
     setFinalProjectFileBusyType(type);setProjectMessage("");
     try{
@@ -1302,20 +1320,11 @@ export default function Home() {
 
   useEffect(() => {
     if(currentView!=="Projetos"||!selectedProjectId)return;
-    void refreshProjectSlot(selectedProjectId);
-    void refreshProjectArtifacts(selectedProjectId);
-    void refreshFinalProjectFiles(selectedProjectId);
-    const slotTimer=setInterval(()=>void refreshProjectSlot(selectedProjectId),5000);
-    const artifactTimer=setInterval(()=>void refreshProjectArtifacts(selectedProjectId),12000);
-    const finalTimer=setInterval(()=>void refreshFinalProjectFiles(selectedProjectId),7000);
-    return()=>{clearInterval(slotTimer);clearInterval(artifactTimer);clearInterval(finalTimer);};
+    void Promise.all([refreshProjectSlot(selectedProjectId),refreshProjectArtifacts(selectedProjectId),refreshFinalProjectFiles(selectedProjectId)]).then(()=>setProjectLastRefreshAt(Date.now()));
   },[currentView,selectedProjectId,refreshProjectSlot,refreshProjectArtifacts,refreshFinalProjectFiles]);
 
-  useEffect(() => {
-    if(currentView!=="Projetos")return;
-    const timer=setInterval(()=>void refreshRecords("Projetos"),8000);
-    return()=>clearInterval(timer);
-  },[currentView,refreshRecords]);
+  // 0.20.57: no background polling here. MCP/GPT writes can be pulled with the
+  // explicit refresh button. This avoids burning D1 rows while the page is idle.
   const completedOps = useMemo(() => recentOperations.filter(item => ["COMPLETED","COMPLETED_WITH_ERRORS"].includes(String(item.status || "").toUpperCase())).length, [recentOperations]);
   const failedOps = useMemo(() => recentOperations.filter(item => String(item.status || "").toUpperCase() === "FAILED").length, [recentOperations]);
   const operationSuccessRate = completedOps + failedOps > 0 ? Math.round((completedOps / (completedOps + failedOps)) * 100) : 100;
@@ -1905,18 +1914,45 @@ Tudo é configurado pela própria tela Configurações.
                   {key:"roteiro" as const,type:"PROJECT_SCRIPT_TXT",title:"ROTEIRO",file:"roteiro.txt",detail:`${Number(projectSlot.production?.production_scenes_total||0)} perguntas/cenas`},
                   {key:"publicacao" as const,type:"PROJECT_PUBLICATION_ZIP",title:"THUMBS + TÍTULOS",file:"thumbs_titulos.zip",detail:`${projectSlot.thumbs.count} thumbs · ${projectSlot.titles.count} títulos`,optional:true},
                 ];
+                const requiredSlotKeys=new Set(["script","reference","candidates","approved","zip"]);
+                const requiredSlots=projectSlot.slots.filter(slot=>requiredSlotKeys.has(slot.key));
+                const optionalSlots=projectSlot.slots.filter(slot=>!requiredSlotKeys.has(slot.key));
+                const requiredReady=requiredSlots.filter(slot=>slot.state==="READY").length,optionalReady=optionalSlots.filter(slot=>slot.state==="READY").length;
+                const requiredProgress=requiredSlots.length?Math.round(requiredSlots.reduce((sum,slot)=>sum+Number(slot.progress||0),0)/requiredSlots.length):100;
+                const productionTotal=Number(projectSlot.production?.production_slots_total||0),productionResolved=Number(projectSlot.production?.production_slots_resolved||0),productionAssigned=Number(projectSlot.production?.production_slots_assigned_for_qa||0),productionFrozen=Number(projectSlot.production?.production_slots_frozen||0),productionRelink=Number(projectSlot.production?.production_slots_relink_required||0);
+                const productionPending=Number(projectSlot.production?.production_slots_pending??Math.max(0,productionTotal-productionResolved-productionRelink));
+                const productionOther=Math.max(0,productionTotal-Math.min(productionTotal,productionPending+productionRelink+productionAssigned+productionFrozen));
+                const artifactReady=(key:"imagens"|"roteiro"|"publicacao")=>{const artifact=finalProjectFiles?.artifacts?.[key];return Boolean(artifact?.download_url)&&["READY_FOR_DOWNLOAD","DOWNLOADED","COMPLETED","READY"].includes(String(artifact?.status||"").toUpperCase());};
+                const blockers:Array<{code:string;title:string;detail:string;owner:string;tone:"danger"|"warning"|"info"}>=[];
+                const scriptSlot=projectSlot.slots.find(slot=>slot.key==="script"),referenceSlot=projectSlot.slots.find(slot=>slot.key==="reference");
+                if(scriptSlot?.state!=="READY")blockers.push({code:"SCRIPT",title:"Roteiro ausente",detail:"Adicione o SCRIPT para liberar a entrega final.",owner:"Roteirista",tone:"danger"});
+                if(productionTotal===0)blockers.push({code:"MODEL",title:"Modelo de produção ainda não criado",detail:"Nenhum PRODUCTION_SLOT foi encontrado.",owner:"Roteirista",tone:"danger"});
+                if(productionPending>0)blockers.push({code:"PENDING",title:`${productionPending} slot${productionPending===1?"":"s"} sem imagem`,detail:"O Coletor precisa abastecer esses slots.",owner:"Coletor",tone:"danger"});
+                if(productionRelink>0)blockers.push({code:"RELINK",title:`${productionRelink} slot${productionRelink===1?"":"s"} para substituir`,detail:"Foram rejeitados e precisam de relink.",owner:"Coletor",tone:"danger"});
+                if(productionAssigned>0)blockers.push({code:"QA",title:productionAssigned===1?"1 imagem aguardando QA":`${productionAssigned} imagens aguardando QA`,detail:"O QA só precisa rejeitar as não conformes e finalizar a rodada.",owner:"Analista visual",tone:"warning"});
+                if(productionOther>0)blockers.push({code:"OTHER",title:`${productionOther} slot${productionOther===1?"":"s"} ainda não FROZEN`,detail:"Estado de produção precisa ser reconciliado.",owner:"Supervisor",tone:"warning"});
+                if(productionPending>0&&referenceSlot?.state!=="READY")blockers.push({code:"REFERENCE",title:"Referências do Coletor ausentes",detail:"O Coletor ainda tem gaps e precisa do TXT de referência.",owner:"Referências",tone:"info"});
+                if(!artifactReady("imagens"))blockers.push({code:"IMAGES_ZIP",title:"imagens.zip ainda não está pronto",detail:productionTotal>0&&productionFrozen>=productionTotal?"Produção fechada: já pode gerar/validar o ZIP.":"Será gerado depois que os slots obrigatórios fecharem.",owner:"Baixador",tone:"info"});
+                if(scriptSlot?.state==="READY"&&!artifactReady("roteiro"))blockers.push({code:"SCRIPT_TXT",title:"roteiro.txt final ainda não está pronto",detail:"O arquivo final do roteiro ainda precisa ser gerado.",owner:"Baixador",tone:"info"});
+                const nextBlocker=blockers[0]||null;
                 return <>
                   <header className="projectDetailHeader">
                     <div className="projectDetailIdentity"><div className="projectDetailCover"><span>{projectInitials(projectSlot.project.name)}</span></div><div><div className="projectDetailTitleLine"><h3>{projectSlot.project.name}</h3><span className={`projectStatusPill ${lifecycle.toLowerCase()}`}>{lifecycle==="ACTIVE"?"Em execução":lifecycle==="COMPLETED"?"Concluído":"Rejeitado"}</span></div><p>{projectSlot.project.project_domain||"Corvo Library"} · criado em {formatProjectMoment(projectSlot.project.created_at)} · <code>{projectSlot.project.id}</code></p>{Boolean(projectSlot.project.mcp_locked)&&<span className="projectLockedCallout">🔒 MCP bloqueado — reabertura somente por comando explícito</span>}</div></div>
-                    <div className="projectDetailHeaderActions"><div className="projectDetailProgress"><strong>{projectSlot.progress}%</strong><span>progresso geral</span></div><button className="projectDeleteButton" disabled={projectBulkBusy} onClick={()=>void deleteSingleProject(projectSlot.project.id)}>Excluir projeto</button></div>
+                    <div className="projectDetailHeaderActions"><div className="projectDetailProgress"><strong>{requiredProgress}%</strong><span>progresso obrigatório</span></div><button className="projectRefreshButton" disabled={projectRefreshBusy} onClick={()=>void refreshSelectedProject()}><UiIcon name="activity" size={14}/>{projectRefreshBusy?"Atualizando…":"Atualizar"}</button><button className="projectDeleteButton" disabled={projectBulkBusy} onClick={()=>void deleteSingleProject(projectSlot.project.id)}>Excluir projeto</button></div>
                   </header>
+
+                  <section className={`projectBlockerSummary ${blockers.length?"has-blockers":"ready"}`}>
+                    <div className="projectBlockerHeadline"><div><span className="eyebrow">O QUE FALTA PARA CONCLUIR</span><h4>{blockers.length?`${blockers.length} pendência${blockers.length===1?"":"s"} obrigatória${blockers.length===1?"":"s"}`:"Projeto pronto para concluir"}</h4><p>{blockers.length?`Próxima frente: ${nextBlocker?.owner||"Supervisor"} · ${nextBlocker?.title||"continuar fluxo"}`:"Todos os requisitos obrigatórios estão fechados. Thumbs e títulos continuam opcionais."}</p></div><div className="projectRefreshMeta"><b>{projectLastRefreshAt?`Atualizado ${new Date(projectLastRefreshAt).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`:"Leitura atual"}</b><span>Sem polling automático · economiza D1</span></div></div>
+                    {blockers.length>0&&<div className="projectBlockerList">{blockers.map(item=><article className={`projectBlockerItem ${item.tone}`} key={item.code}><span className="projectBlockerCount">{item.code==="PENDING"?productionPending:item.code==="RELINK"?productionRelink:item.code==="QA"?productionAssigned:"!"}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div><em>{item.owner}</em></article>)}</div>}
+                    <div className="projectOptionalLine"><span>Opcionais</span><b>Thumbs {projectSlot.thumbs.count}/{projectSlot.thumbs.max}</b><b>Títulos {projectSlot.titles.count}/{projectSlot.titles.max}</b><span>não bloqueiam conclusão</span></div>
+                  </section>
 
                   <section className="projectPipelineTrack">
                     {pipeline.map(([key,label,icon],index)=>{const state=projectStageState(projectSlot,key);return <div className={`projectPipelineStage ${state}`} key={key}><span className="pipelineStageIcon"><UiIcon name={icon} size={18}/></span><div><strong>{label}</strong><small>{state==="done"?"Concluído":state==="working"?"Em execução":"Aguardando"}</small></div>{index<pipeline.length-1&&<i className="pipelineConnector"/>}</div>})}
                   </section>
 
                   <section className="projectSlotSection">
-                    <header><div><span className="eyebrow">CONTEÚDO DO PROJETO</span><h4>Slots integrados</h4></div><span>{projectSlot.slots.filter(slot=>slot.state==="READY").length}/{projectSlot.slots.length} prontos</span></header>
+                    <header><div><span className="eyebrow">CONTEÚDO DO PROJETO</span><h4>Slots integrados</h4></div><span>{requiredReady}/{requiredSlots.length} obrigatórios · {optionalReady}/{optionalSlots.length} opcionais</span></header>
                     <div className="projectSlotCards">{projectSlot.slots.map(slot=>{const textArtifact=slot.key==="script"?scriptArtifact:slot.key==="reference"?referenceArtifact:null;const textRole=slot.key==="script"?"SCRIPT":slot.key==="reference"?String(referenceArtifact?.role||"REFERENCES"):null;const visualTags=slot.tags||[];const operationalPolicies=slot.policies||[];const tagTitle=(tag:any)=>`${tag.emoji||"🏷️"} ${tag.label||tag.tag_key}${tag.note?` — ${tag.note}`:""}${tag.created_by?` · ${tag.created_by}`:""}`;const policiesTitle=operationalPolicies.map((policy:any)=>`${policy.scope} — ${policy.title}: ${policy.instruction}`).join("\n");return <article className={`projectContentSlot state-${slot.state.toLowerCase()} ${slot.mcpOpen?"mcp-open":""} ${slot.key==="reference"?"reference-brief-slot":""} ${visualTags.length?"has-slot-tags":""}`} style={visualTags.length?({"--slot-tag-glow":slotTagGlow(String(visualTags[0]?.tag_key||"TAG"))} as any):undefined} key={slot.key}>{visualTags.length>0&&<div className="slotVisualTags" aria-label={`${visualTags.length} tags ativas`}>{visualTags.slice(0,2).map((tag:any)=><span className="slotVisualTag" title={tagTitle(tag)} key={tag.id||tag.tag_key}>{tag.emoji||"🏷️"}</span>)}{visualTags.length>2&&<span className="slotVisualTag more" title={visualTags.slice(2).map(tagTitle).join("\n")}>+{visualTags.length-2}</span>}</div>}<div className="projectContentSlotHead"><span className="slotStateDot"/><strong>{slot.label}</strong><em>{slot.state.replace(/_/g," ")}</em></div><div className="slotContextBadges"><span title={`${visualTags.length} tag(s) ativas`}>🏷 Tags: {visualTags.length}</span><span className={operationalPolicies.length?"hasPolicies":""} title={policiesTitle||"Nenhuma política aplicável"}>📜 Políticas: {operationalPolicies.length}</span>{slot.assetRequirement&&<span className="assetRequirementBadge" title="Requisito visual resolvido por política">{slot.assetRequirement}</span>}</div><p>{slot.summary}</p>{slot.key==="reference"&&<div className="referenceSlotPurpose"><b>TXT PARA O COLETOR</b><span>O agente de referências escreve aqui o que precisa ser buscado. O Coletor e o MCP podem ler o conteúdo imediatamente.</span></div>}{slot.mcpOpen&&<div className="slotMcpInstruction"><b>IA/MCP aberto</b>{slot.instruction&&<span>{slot.instruction}</span>}</div>}<div className="projectContentProgress"><i style={{width:`${slot.progress}%`}}/></div><div className="projectSlotFooter"><small>{slot.progress}%</small><div className="projectSlotActions"><button disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void manualAddProjectSlot(slot.key)}>{slot.key==="reference"?"＋ TXT":"＋ Adicionar"}</button>{textArtifact?.preview_url&&<button onClick={()=>window.open(textArtifact.preview_url!,"_blank","noopener,noreferrer")}>Ver</button>}{textRole&&textArtifact&&<button onClick={()=>void copyProjectTextRole(projectSlot.project.id,textRole,slot.key==="reference"?"TXT de referências":"Roteiro")}>Copiar</button>}{textArtifact?.download_url&&<a href={textArtifact.download_url} target="_blank" rel="noreferrer">Baixar</a>}<button className={slot.mcpOpen?"mcpOpen active":"mcpOpen"} disabled={projectBulkBusy||lifecycle!=="ACTIVE"} onClick={()=>void configureSlotForMcp(slot.key,Boolean(slot.mcpOpen))}>{slot.mcpOpen?"● MCP aberto":"○ Abrir para MCP"}</button></div></div></article>})}</div>
                   </section>
 
@@ -1943,7 +1979,7 @@ Tudo é configurado pela própria tela Configurações.
                     </aside>
                   </div>
 
-                  <footer className="projectDetailFooter"><span>Última atualização <b>{formatProjectMoment(projectSlot.project.workflow_updated_at||projectSlot.project.updated_at)}</b> · revisão {Number(projectSlot.project.state_version||1)}</span>{lifecycle!=="ACTIVE"?<button className="primary" disabled={projectBulkBusy} onClick={()=>void reopenProject(projectSlot.project.id)}>Reabrir projeto</button>:<span className="slotOpenHint">● MCP livre para coordenar o fluxo</span>}</footer>
+                  <footer className="projectDetailFooter"><span>Última atualização <b>{formatProjectMoment(projectSlot.project.workflow_updated_at||projectSlot.project.updated_at)}</b> · revisão {Number(projectSlot.project.state_version||1)} · mudanças feitas pelo MCP aparecem ao clicar em <b>Atualizar</b></span>{lifecycle!=="ACTIVE"?<button className="primary" disabled={projectBulkBusy} onClick={()=>void reopenProject(projectSlot.project.id)}>Reabrir projeto</button>:<span className="slotOpenHint">● MCP livre para coordenar o fluxo</span>}</footer>
                 </>;
               })():<div className="projectEmpty">Não foi possível ler este projeto.</div>}
             </main>
@@ -2042,7 +2078,7 @@ Tudo é configurado pela própria tela Configurações.
 
         {currentView === "Configurações" && <section className="modulePanel configPanel">
           <span className="eyebrow">INFRAESTRUTURA AUTOSSUFICIENTE</span><h2>Configura uma vez e fica cravado</h2><p>A própria Corvo Library cria/verifica o Core na Cloudflare. Nada para instalar no computador e nenhuma variável manual na hospedagem do app. O D1 guarda somente o manifesto não secreto; chaves sensíveis ficam como secrets do Worker.</p>
-          {sessionUnauthorized && localConnection && <div className="sessionRecoveryCard"><div><span className="eyebrow">RECUPERAÇÃO DE SESSÃO</span><strong>Infraestrutura encontrada; somente este navegador perdeu a credencial válida.</strong><p>Isso pode acontecer quando uma instalação antiga regenerou a chave compartilhada em outro computador. A recuperação abaixo não apaga D1/R2, não recria a infraestrutura e, na 0.20.55, não invalida os outros PCs: cada navegador recebe seu próprio token.</p></div><label>Cloudflare API Token<input type="password" autoComplete="off" value={browserRecoveryToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setBrowserRecoveryToken(event.target.value)} placeholder="Cole o token administrativo da Cloudflare"/></label><div className="inlineActions"><button className="primary" disabled={browserRecoveryBusy} onClick={()=>void recoverBrowserAccess()}>{browserRecoveryBusy?"Recuperando…":"Recuperar acesso deste navegador"}</button><button className="secondary" onClick={()=>void refreshCoreVersion()}>Verificar Core sem D1</button></div>{browserRecoveryMessage&&<small className="mcpKeyStatus">{browserRecoveryMessage}</small>}</div>}
+          {sessionUnauthorized && localConnection && <div className="sessionRecoveryCard"><div><span className="eyebrow">RECUPERAÇÃO DE SESSÃO</span><strong>Infraestrutura encontrada; somente este navegador perdeu a credencial válida.</strong><p>Isso pode acontecer quando uma instalação antiga regenerou a chave compartilhada em outro computador. A recuperação abaixo não apaga D1/R2, não recria a infraestrutura e, na 0.20.57, não invalida os outros PCs: cada navegador recebe seu próprio token.</p></div><label>Cloudflare API Token<input type="password" autoComplete="off" value={browserRecoveryToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setBrowserRecoveryToken(event.target.value)} placeholder="Cole o token administrativo da Cloudflare"/></label><div className="inlineActions"><button className="primary" disabled={browserRecoveryBusy} onClick={()=>void recoverBrowserAccess()}>{browserRecoveryBusy?"Recuperando…":"Recuperar acesso deste navegador"}</button><button className="secondary" onClick={()=>void refreshCoreVersion()}>Verificar Core sem D1</button></div>{browserRecoveryMessage&&<small className="mcpKeyStatus">{browserRecoveryMessage}</small>}</div>}
           <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : localConnection ? "Conexão local encontrada — verificando Core" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Cole uma única credencial Cloudflare e a Library cuida de D1, R2, Queue, Worker e restauração."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
           {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
           <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || localConnection?.d1DatabaseName || "corvo-library-v2"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || localConnection?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || localConnection?.queueName || "corvo-materialize-v2"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>APP AUTH</b><span>Chave de sessão da Library · não é credencial Cloudflare</span><em>{health?.core.appAuth || (localConnection ? "salva" : "aguardando")}</em></div><div><b>CONTROLE</b><span>API Token Cloudflare · secret exclusivo do Worker</span><em>{health?.core.control || "aguardando"}</em></div></div>

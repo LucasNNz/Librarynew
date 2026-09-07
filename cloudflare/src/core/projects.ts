@@ -50,7 +50,7 @@ export async function listActionableProjects(env: Env, input: { limit?:number; t
     (SELECT COUNT(*) FROM v2_project_media m WHERE m.project_id=automatic_projects.id AND m.kind='THUMB' AND m.status NOT IN ('THUMB_REJECTED','REJECTED')) AS thumb_count
     FROM automatic_projects WHERE ${where.join(" AND ")} ORDER BY queue_priority DESC,updated_at ASC,id ASC LIMIT ?`).bind(...bind,limit).all<Record<string,unknown>>();
   const items=result.results||[];
-  if(!items.length)return {items:[],returned:0,control_plane:"ACTIONABLE_ONLY",detail_route:"obter_slot_projeto"};
+  if(!items.length)return {items:[],returned:0,control_plane:"ACTIONABLE_ONLY",blocker_route:"obter_pendencias_projeto",detail_route:"obter_slot_projeto"};
   const ids=items.map(item=>String(item.id));const placeholders=ids.map(()=>"?").join(",");
   const [slotTags,workflowTags]=await Promise.all([
     env.DB.prepare(`SELECT project_id,tag_key FROM v2_slot_tags WHERE active=1 AND project_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...ids).all<Record<string,unknown>>(),
@@ -58,7 +58,7 @@ export async function listActionableProjects(env: Env, input: { limit?:number; t
   ]);
   const tagsByProject=new Map<string,Set<string>>();
   for(const row of [...(slotTags.results||[]),...(workflowTags.results||[])]){const pid=String(row.project_id||"");const tag=String(row.tag_key||row.tag||"");if(!pid||!tag)continue;const set=tagsByProject.get(pid)||new Set<string>();set.add(tag);tagsByProject.set(pid,set);}
-  return {items:items.map(item=>({...item,tags:[...(tagsByProject.get(String(item.id))||new Set<string>())]})),returned:items.length,control_plane:"ACTIONABLE_ONLY",detail_route:"obter_slot_projeto",instruction:"Use esta rota para a varredura inicial. Só chame obter_slot_projeto após selecionar um projeto acionável."};
+  return {items:items.map(item=>({...item,tags:[...(tagsByProject.get(String(item.id))||new Set<string>())]})),returned:items.length,control_plane:"ACTIONABLE_ONLY",blocker_route:"obter_pendencias_projeto",detail_route:"obter_slot_projeto",instruction:"Use esta rota para a varredura inicial. Depois chame obter_pendencias_projeto para saber exatamente o que falta; só abra obter_slot_projeto se precisar de conteúdo/preview detalhado."};
 }
 
 export async function getShortOperationalSnapshot(env: Env, projectId:string, sinceVersion?:number) {
@@ -72,9 +72,57 @@ export async function getShortOperationalSnapshot(env: Env, projectId:string, si
     SUM(CASE WHEN asset_id IS NOT NULL AND status IN ('RESOLVED','FROZEN','APPROVED','COMPLETED') THEN 1 ELSE 0 END) AS frozen,
     SUM(CASE WHEN status='RELINK_REQUIRED' THEN 1 ELSE 0 END) AS relink_required,
     SUM(CASE WHEN status IN ('UNRESOLVED','PENDING') OR ((asset_id IS NULL AND candidate_id IS NULL) AND status NOT IN ('RELINK_REQUIRED')) THEN 1 ELSE 0 END) AS pending
-    FROM v2_production_slots WHERE project_id=? AND version=?`).bind(projectId,activeVersion).first<Record<string,unknown>>();
+    FROM v2_production_slots WHERE project_id=? AND version=? AND status<>'RETIRED'`).bind(projectId,activeVersion).first<Record<string,unknown>>();
   const total=Number(production?.total||0),assigned=Number(production?.assigned_for_qa||0),frozen=Number(production?.frozen||0),relink=Number(production?.relink_required||0),pending=Number(production?.pending||0);
   return {project_id:projectId,state_version:version,changed:true,not_modified:false,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,project_domain:project.project_domain,queue_priority:Number(project.queue_priority||1),counts:{total:Number(project.total_items||0),approved:Number(project.approved_count||0),frozen:Number(project.frozen_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0)},production:{production_slots_total:total,production_slots_assigned_for_qa:assigned,production_slots_frozen:frozen,production_slots_relink_required:relink,production_slots_pending:pending,qa_complete:total>0&&frozen>=total&&assigned===0&&relink===0&&pending===0},lifecycle_status:project.lifecycle_status,mcp_locked:Boolean(project.mcp_locked),updated_at:project.updated_at,workflow_updated_at:project.workflow_updated_at,read_profile:"FAST_CONTROL_PLANE_NO_FILES_NO_POLICIES_NO_R2"};
+}
+
+export async function getProjectBlockers(env: Env, projectId:string) {
+  const summary=await getShortOperationalSnapshot(env,projectId);
+  if(!summary)return null;
+  const [fileResult,packageResult]=await env.DB.batch<Record<string,unknown>>([
+    env.DB.prepare(`SELECT
+      SUM(CASE WHEN upper(role)='SCRIPT' THEN 1 ELSE 0 END) AS scripts,
+      SUM(CASE WHEN upper(role) IN ('REFERENCES','REFERENCIAS','REFERENCE_BRIEF','IMAGENS_NECESSARIAS','IMAGENS NECESSARIAS') THEN 1 ELSE 0 END) AS references_count
+      FROM automatic_project_files WHERE project_id=?`).bind(projectId),
+    env.DB.prepare(`SELECT type,status,file_name,created_at FROM v2_download_packages WHERE project_id=? AND type IN ('PROJECT_IMAGES_ZIP','PROJECT_SCRIPT_TXT','PROJECT_PUBLICATION_ZIP') ORDER BY created_at DESC LIMIT 30`).bind(projectId),
+  ]);
+  const files=(fileResult.results||[])[0]||{};
+  const packageRows=packageResult.results||[];const latest=new Map<string,Record<string,unknown>>();
+  for(const row of packageRows){const type=String(row.type||'').toUpperCase();if(type&&!latest.has(type))latest.set(type,row);}
+  const ready=(type:string)=>['READY_FOR_DOWNLOAD','DOWNLOADED','COMPLETED','READY'].includes(String(latest.get(type)?.status||'').toUpperCase());
+  const production=(summary as any).production||{};
+  const total=Number(production.production_slots_total||0),assigned=Number(production.production_slots_assigned_for_qa||0),frozen=Number(production.production_slots_frozen||0),relink=Number(production.production_slots_relink_required||0),pending=Number(production.production_slots_pending||0);
+  const blockers:Array<Record<string,unknown>>=[];
+  const add=(code:string,label:string,count:number,nextAction:string,owner:string,detail?:string)=>blockers.push({code,label,count,next_action:nextAction,owner,detail:detail||null});
+  if(!Number((files as any).scripts||0))add('SCRIPT_MISSING','Roteiro ausente',1,'ANEXAR_SCRIPT','ROTEIRISTA','O projeto precisa de um SCRIPT antes da entrega final.');
+  if(total===0)add('PRODUCTION_MODEL_MISSING','Modelo de produção ainda não criado',1,'CRIAR_PRODUCTION_SLOTS','ROTEIRISTA','Nenhum PRODUCTION_SLOT foi encontrado.');
+  if(total>0&&pending>0)add('PRODUCTION_SLOTS_PENDING',`${pending} slot${pending===1?'':'s'} sem imagem`,pending,'COLETAR_SLOTS_PENDENTES','COLETOR');
+  if(total>0&&relink>0)add('PRODUCTION_SLOTS_RELINK_REQUIRED',`${relink} slot${relink===1?'':'s'} precisa${relink===1?'':'m'} de substituição`,relink,'RELINKAR_SLOTS','COLETOR');
+  if(total>0&&assigned>0)add('PRODUCTION_SLOTS_ASSIGNED_FOR_QA',`${assigned} imagem${assigned===1?'':'ns'} aguardando QA`,assigned,'REVISAR_QA_E_FINALIZAR','QA');
+  const accounted=Math.min(total,pending+relink+assigned+frozen);const other=Math.max(0,total-accounted);
+  if(total>0&&other>0)add('PRODUCTION_SLOTS_NOT_FROZEN',`${other} slot${other===1?'':'s'} ainda não congelado${other===1?'':'s'}`,other,'RECONCILIAR_PRODUCAO','SUPERVISOR');
+  const productionClosed=total>0&&frozen>=total&&pending===0&&relink===0&&assigned===0;
+  if(productionClosed&&!ready('PROJECT_IMAGES_ZIP'))add('IMAGES_ZIP_NOT_READY','imagens.zip ainda não está pronto',1,'GERAR_IMAGENS_ZIP','BAIXADOR');
+  if(Number((files as any).scripts||0)>0&&!ready('PROJECT_SCRIPT_TXT'))add('SCRIPT_TXT_NOT_READY','roteiro.txt final ainda não está pronto',1,'GERAR_ROTEIRO_TXT','BAIXADOR');
+  const referencesReady=Number((files as any).references_count||0)>0;
+  const next=blockers[0]||null;
+  return {
+    project_id:projectId,
+    state_version:(summary as any).state_version,
+    lifecycle_status:(summary as any).lifecycle_status,
+    pipeline_status:(summary as any).pipeline_status,
+    conclusion_ready:blockers.length===0,
+    blocker_count:blockers.length,
+    blockers,
+    next_action:next?next.next_action:'CONCLUIR_PROJETO',
+    next_owner:next?next.owner:'SUPERVISOR',
+    production,
+    references_ready:referencesReady,
+    optional:{thumbs:true,titles:true,publication_zip:true},
+    read_profile:'FAST_BLOCKERS_INDEXED_NO_R2_NO_CANDIDATES_NO_POLICIES',
+    instruction:'Use esta rota para descobrir em segundos o que falta. Só abra obter_slot_projeto se precisar de detalhes visuais ou conteúdo do slot.'
+  };
 }
 
 export async function createAutomaticProject(env: Env, input: { projeto_id?:string; nome:string; project_domain?:string; prioridade_fila?:number; automatico?:boolean; biblioteca_primeiro?:boolean; busca_externa?:boolean; zip_automatico?:boolean; excluir_zip_ao_concluir?:boolean }) {
@@ -134,7 +182,7 @@ export async function getOperationalSnapshot(env: Env, projectId:string, sinceVe
   };
 }
 
-const terminalItemStates = new Set(["APROVADO","APPROVED","CONCLUIDO","CONCLUÍDO","FROZEN","CONGELADO","ASSIGNED_FOR_QA","FAILED","FALHOU","CANCELADO"]);
+const terminalItemStates = new Set(["APROVADO","APPROVED","CONCLUIDO","CONCLUÍDO","FROZEN","CONGELADO","ASSIGNED_FOR_QA","RETIRED","FAILED","FALHOU","CANCELADO"]);
 
 function workerStageForItem(statusValue: unknown) {
   const status = String(statusValue || "").toUpperCase();
@@ -187,11 +235,17 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
       const object=await env.MEDIA.get(String(script.r2_key));
       if(object){
         const content=await object.text();
-        const expectedSceneCount=parseProjectScriptScenes(content).length;
+        const parsedScenes=parseProjectScriptScenes(content);
+        const expectedSceneCount=parsedScenes.length;
+        const expectedTargets=new Set(parsedScenes.flatMap(scene=>scene.targetFiles.map(target=>String(target||"").trim().toLowerCase()).filter(Boolean)));
         const actualSceneCount=Number(currentProductionSceneCount?.count||0);
-        // Self-heal not only 0-scene projects, but any parser drift such as Digimon 72 questions / 60 scenes.
-        if(expectedSceneCount!==actualSceneCount){
-          scriptRecovery=await materializeScenesFromProjectScript(env,{projectId,content,fileId:String(script.id||""),fileName:String(script.file_name||"SCRIPT.txt"),productionOnly:actualSceneCount>0}).catch(error=>({ok:false,error:error instanceof Error?error.message:String(error),expectedSceneCount,actualSceneCount}));
+        const activeSlotRows=await env.DB.prepare("SELECT target_file FROM v2_production_slots WHERE project_id=? AND version=? AND status<>'RETIRED'").bind(projectId,activeVersion).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>));
+        const activeTargets=new Set((activeSlotRows.results||[]).map(row=>String(row.target_file||"").trim().toLowerCase()).filter(Boolean));
+        const productionShapeDrift=expectedTargets.size!==activeTargets.size||[...expectedTargets].some(target=>!activeTargets.has(target));
+        // The current SCRIPT is authoritative not only for scene count but also for the active target-file set.
+        // This retires stale legacy PSLOTs when a script revision removes/replaces an image requirement.
+        if(expectedSceneCount!==actualSceneCount||productionShapeDrift){
+          scriptRecovery=await materializeScenesFromProjectScript(env,{projectId,content,fileId:String(script.id||""),fileName:String(script.file_name||"SCRIPT.txt"),productionOnly:actualSceneCount>0}).catch(error=>({ok:false,error:error instanceof Error?error.message:String(error),expectedSceneCount,actualSceneCount,productionShapeDrift,expectedTargets:expectedTargets.size,activeTargets:activeTargets.size}));
         }
       }
     }
@@ -207,7 +261,8 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
     env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId),
     env.DB.prepare("SELECT id,item_id,status,worker_type,stage FROM worker_work_items WHERE project_id=? AND status IN ('READY','LEASED')").bind(projectId),
   ]);
-  const items = itemsResult.results || [];
+  const allItems = itemsResult.results || [];
+  const items = allItems.filter(item=>String(item.status||"").toUpperCase()!=="RETIRED");
   const activeWorkByItem=new Map<string,Record<string,unknown>>();
   for(const row of activeWorkResult.results||[]){const itemId=String(row.item_id||"");if(itemId&&!activeWorkByItem.has(itemId))activeWorkByItem.set(itemId,row);}
   const counts = { total:items.length, approved:0, frozen:0, collecting:0, materializing:0, waitingQa:0, relink:0, technical:0, waitingSeed:0, failed:0, pending:0 };

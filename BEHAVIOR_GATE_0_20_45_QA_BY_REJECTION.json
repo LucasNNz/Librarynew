@@ -13,7 +13,7 @@
     "usage_registered_after_qa": true,
     "relink_returns_to_qa_not_frozen": true,
     "second_finalize_freezes_relinked_survivor": true,
-    "schema_2_26": true,
+    "schema_2_26": false,
     "migration_has_candidate_links": true,
     "schema_reconcile_has_candidate_links": true,
     "migration_replay_guarded": true,
@@ -30,7 +30,7 @@
     "rejection_remains_atomic": true,
     "finalize_route_exists": true,
     "external_assignment_route_exists": true,
-    "qa_batch_read_route_exists": true,
+    "qa_batch_read_route_exists": false,
     "qa_batch_read_has_signed_previews_for_both_sources": true,
     "qa_batch_read_is_reject_only": true,
     "finalize_only_reads_assigned_for_qa": true,
@@ -48,5 +48,5 @@
     "finalize_statement_budget_under_1000": true,
     "mcp_describes_reject_only_flow": true
   },
-  "pass": true
+  "pass": false
 }

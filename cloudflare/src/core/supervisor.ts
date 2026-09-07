@@ -145,7 +145,7 @@ export async function setItemProcessingState(env:Env,itemId:string,action:"PAUSE
 export async function relinkItem(env:Env,itemId:string,assetId:string){
   const asset=await env.DB.prepare("SELECT id FROM assets WHERE id=?").bind(assetId).first();if(!asset)return {error:"ASSET_NOT_FOUND"}; const ts=nowMs();
   const item=await env.DB.prepare("UPDATE automatic_project_items SET linked_asset_id=?,status='APPROVED',source_type='LIBRARY_RELINK',failure_reason=NULL,updated_at=? WHERE id=? RETURNING *").bind(assetId,ts,itemId).first<Record<string,unknown>>();if(!item)return {error:"ITEM_NOT_FOUND"};await reconcileAutomaticProject(env,String(item.project_id));
-  const productionSlot=item.target_file?await env.DB.prepare("SELECT slot_key,preset,visual_role FROM v2_production_slots WHERE project_id=? AND target_file=? ORDER BY updated_at DESC LIMIT 1").bind(item.project_id,item.target_file).first<Record<string,unknown>>().catch(()=>null):null;
+  const productionSlot=item.target_file?await env.DB.prepare("SELECT slot_key,preset,visual_role FROM v2_production_slots WHERE project_id=? AND status<>'RETIRED' AND target_file=? ORDER BY updated_at DESC LIMIT 1").bind(item.project_id,item.target_file).first<Record<string,unknown>>().catch(()=>null):null;
   const policyContext=await resolveApplicablePolicies(env,{projectId:String(item.project_id||""),slotId:String(productionSlot?.slot_key||item.item_key||item.id||""),preset:String(productionSlot?.preset||""),visualRole:String(productionSlot?.visual_role||"")}).catch(()=>({policies:[],asset_requirement:null,policy_revision:null}));
   return {...item,policy_context:policyContext};
 }

@@ -1,17 +1,17 @@
 {
   "version": "0.20.55",
-  "passed": 26,
+  "passed": 23,
   "total": 26,
-  "ok": true,
+  "ok": false,
   "checks": [
     {
       "name": "app version 0.20.55",
-      "pass": true,
+      "pass": false,
       "detail": ""
     },
     {
       "name": "core version 0.20.55",
-      "pass": true,
+      "pass": false,
       "detail": ""
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "name": "generated bundle remains fail-safe UNBUILT",
-      "pass": true,
+      "pass": false,
       "detail": ""
     },
     {

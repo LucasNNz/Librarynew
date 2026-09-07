@@ -3,9 +3,9 @@
   "schema": "2.26.0",
   "feature": "Post-QA closure + direct MCP thumb file + internal imagens.zip manifest gate",
   "checks": {
-    "version_0_20_46_everywhere": true,
-    "schema_stays_2_26": true,
-    "source_bundle_is_unbuilt_0_20_46": true,
+    "version_0_20_46_everywhere": false,
+    "schema_stays_2_26": false,
+    "source_bundle_is_unbuilt_0_20_46": false,
     "thumb_file_route_exists": true,
     "thumb_file_route_no_prepared_ticket": true,
     "thumb_accepts_inline_base64_and_resource_blob": true,
@@ -28,7 +28,7 @@
     "post_qa_auto_queues_images_zip": true,
     "existing_ready_zip_is_reused_and_validated": true,
     "production_slot_is_legacy_source_of_truth": true,
-    "legacy_items_map_frozen": true,
+    "legacy_items_map_frozen": false,
     "legacy_items_map_relink_and_qa": true,
     "legacy_worker_items_cancelled_when_resolved": true,
     "automatic_reconcile_invokes_slot_truth_first": true,
@@ -65,5 +65,5 @@
     "flat": false,
     "ok": false
   },
-  "pass": true
+  "pass": false
 }

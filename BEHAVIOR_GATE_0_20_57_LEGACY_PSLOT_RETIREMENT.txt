@@ -1,0 +1,16 @@
+version_0_20_57: PASS
+retired_status_created: PASS
+script_authoritative_shape: PASS
+legacy_qa_status_never_null: PASS
+retired_pitem_qa_status: PASS
+retired_terminal_worker_state: PASS
+counts_exclude_retired: PASS
+zip_excludes_retired: PASS
+lifecycle_excludes_retired: PASS
+retired_history_preserved: PASS
+no_asset_delete_on_retirement: PASS
+simulation_97_active: PASS
+simulation_one_retired: PASS
+simulation_non_null_retired_qa: PASS
+
+14/14 PASS

@@ -247,7 +247,7 @@ async function reconcileProductionScenesLight(env:Env,input:{projectId:string;ve
 
   // Existing 102/102 slots are production truth. Only repair their scene_id using
   // the numeric target prefix; never touch asset_id/status/reference pools here.
-  const slotRows=await env.DB.prepare("SELECT id,target_file,scene_id FROM v2_production_slots WHERE project_id=? AND version=?").bind(input.projectId,input.version).all<Record<string,unknown>>();
+  const slotRows=await env.DB.prepare("SELECT id,target_file,scene_id FROM v2_production_slots WHERE project_id=? AND version=? AND status<>'RETIRED'").bind(input.projectId,input.version).all<Record<string,unknown>>();
   const slotUpdates:D1PreparedStatement[]=[];let relinked=0;
   for(const slot of slotRows.results||[]){
     const match=clean(slot.target_file).match(/^0*(\d{1,4})[-_ ]/);if(!match)continue;
@@ -259,7 +259,7 @@ async function reconcileProductionScenesLight(env:Env,input:{projectId:string;ve
     env.DB.prepare("UPDATE automatic_projects SET state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,input.projectId),
     env.DB.prepare("INSERT INTO automatic_project_events(id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),input.projectId,"PRODUCTION_SCENES_FAST_RECONCILED","OK",JSON.stringify({questions:input.scenes.length,sceneUpserts:sceneStatements.length,slotSceneRelinks:relinked,preservedSlots:true,preservedAssets:true}),ts),
   ]);
-  const row=await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=?").bind(input.projectId,input.version).first<Record<string,unknown>>();
+  const row=await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=? AND status<>'RETIRED'").bind(input.projectId,input.version).first<Record<string,unknown>>();
   return{sceneCount:Number(row?.total||0),relinked};
 }
 
@@ -268,7 +268,7 @@ async function validateScriptStructure(env:Env,projectId:string){
   if(parsed.length>100)throw new Error(`FORMA_QUESTION_LIMIT_EXCEEDED:${parsed.length}:max=100`);
   if(refs.length>250)throw new Error(`FORMA_IMAGE_LIMIT_EXCEEDED:${refs.length}:max=250`);
   const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();if(!project)throw new Error("PROJECT_NOT_FOUND");const version=Number(project.active_version||1);
-  let sceneCount=Number((await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=?").bind(projectId,version).first<Record<string,unknown>>())?.total||0);
+  let sceneCount=Number((await env.DB.prepare("SELECT COUNT(*) total FROM v2_production_scenes WHERE project_id=? AND version=? AND status<>'RETIRED'").bind(projectId,version).first<Record<string,unknown>>())?.total||0);
   if(parsed.length!==sceneCount){
     // Export must not rebuild pools/slots. Repair scenes only, in D1 batches, then
     // continue using the already-resolved production slots. This keeps the Queue
@@ -281,7 +281,7 @@ async function validateScriptStructure(env:Env,projectId:string){
 
 async function finalImagesBundle(env:Env,projectId:string){
   const structure=await validateScriptStructure(env,projectId);if(!structure.imageRefs.length)throw new Error("SCRIPT_HAS_NO_IMAGE_REFERENCES");
-  const rows=await env.DB.prepare(`SELECT s.*,a.r2_key,a.mime_type,a.size_bytes,a.sha256 asset_sha256 FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? ORDER BY s.created_at`).bind(projectId,structure.version).all<Record<string,unknown>>();
+  const rows=await env.DB.prepare(`SELECT s.*,a.r2_key,a.mime_type,a.size_bytes,a.sha256 asset_sha256 FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? AND s.status<>'RETIRED' ORDER BY s.created_at`).bind(projectId,structure.version).all<Record<string,unknown>>();
   const slots=rows.results||[];const unresolved=slots.filter(s=>!clean(s.asset_id)||!clean(s.r2_key)||!RESOLVED_SLOT_STATES.has(clean(s.status).toUpperCase()));if(unresolved.length)throw new Error(`PRODUCTION_SLOTS_INCOMPLETE:${unresolved.length}`);
   const byTarget=new Map<string,Record<string,unknown>[]>();for(const slot of slots){const key=normalizeTarget(clean(slot.target_file));if(!key)continue;const arr=byTarget.get(key)||[];arr.push(slot);byTarget.set(key,arr);}
   const duplicateTargets=[...byTarget.entries()].filter(([,list])=>list.length>1).map(([name])=>name);if(duplicateTargets.length)throw new Error(`DUPLICATE_TARGET_NAMES:${duplicateTargets.slice(0,20).join(",")}`);
@@ -320,7 +320,7 @@ async function artifactRevisionHash(env:Env,projectId:string,type:FinalArtifactT
   const scriptHash=clean(scriptRow?.content_hash)||(await activeScript(env,projectId)).hash;
   if(type==="PROJECT_SCRIPT_TXT")return await sha256Hex(`SCRIPT
 ${scriptHash}`);
-  if(type==="PROJECT_IMAGES_ZIP"){const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();if(!project)throw new Error("PROJECT_NOT_FOUND");const version=Number(project.active_version||1);const rows=await env.DB.prepare("SELECT s.target_file,s.asset_id,s.status,a.sha256 asset_sha256 FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? ORDER BY s.target_file").bind(projectId,version).all<Record<string,unknown>>();return await sha256Hex(JSON.stringify({script:scriptHash,slots:rows.results||[]}));}
+  if(type==="PROJECT_IMAGES_ZIP"){const project=await env.DB.prepare("SELECT active_version FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();if(!project)throw new Error("PROJECT_NOT_FOUND");const version=Number(project.active_version||1);const rows=await env.DB.prepare("SELECT s.target_file,s.asset_id,s.status,a.sha256 asset_sha256 FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? AND s.status<>'RETIRED' ORDER BY s.target_file").bind(projectId,version).all<Record<string,unknown>>();return await sha256Hex(JSON.stringify({script:scriptHash,slots:rows.results||[]}));}
   const [media,titles]=await Promise.all([env.DB.prepare("SELECT id,r2_key,status,selected,slot_index,updated_at FROM v2_project_media WHERE project_id=? AND kind='THUMB' AND status NOT IN ('REJECTED','THUMB_REJECTED') ORDER BY slot_index,id").bind(projectId).all<Record<string,unknown>>(),env.DB.prepare("SELECT id,text,status,selected,slot_index,updated_at FROM v2_project_titles WHERE project_id=? AND status NOT IN ('REJECTED','TITLE_REJECTED') ORDER BY slot_index,id").bind(projectId).all<Record<string,unknown>>()]);return await sha256Hex(JSON.stringify({media:media.results||[],titles:titles.results||[]}));
 }
 
@@ -349,7 +349,7 @@ async function projectBundleEntries(env:Env,projectId:string){
   const [filesResult,itemsResult,productionSlotsResult,mediaResult,titlesResult]=await Promise.all([
     env.DB.prepare("SELECT * FROM automatic_project_files WHERE project_id=? ORDER BY role,version DESC,created_at DESC").bind(projectId).all<Record<string,unknown>>(),
     env.DB.prepare(`SELECT i.*,a.name AS asset_name,a.r2_key,a.original_name,a.mime_type,a.size_bytes FROM automatic_project_items i LEFT JOIN assets a ON a.id=i.linked_asset_id WHERE i.project_id=? AND i.version=? AND i.linked_asset_id IS NOT NULL AND upper(i.status) IN ('FROZEN','APROVADO','APPROVED','CONCLUIDO','CONCLUÍDO') ORDER BY i.priority ASC,i.created_at ASC`).bind(projectId,Number(project.active_version||1)).all<Record<string,unknown>>(),
-    env.DB.prepare(`SELECT s.*,a.name AS asset_name,a.r2_key,a.original_name,a.mime_type,a.size_bytes FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? ORDER BY COALESCE((SELECT scene_number FROM v2_production_scenes sc WHERE sc.id=s.scene_id),999999),s.slot_index,s.created_at`).bind(projectId,Number(project.active_version||1)).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
+    env.DB.prepare(`SELECT s.*,a.name AS asset_name,a.r2_key,a.original_name,a.mime_type,a.size_bytes FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id WHERE s.project_id=? AND s.version=? AND s.status<>'RETIRED' ORDER BY COALESCE((SELECT scene_number FROM v2_production_scenes sc WHERE sc.id=s.scene_id),999999),s.slot_index,s.created_at`).bind(projectId,Number(project.active_version||1)).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_project_media WHERE project_id=? AND status NOT IN ('REJECTED','THUMB_REJECTED') ORDER BY selected DESC,created_at ASC").bind(projectId).all<Record<string,unknown>>(),
     env.DB.prepare("SELECT * FROM v2_project_titles WHERE project_id=? AND status NOT IN ('REJECTED','TITLE_REJECTED') ORDER BY selected DESC,created_at ASC").bind(projectId).all<Record<string,unknown>>(),
   ]);
@@ -504,7 +504,7 @@ export async function projectProductionPackage(request:Request,env:Env,projectId
   const version=Number(project.active_version||1);
   const [items,productionSlots,productionScenes,referencePools,media,titles,files,packages]=await Promise.all([
     env.DB.prepare("SELECT id,item_key,target_file,status,linked_asset_id FROM automatic_project_items WHERE project_id=? AND version=? ORDER BY priority,created_at").bind(projectId,version).all<Record<string,unknown>>(),
-    env.DB.prepare(`SELECT s.*,a.name asset_name,a.r2_key asset_r2_key,a.mime_type asset_mime_type,c.status candidate_status,c.r2_key candidate_r2_key,c.mime_type candidate_mime_type,c.source_url candidate_source_url FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id LEFT JOIN v2_ingest_candidates c ON c.id=s.candidate_id WHERE s.project_id=? AND s.version=? ORDER BY s.created_at`).bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
+    env.DB.prepare(`SELECT s.*,a.name asset_name,a.r2_key asset_r2_key,a.mime_type asset_mime_type,c.status candidate_status,c.r2_key candidate_r2_key,c.mime_type candidate_mime_type,c.source_url candidate_source_url FROM v2_production_slots s LEFT JOIN assets a ON a.id=s.asset_id LEFT JOIN v2_ingest_candidates c ON c.id=s.candidate_id WHERE s.project_id=? AND s.version=? AND s.status<>'RETIRED' ORDER BY s.created_at`).bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_production_scenes WHERE project_id=? AND version=? ORDER BY scene_number,created_at").bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_reference_pools WHERE project_id=? AND version=? ORDER BY pool_key").bind(projectId,version).all<Record<string,unknown>>().catch(()=>({results:[]} as unknown as D1Result<Record<string,unknown>>)),
     env.DB.prepare("SELECT * FROM v2_project_media WHERE project_id=? ORDER BY selected DESC,created_at").bind(projectId).all<Record<string,unknown>>(),

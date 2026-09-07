@@ -12,7 +12,7 @@ import { fullStorageAudit, latestStorageAudit } from "./core/storage-audit";
 import { findDuplicateHash, getMaterializationStats, listAdapters, listHostHealth, listIngestEvents, probeRemoteUrl, retryIngestCandidate } from "./core/materialization";
 import { latestOperation, listOperations, mcpPerformance, operationalRisk, pipelineTelemetry, sourceRouteRanking } from "./core/operations";
 import { claimNextWork, compactWorkerQueue, completeWork, configureWorkerLimit, dispatcherHealth, failWork, heartbeatWorker, workerWatchdog } from "./core/workers";
-import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectSlot, getShortOperationalSnapshot, listActionableProjects, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
+import { configureAutomaticProject, createAutomaticProject, getAutomaticProject, getAutomaticProjectDetails, getOperationalSnapshot, getProjectBlockers, getProjectSlot, getShortOperationalSnapshot, listActionableProjects, listAutomaticProjects, processAutomaticProject, projectAvailability, projectLog, reconcileAutomaticProject, reopenAutomaticProject, validateProjectConsistency } from "./core/projects";
 import { deleteProjectsPermanently, heartbeatProjectWorkflow, setProjectLifecycle, updateProjectWorkflow } from "./core/project-workflow";
 import { configureProjectSlotAccess, fillProjectImageSlot, fillProjectTextSlot, linkApprovedAssetToProjectSlot, listProjectSlotAccess } from "./core/project-slot-customization";
 import { clearProjectProfile, getProjectProfile, setProjectProfileFromAsset, setProjectProfileFromCandidate } from "./core/project-profile";
@@ -150,7 +150,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.55" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.57" });
 
   server.registerTool("verificar_saude", {
     description: "Health check leve do Core. Sempre expõe core_version; D1/R2 são probes mínimos e não fazem varredura de catálogo.",
@@ -160,12 +160,12 @@ function createServer(env: Env, request: Request) {
       env.DB.prepare("SELECT 1 AS ok").first().then(()=>true).catch(()=>false),
       env.MEDIA.list({ limit: 1 }).then(()=>true).catch(()=>false),
     ]);
-    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.55", core_version:"0.20.55", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
+    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.57", core_version:"0.20.57", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
   });
   server.registerTool("obter_versao_core", {
     description: "Retorna a versão implantada do Core sem consultar D1, R2 ou Queue. Use para confirmar sincronização App ↔ Core mesmo durante bloqueio de cota D1.",
     inputSchema: {},
-  }, async () => output({ok:true,service:"corvo-core",version:"0.20.55",core_version:"0.20.55",schema_contract_version:"2.27.0",d1_read_required:false}));
+  }, async () => output({ok:true,service:"corvo-core",version:"0.20.57",core_version:"0.20.57",schema_contract_version:"2.27.0",d1_read_required:false}));
 
   server.registerTool("auditar_integridade_d1", {
     description: "Audita integridade lógica do D1 sem alterar dados. Separa orfandades históricas preservadas de inconsistências criadas pela V2.",
@@ -499,7 +499,7 @@ function createServer(env: Env, request: Request) {
   }, async ({ limite, cursor }) => output(await listAutomaticProjects(env, limite || 50, cursor)));
 
   server.registerTool("listar_projetos_acionaveis", {
-    description: "CONTROL PLANE PREFERENCIAL PARA AGENTES: retorna somente projetos ACTIVE com next_action real, estado mínimo e tags. Use primeiro em cada rodada; só abra obter_slot_projeto depois de escolher um projeto desta lista.",
+    description: "CONTROL PLANE PREFERENCIAL PARA AGENTES: retorna somente projetos ACTIVE com next_action real, estado mínimo e tags. Use primeiro em cada rodada; em seguida use obter_pendencias_projeto. Só abra obter_slot_projeto se precisar de detalhe visual/conteúdo.",
     inputSchema: { limite:z.number().int().min(1).max(100).optional(), tags:z.array(z.string()).max(20).optional(), next_actions:z.array(z.string()).max(20).optional() },
   }, async ({limite,tags,next_actions}) => output(await listActionableProjects(env,{limit:limite||50,tagKeys:tags,nextActions:next_actions})));
 
@@ -527,6 +527,11 @@ function createServer(env: Env, request: Request) {
     description: "HOT PATH obrigatório para rechecagens: lê somente automatic_projects + contagem indexada de PSLOTs; sem arquivos, políticas, logs, candidatas ou R2. since_version igual retorna not_modified em uma única busca por PK.",
     inputSchema: { projeto_id:z.string().min(1), since_version:z.number().int().optional() },
   }, async ({ projeto_id, since_version }) => output((await getShortOperationalSnapshot(env,projeto_id,since_version)) || {error:"NOT_FOUND"}));
+
+  server.registerTool("obter_pendencias_projeto", {
+    description: "FAST BLOCKER SUMMARY: diz exatamente o que falta para o projeto concluir (slots sem imagem, relink, QA pendente e arquivos finais) sem abrir roteiro, candidatas, políticas, logs ou R2. Use antes de vasculhar obter_slot_projeto.",
+    inputSchema: { projeto_id:z.string().min(1) },
+  }, async ({ projeto_id }) => output((await getProjectBlockers(env,projeto_id)) || {error:"NOT_FOUND"}));
 
   server.registerTool("validar_consistencia", {
     description: "Executa uma checagem de integridade D1↔R2 e identifica r2_key compartilhadas sem alterar dados.",
