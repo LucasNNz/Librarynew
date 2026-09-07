@@ -2,7 +2,7 @@
   "version": "0.20.53",
   "schema": "2.27.0",
   "feature": "D1 read optimization: light control plane, indexed hot paths, queue compaction, state-version short-circuit and route telemetry",
-  "passed": 37,
+  "passed": 36,
   "total": 44,
   "ok": false,
   "failed": [
@@ -12,7 +12,8 @@
     "version_worker_0_20_53",
     "version_mcp_0_20_53",
     "bundle_unbuilt_for_0_20_53",
-    "short_snapshot_not_heavy_snapshot"
+    "short_snapshot_not_heavy_snapshot",
+    "reconcile_eliminates_worker_n_plus_one"
   ],
   "checks": {
     "version_app_0_20_53": false,
@@ -37,7 +38,7 @@
     "short_snapshot_only_project_plus_pslot_counts": true,
     "legacy_reconcile_has_checkpoint": true,
     "legacy_reconcile_reads_items_scenes_slots_in_batch": true,
-    "reconcile_eliminates_worker_n_plus_one": true,
+    "reconcile_eliminates_worker_n_plus_one": false,
     "reconcile_state_version_only_when_changed": true,
     "detail_read_no_longer_forces_derived_workflow_scan": true,
     "slot_policy_resolution_is_batched": true,

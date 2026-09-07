@@ -257,14 +257,22 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
   // PRODUCTION_SLOT is the source of truth for production progress. Reconcile stale legacy PITEMs
   // before deriving project counters so a 102/102 FROZEN project cannot still look COLLECTING/RELINK_REQUIRED.
   const legacyItemReconciliation=await reconcileLegacyProjectItemsFromProduction(env,projectId).catch(error=>({error:error instanceof Error?error.message:String(error),changed:0}));
-  const [itemsResult,activeWorkResult] = await env.DB.batch<Record<string,unknown>>([
+  const [itemsResult,workResult] = await env.DB.batch<Record<string,unknown>>([
     env.DB.prepare("SELECT * FROM automatic_project_items WHERE project_id=? ORDER BY priority DESC,created_at ASC").bind(projectId),
-    env.DB.prepare("SELECT id,item_id,status,worker_type,stage FROM worker_work_items WHERE project_id=? AND status IN ('READY','LEASED')").bind(projectId),
+    // Read the small project-local worker set once. Historical rows matter because the strict
+    // UNIQUE(scope_type,scope_id,stage) key can block a new INSERT even when no READY/LEASED row exists.
+    env.DB.prepare("SELECT id,scope_type,scope_id,item_id,status,worker_type,stage,created_at,completed_at FROM worker_work_items WHERE project_id=?").bind(projectId),
   ]);
   const allItems = itemsResult.results || [];
   const items = allItems.filter(item=>String(item.status||"").toUpperCase()!=="RETIRED");
   const activeWorkByItem=new Map<string,Record<string,unknown>>();
-  for(const row of activeWorkResult.results||[]){const itemId=String(row.item_id||"");if(itemId&&!activeWorkByItem.has(itemId))activeWorkByItem.set(itemId,row);}
+  const historicalWorkByUnique=new Map<string,Record<string,unknown>>();
+  for(const row of workResult.results||[]){
+    const itemId=String(row.item_id||"");const status=String(row.status||"").toUpperCase();
+    if(itemId&&["READY","LEASED"].includes(status)&&!activeWorkByItem.has(itemId))activeWorkByItem.set(itemId,row);
+    const key=`${String(row.scope_type||"")}\u0000${String(row.scope_id||"")}\u0000${String(row.stage||"")}`;
+    if(!historicalWorkByUnique.has(key))historicalWorkByUnique.set(key,row);
+  }
   const counts = { total:items.length, approved:0, frozen:0, collecting:0, materializing:0, waitingQa:0, relink:0, technical:0, waitingSeed:0, failed:0, pending:0 };
   const statements:D1PreparedStatement[] = [];
   const ts = nowMs();
@@ -288,10 +296,29 @@ export async function reconcileAutomaticProject(env: Env, projectId: string) {
         const {stage,workerType}=workerStageForItem(status);
         const ready = Number(item.stage_ready_at || item.updated_at || ts);
         const original = Number(item.original_ready_at || item.created_at || ready);
-        const workId=id("WORK");
-        statements.push(env.DB.prepare(`INSERT INTO worker_work_items (id,scope_type,scope_id,project_id,project_domain,item_id,stage,worker_type,priority,resume_priority,status,ready_at,original_ready_at,attempts,last_action,payload_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,'READY',?,?,0,'RECONCILE',?, ?,?)`)
-          .bind(workId,"PROJECT_ITEM",itemId,projectId,String(project.project_domain||"GENERAL"),itemId,stage,workerType,Number(item.priority||1),ready,original,JSON.stringify({term:item.term,universe:item.universe,target_file:item.target_file}),ts,ts));
-        activeWorkByItem.set(itemId,{id:workId,item_id:itemId,status:"READY",worker_type:workerType,stage});
+        const strictKey=`PROJECT_ITEM\u0000${itemId}\u0000${stage}`;
+        const historical=historicalWorkByUnique.get(strictKey);const historicalStatus=String(historical?.status||"").toUpperCase();
+        if(historical&&["CANCELLED","FAILED","SUPERSEDED"].includes(historicalStatus)){
+          // Reuse the same strict-unique row instead of colliding with it. History remains in worker_events.
+          statements.push(env.DB.prepare(`UPDATE worker_work_items SET status='READY',worker_type=?,project_domain=?,priority=?,ready_at=?,original_ready_at=COALESCE(original_ready_at,?),completed_at=NULL,last_action='RECONCILE_REUSE_UNIQUE_ROW',lease_owner_worker_id=NULL,lease_execution_id=NULL,lease_started_at=NULL,lease_last_seen_at=NULL,lease_expires_at=NULL,payload_json=?,updated_at=? WHERE id=? AND status IN ('CANCELLED','FAILED','SUPERSEDED')`)
+            .bind(workerType,String(project.project_domain||"GENERAL"),Number(item.priority||1),ready,original,JSON.stringify({term:item.term,universe:item.universe,target_file:item.target_file}),ts,historical.id));
+          activeWorkByItem.set(itemId,{...historical,status:"READY",worker_type:workerType,stage});
+        } else {
+          const workId=id("WORK");
+          // A COMPLETED row is immutable audit history. If it occupies the old strict key, create
+          // revision-scoped logical work instead of overwriting/deleting the completed record.
+          const scopeType=historicalStatus==="COMPLETED"?"PROJECT_ITEM_REVISION":"PROJECT_ITEM";
+          const scopeId=historicalStatus==="COMPLETED"?`${itemId}:SV${Number(project.state_version||1)}:${stage}`:itemId;
+          const revisionKey=`${scopeType}\u0000${scopeId}\u0000${stage}`;const revisionExisting=historicalWorkByUnique.get(revisionKey);
+          if(revisionExisting&&["CANCELLED","FAILED","SUPERSEDED"].includes(String(revisionExisting.status||"").toUpperCase())){
+            statements.push(env.DB.prepare(`UPDATE worker_work_items SET status='READY',worker_type=?,project_domain=?,priority=?,ready_at=?,completed_at=NULL,last_action='RECONCILE_REUSE_REVISION_ROW',lease_owner_worker_id=NULL,lease_execution_id=NULL,lease_started_at=NULL,lease_last_seen_at=NULL,lease_expires_at=NULL,payload_json=?,updated_at=? WHERE id=?`).bind(workerType,String(project.project_domain||"GENERAL"),Number(item.priority||1),ready,JSON.stringify({term:item.term,universe:item.universe,target_file:item.target_file}),ts,revisionExisting.id));
+            activeWorkByItem.set(itemId,{...revisionExisting,status:"READY",worker_type:workerType,stage});
+          } else if(!revisionExisting){
+            statements.push(env.DB.prepare(`INSERT INTO worker_work_items (id,scope_type,scope_id,project_id,project_domain,item_id,stage,worker_type,priority,resume_priority,status,ready_at,original_ready_at,attempts,last_action,payload_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,'READY',?,?,0,'RECONCILE',?, ?,?)`)
+              .bind(workId,scopeType,scopeId,projectId,String(project.project_domain||"GENERAL"),itemId,stage,workerType,Number(item.priority||1),ready,original,JSON.stringify({term:item.term,universe:item.universe,target_file:item.target_file}),ts,ts));
+            activeWorkByItem.set(itemId,{id:workId,item_id:itemId,status:"READY",worker_type:workerType,stage,scope_type:scopeType,scope_id:scopeId});historicalWorkByUnique.set(revisionKey,{id:workId,status:"READY",scope_type:scopeType,scope_id:scopeId,stage});
+          }
+        }
       }
     }
   }

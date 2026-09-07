@@ -39,6 +39,7 @@ import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnap
 import { createSlotTag, findSlotsByTag, listProjectTags, listSlotTags, removeSlotTag } from "./core/slot-tags";
 import { applyPersistentPolicyToProject, createPersistentPolicy, editPersistentPolicy, listPersistentPolicies, listProjectPersistentPolicies, removePersistentPolicy, removePersistentPolicyFromProject, resolveApplicablePolicies, setPersistentPolicyActive } from "./core/persistent-policies";
 import { createD1TelemetryEnv, detectMcpToolName, recordD1RouteTelemetry, type D1RouteMetrics } from "./core/d1-telemetry";
+import { deduplicateWorkerUnique, listObsoleteProductionSlots, listWorkerUniqueConflicts, repairProjectIntegrity, repairProjectWorkerItems, retireObsoleteProductionSlots } from "./core/integrity-repair";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -150,7 +151,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.57" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.58" });
 
   server.registerTool("verificar_saude", {
     description: "Health check leve do Core. Sempre expõe core_version; D1/R2 são probes mínimos e não fazem varredura de catálogo.",
@@ -160,12 +161,12 @@ function createServer(env: Env, request: Request) {
       env.DB.prepare("SELECT 1 AS ok").first().then(()=>true).catch(()=>false),
       env.MEDIA.list({ limit: 1 }).then(()=>true).catch(()=>false),
     ]);
-    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.57", core_version:"0.20.57", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
+    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.58", core_version:"0.20.58", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
   });
   server.registerTool("obter_versao_core", {
     description: "Retorna a versão implantada do Core sem consultar D1, R2 ou Queue. Use para confirmar sincronização App ↔ Core mesmo durante bloqueio de cota D1.",
     inputSchema: {},
-  }, async () => output({ok:true,service:"corvo-core",version:"0.20.57",core_version:"0.20.57",schema_contract_version:"2.27.0",d1_read_required:false}));
+  }, async () => output({ok:true,service:"corvo-core",version:"0.20.58",core_version:"0.20.58",schema_contract_version:"2.27.0",d1_read_required:false}));
 
   server.registerTool("auditar_integridade_d1", {
     description: "Audita integridade lógica do D1 sem alterar dados. Separa orfandades históricas preservadas de inconsistências criadas pela V2.",
@@ -1061,6 +1062,36 @@ function createServer(env: Env, request: Request) {
   server.registerTool("obter_telemetria_leases_supervisor", { description:"Telemetria de leases do Supervisor.", inputSchema:{} }, async()=>output(await supervisorLeaseTelemetry(env)));
   server.registerTool("executar_dispatcher_workers", { description:"Compacta duplicatas/stale READY e reconcilia somente projetos acionáveis; evita varrer todos os projetos em cada tick.", inputSchema:{ limite_projetos:z.number().int().min(1).max(100).optional() } }, async({limite_projetos})=>{const compact=await compactWorkerQueue(env);const projects=await listActionableProjects(env,{limit:limite_projetos||25});const actionable=projects.items as Record<string,unknown>[];let reconciled=0;for(const p of actionable){await reconcileAutomaticProject(env,String(p.id));reconciled++;}return output({compact,reconciled,selected_projects:actionable.map(p=>({id:p.id,next_action:p.next_action,state_version:p.state_version})),health:await dispatcherHealth(env)});});
   server.registerTool("compactar_fila_workers", { description:"Cancela READY cujo PITEM já é terminal/ASSIGNED_FOR_QA e deduplica READY equivalentes, preservando histórico como CANCELLED. Use para reduzir backlog legado sem apagar registros.", inputSchema:{} }, async()=>output(await compactWorkerQueue(env)));
+
+  server.registerTool("listar_conflitos_worker_work_items_unique", {
+    description:"Somente leitura: diagnostica colisões do contrato UNIQUE(scope_type,scope_id,stage), incluindo duplicatas físicas legadas e linhas históricas que bloqueariam uma nova reconciliação. Informa qual registro preservar e qual ação é segura.",
+    inputSchema:{ projeto_id:z.string().optional() },
+  }, async(v)=>output(await listWorkerUniqueConflicts(env,{projectId:v.projeto_id})));
+
+  server.registerTool("deduplicar_worker_work_items_unique", {
+    description:"Reparo atômico/idempotente do UNIQUE de worker_work_items. Preserva LEASED válido e COMPLETED; supersede duplicatas sem apagar histórico e reativa CANCELLED/FAILED seguros quando eles bloqueiam a chave. Aceita projeto_id opcional.",
+    inputSchema:{ projeto_id:z.string().optional() },
+  }, async(v)=>output(await deduplicateWorkerUnique(env,{projectId:v.projeto_id})));
+
+  server.registerTool("reparar_worker_work_items_projeto", {
+    description:"Reparo cirúrgico por projeto: dedupe UNIQUE, limpa READY órfão/terminal, recupera leases expirados, reutiliza blockers seguros, cria somente trabalho faltante e valida conflitos restantes.",
+    inputSchema:{ projeto_id:z.string().min(1) },
+  }, async(v)=>output(await repairProjectWorkerItems(env,v.projeto_id)));
+
+  server.registerTool("listar_production_slots_obsoletos", {
+    description:"Somente leitura: compara SCRIPT ativo com PSLOTs ativos e lista slots que não existem mais no SCRIPT atual. Não altera D1/R2.",
+    inputSchema:{ projeto_id:z.string().min(1) },
+  }, async(v)=>output(await listObsoleteProductionSlots(env,v.projeto_id)));
+
+  server.registerTool("aposentar_production_slots_obsoletos", {
+    description:"Aposenta atomicamente PSLOTs ausentes do SCRIPT atual, preservando histórico/assets/R2 e retirando-os das contagens ativas. Reconciliará PITEM/worker correspondente. dry_run=true por padrão.",
+    inputSchema:{ projeto_id:z.string().min(1), dry_run:z.boolean().optional() },
+  }, async(v)=>output(await retireObsoleteProductionSlots(env,{projectId:v.projeto_id,dryRun:v.dry_run})));
+
+  server.registerTool("reparar_integridade_projeto", {
+    description:"Reparo estrutural de alto nível: SCRIPT→PSLOTs→PITEMs→worker_work_items→contagens. Dry-run por padrão; para aplicar exige confirmar=true. Idempotente por operation_id quando fornecido.",
+    inputSchema:{ projeto_id:z.string().min(1), dry_run:z.boolean().optional(), confirmar:z.boolean().optional(), operation_id:z.string().optional() },
+  }, async(v)=>output(await repairProjectIntegrity(env,{projectId:v.projeto_id,dryRun:v.dry_run,confirm:v.confirmar,operationId:v.operation_id})));
 
   server.registerTool("obter_estado_supervisor", { description:"Estado consolidado do Supervisor; pode ser filtrado por projeto no painel.", inputSchema:{} }, async()=>output(await supervisorStatus(env)));
   server.registerTool("obter_painel_supervisor", { description:"Painel Supervisor com leases, decisões e candidatas pendentes.", inputSchema:{ projeto_id:z.string().optional() } }, async({projeto_id})=>output(await supervisorPanel(env,projeto_id)));

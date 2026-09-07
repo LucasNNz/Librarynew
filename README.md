@@ -1,3 +1,15 @@
+# Corvo Library V2 0.20.58 — Project Integrity Repair
+
+Reparo estrutural seguro para colisões `UNIQUE(scope_type,scope_id,stage)` de workers e PSLOTs legados ausentes do SCRIPT atual.
+
+Novas MCPs: `listar_conflitos_worker_work_items_unique`, `deduplicar_worker_work_items_unique`, `reparar_worker_work_items_projeto`, `listar_production_slots_obsoletos`, `aposentar_production_slots_obsoletos` e `reparar_integridade_projeto`.
+
+Schema permanece **2.27.0**, sem migration nova.
+
+Veja `RELEASE_0_20_58_PROJECT_INTEGRITY_REPAIR.md` e `VALIDATION_0_20_58_PROJECT_INTEGRITY_REPAIR.md`.
+
+---
+
 # Corvo Library V2 0.20.57 — Legacy PSLOT Retirement
 
 Hotfix para aposentar PSLOTs legados que não existem mais no SCRIPT atual, preservando histórico/assets/R2 e evitando `qa_status = NULL` na reconciliação.
