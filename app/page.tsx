@@ -82,7 +82,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const APP_VERSION = "0.20.54";
+const APP_VERSION = "0.20.55";
 const EXPECTED_CORE_VERSION = APP_VERSION;
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
@@ -443,6 +443,9 @@ export default function Home() {
   const [localConnection, setLocalConnection] = useState<BrowserConnection | null>(null);
   const [connectionResolved, setConnectionResolved] = useState(false);
   const [cloudflareToken, setCloudflareToken] = useState("");
+  const [browserRecoveryToken, setBrowserRecoveryToken] = useState("");
+  const [browserRecoveryBusy, setBrowserRecoveryBusy] = useState(false);
+  const [browserRecoveryMessage, setBrowserRecoveryMessage] = useState("");
   const [cloudflareAccountId, setCloudflareAccountId] = useState("");
   const [cloudflareAccounts, setCloudflareAccounts] = useState<Array<{id:string;name:string}>>([]);
   const [autoSetupStage, setAutoSetupStage] = useState("");
@@ -1088,6 +1091,7 @@ export default function Home() {
 
       let bootResult:Awaited<ReturnType<typeof readBoot>>|null=null;
       try{bootResult=await readBoot();}catch{bootResult=null;}
+      if(bootResult?.response.status===401||String(bootResult?.value?.error||"").toUpperCase()==="UNAUTHORIZED"||String(bootResult?.value?.code||"").toUpperCase()==="BROWSER_SESSION_INVALID") throw new Error("SESSION_UNAUTHORIZED");
       let bootCore=bootResult?.response.ok?unwrapCoreHealth(bootResult.value?.health):({ok:false} as CoreHealthState);
       let coreReady=Boolean(bootResult?.response.ok && bootCore.version===EXPECTED_CORE_VERSION && bootCore.schemaContract?.ready===true);
 
@@ -1175,15 +1179,20 @@ export default function Home() {
   }, [active, assetView, fetchCatalog, localConnection]);
 
   useEffect(() => {
-    if (!localConnection || releaseGateState !== "done") return;
+    if (!localConnection) return;
+    if (currentView === "Configurações") {
+      void refreshCoreVersion();
+      if(releaseGateState === "done"){void refreshSettings();void refreshHealth();}
+      return;
+    }
+    if (releaseGateState !== "done") return;
     if (currentView === "Inbox candidatas") void refreshCandidates();
     if (["Projetos","Solicitações","Lotes","Importações"].includes(currentView)) void refreshRecords(currentView);
     if (currentView === "Importar & R2") void refreshRecords("Importações");
     if (currentView === "Operação") void refreshOperations();
     if (currentView === "Políticas") void refreshPolicies();
     if (currentView === "Estoque & giro") void refreshStock();
-    if (currentView === "Configurações") { void refreshSettings(); void refreshHealth(); void refreshCoreVersion(); }
-  }, [currentView, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings, refreshHealth, refreshCoreVersion, localConnection]);
+  }, [currentView, releaseGateState, refreshCandidates, refreshRecords, refreshOperations, refreshPolicies, refreshStock, refreshSettings, refreshHealth, refreshCoreVersion, localConnection]);
 
   useEffect(() => {
     if (!operation || ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(operation.status)) return;
@@ -1567,6 +1576,25 @@ export default function Home() {
     }finally{setMcpKeyBusy(false);}
   }
 
+  async function recoverBrowserAccess() {
+    if(!localConnection||browserRecoveryBusy)return;
+    const token=browserRecoveryToken.trim();
+    if(!token){setBrowserRecoveryMessage("Cole o Cloudflare API Token usado para administrar esta instalação.");return;}
+    setBrowserRecoveryBusy(true);setBrowserRecoveryMessage("Reconectando este navegador sem alterar D1/R2…");
+    try{
+      const response=await fetch("/api/setup/cloudflare/recover-browser",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({apiToken:token,accountId:localConnection.accountId,workerName:localConnection.workerName,coreUrl:localConnection.coreUrl,deviceLabel:navigator.userAgent.slice(0,80)})});
+      const value=await response.json().catch(()=>({})) as any;
+      if(!response.ok||!value?.browserToken)throw new Error(value?.error||`BROWSER_RECOVERY_HTTP_${response.status}`);
+      const nextConnection:BrowserConnection={...localConnection,appKey:String(value.browserToken),savedAt:Date.now()};
+      saveBrowserConnection(nextConnection);setLocalConnection(nextConnection);
+      setDetectedCoreVersion(String(value.coreVersion||EXPECTED_CORE_VERSION));
+      setBrowserRecoveryToken("");
+      setBrowserRecoveryMessage(`Navegador reconectado${value.updatedCore?" e Core atualizado":""}. Validando dados reais…`);
+      setReleaseGateMessage("");setReleaseGateState("idle");
+    }catch(error){setBrowserRecoveryMessage(error instanceof Error?error.message:"BROWSER_RECOVERY_FAILED");}
+    finally{setBrowserRecoveryBusy(false);}
+  }
+
   async function updateCoreFromApp() {
     setCoreUpdateBusy(true); setInfraMessage("");
     try {
@@ -1674,6 +1702,7 @@ Tudo é configurado pela própria tela Configurações.
   const coreVersionMismatch = Boolean(visibleCoreVersion && visibleCoreVersion !== EXPECTED_CORE_VERSION);
   const coreVersionSynced = visibleCoreVersion === EXPECTED_CORE_VERSION;
   const coreVersionStatus = !visibleCoreVersion ? "UNKNOWN" : coreVersionMismatch ? "OUTDATED" : health?.core.ok === false ? "SYNCED_WITH_ALERT" : "SYNCED";
+  const sessionUnauthorized = releaseGateState === "error" && /UNAUTHORIZED|BROWSER_SESSION_INVALID|SESSION_UNAUTHORIZED/i.test(releaseGateMessage);
 
   return <main className="shell shellV18">
     <aside className="sidebar sidebarV18">
@@ -1693,8 +1722,8 @@ Tudo é configurado pela própria tela Configurações.
       <div className="content contentV18">
         {!connectionResolved && <section className="authoritativeBoot"><span className="eyebrow">FONTE ÚNICA</span><h2>Carregando conexão…</h2><p>Nenhum dado é exibido antes de confirmar a fonte real.</p></section>}
         {connectionResolved && !localConnection && <section className="authoritativeBoot"><span className="eyebrow">SEM FONTE DE DADOS</span><h2>Conecte a infraestrutura</h2><p>A Library não usa mock, cache recuperado ou conteúdo de demonstração. Conecte D1/R2 para carregar dados reais.</p><button className="primary" onClick={()=>openInfrastructureSetup(false)}>Configurar infraestrutura</button></section>}
-        {connectionResolved && localConnection && releaseGateState !== "done" && <section className={`authoritativeBoot ${releaseGateState}`}><span className="eyebrow">D1 REAL</span><h2>{releaseGateState === "error" ? "Não foi possível ler o D1" : "Carregando dados reais…"}</h2><p>{releaseGateMessage || "A interface permanece vazia até o D1 responder."}</p>{releaseGateState === "error" && <div className="inlineActions"><button className="primary" onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button></div>}</section>}
-        {dataReady && <>
+        {connectionResolved && localConnection && releaseGateState !== "done" && currentView !== "Configurações" && <section className={`authoritativeBoot ${releaseGateState}`}><span className="eyebrow">{sessionUnauthorized?"SESSÃO DO NAVEGADOR":"D1 REAL"}</span><h2>{sessionUnauthorized?"Este navegador precisa ser reconectado":releaseGateState === "error" ? "Não foi possível ler o D1" : "Carregando dados reais…"}</h2><p>{sessionUnauthorized?"A infraestrutura continua preservada. Abra Configurações para recuperar somente a sessão deste computador.":(releaseGateMessage || "A interface permanece vazia até o D1 responder.")}</p>{releaseGateState === "error" && <div className="inlineActions">{sessionUnauthorized&&<button className="primary" onClick={()=>setActive("Configurações")}>Abrir Configurações</button>}<button className={sessionUnauthorized?"secondary":"primary"} onClick={()=>{setReleaseGateState("idle");setReleaseGateMessage("");}}>Tentar novamente</button></div>}</section>}
+        {(dataReady || currentView === "Configurações") && <>
         {active === "Visão geral" ? <div className="overviewTitle"><span>{greeting}, Corvo.</span><h1>Visão geral da <em>Corvo Library</em></h1><p>Acompanhe projetos, agentes e execuções em tempo real.</p></div> : <div className="titleRow titleRowV18"><div><span className="pageEyebrow">CORVO / {active.toUpperCase()}</span><h1>{active}</h1><p>{pageDescription}</p></div>{currentView === "Configurações" && <div className="titleActions"><button className="setupButton mcpConnectButton" onClick={openMcpConnection}>↗ Conectar MCP</button><button className="setupButton" onClick={() => openInfrastructureSetup(Boolean(infraProfile))}>⚙ {infraProfile ? "Alterar configuração" : "Configurar infraestrutura"}</button></div>}</div>}
 
         {active === "Visão geral" && <div className="overviewDashboard">
@@ -2013,6 +2042,7 @@ Tudo é configurado pela própria tela Configurações.
 
         {currentView === "Configurações" && <section className="modulePanel configPanel">
           <span className="eyebrow">INFRAESTRUTURA AUTOSSUFICIENTE</span><h2>Configura uma vez e fica cravado</h2><p>A própria Corvo Library cria/verifica o Core na Cloudflare. Nada para instalar no computador e nenhuma variável manual na hospedagem do app. O D1 guarda somente o manifesto não secreto; chaves sensíveis ficam como secrets do Worker.</p>
+          {sessionUnauthorized && localConnection && <div className="sessionRecoveryCard"><div><span className="eyebrow">RECUPERAÇÃO DE SESSÃO</span><strong>Infraestrutura encontrada; somente este navegador perdeu a credencial válida.</strong><p>Isso pode acontecer quando uma instalação antiga regenerou a chave compartilhada em outro computador. A recuperação abaixo não apaga D1/R2, não recria a infraestrutura e, na 0.20.55, não invalida os outros PCs: cada navegador recebe seu próprio token.</p></div><label>Cloudflare API Token<input type="password" autoComplete="off" value={browserRecoveryToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setBrowserRecoveryToken(event.target.value)} placeholder="Cole o token administrativo da Cloudflare"/></label><div className="inlineActions"><button className="primary" disabled={browserRecoveryBusy} onClick={()=>void recoverBrowserAccess()}>{browserRecoveryBusy?"Recuperando…":"Recuperar acesso deste navegador"}</button><button className="secondary" onClick={()=>void refreshCoreVersion()}>Verificar Core sem D1</button></div>{browserRecoveryMessage&&<small className="mcpKeyStatus">{browserRecoveryMessage}</small>}</div>}
           <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : localConnection ? "Conexão local encontrada — verificando Core" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Cole uma única credencial Cloudflare e a Library cuida de D1, R2, Queue, Worker e restauração."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
           {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
           <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || localConnection?.d1DatabaseName || "corvo-library-v2"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || localConnection?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || localConnection?.queueName || "corvo-materialize-v2"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>APP AUTH</b><span>Chave de sessão da Library · não é credencial Cloudflare</span><em>{health?.core.appAuth || (localConnection ? "salva" : "aguardando")}</em></div><div><b>CONTROLE</b><span>API Token Cloudflare · secret exclusivo do Worker</span><em>{health?.core.control || "aguardando"}</em></div></div>

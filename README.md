@@ -1,3 +1,22 @@
+# Corvo Library V2 0.20.55 — Auth Recovery + Settings Bypass
+
+## Destaques 0.20.55
+
+- **Configurações nunca mais fica bloqueada** pelo gate de boot do D1;
+- `401 UNAUTHORIZED` deixa de ser exibido como erro de D1 e passa a ser tratado como **sessão do navegador inválida**;
+- nova recuperação de navegador usando Cloudflare API Token, sem apagar D1/R2/Queue;
+- recuperação atualiza somente o secret de controle e publica o Core preservando bindings existentes;
+- cada navegador recebe um **DEVICE_TOKEN_V1** independente, assinado pelo Core e válido por até 5 anos;
+- sessões antigas por `CORVO_APP_KEY` continuam aceitas para compatibilidade;
+- um novo computador não regenera mais `CORVO_APP_KEY`, `CORVO_INTERNAL_KEY` ou `CORVO_SIGNING_KEY` quando o Worker já existe;
+- `GET /version` é público, D1-free e permanece acessível mesmo quando a sessão local está inválida;
+- nova rota controlada `POST /control/pair-browser`, protegida pelo token de controle;
+- schema permanece **2.27.0**, sem migration nova.
+
+Consulte `RELEASE_0_20_55_AUTH_RECOVERY_SETTINGS_BYPASS.md` e `VALIDATION_0_20_55_AUTH_RECOVERY_SETTINGS_BYPASS.md`.
+
+---
+
 # Corvo Library V2 0.20.54 — App/Core Version Sync
 
 ## Destaques 0.20.54

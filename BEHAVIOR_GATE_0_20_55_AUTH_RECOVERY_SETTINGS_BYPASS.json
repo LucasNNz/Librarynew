@@ -1,0 +1,138 @@
+{
+  "version": "0.20.55",
+  "passed": 26,
+  "total": 26,
+  "ok": true,
+  "checks": [
+    {
+      "name": "app version 0.20.55",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "core version 0.20.55",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "settings bypasses authoritative data gate",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "boot blocker hidden in settings",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "unauthorized is classified as browser session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "settings contains session recovery UI",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "recovery updates only browser connection",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "version route public and d1 free",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "version route is before auth",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "pair route is before auth",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "pair route requires control token",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "browser device token supported",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "legacy app key remains compatible",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "device token uses internal-key hmac",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "device tokens expire",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "recovery route does not read D1",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "recovery refreshes control token only",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "recovery preserves worker bindings",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "keep_bindings preserves secrets and data bindings",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "existing worker setup does not regenerate secrets",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "existing worker gets per-browser pairing",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "fresh worker still creates secrets",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "provision returns device token to browser",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "generated bundle remains fail-safe UNBUILT",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "recovery route validates workers.dev",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "recovery never deletes or recreates infra",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}

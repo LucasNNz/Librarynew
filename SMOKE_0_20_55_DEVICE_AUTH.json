@@ -1,0 +1,9 @@
+{
+  "version": "0.20.55",
+  "deviceToken": true,
+  "legacy": true,
+  "bad": false,
+  "pair": true,
+  "tokenPrefix": true,
+  "ok": true
+}
