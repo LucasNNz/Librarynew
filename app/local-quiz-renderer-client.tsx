@@ -146,7 +146,8 @@ export default function LocalQuizRendererClient() {
       if (!result?.ok) {
         return await rpc('complete', { owner: owner.current, job_id: job.id, revision: job.revision, result: { ...result, renderer: 'LOCAL_BROWSER' } });
       }
-      const { externalize } = await import(/* webpackIgnore: true */ '/quiz-studio/host-client.js');
+      const moduleUrl = '/quiz-studio/host-client.js';
+      const { externalize } = await import(/* webpackIgnore: true */ moduleUrl);
       const project = await externalize(studio.snapshot(), (blob: Blob) => request('media', blob, true));
       const summary = studio.getSummary ? studio.getSummary() : undefined;
       const finalResult = cancelled ? { ok: false, error: 'CANCEL_REQUESTED', renderer: 'LOCAL_BROWSER' } : { ...result, renderer: 'LOCAL_BROWSER' };
