@@ -74,6 +74,17 @@ const defaultInfrastructureDraft: InfrastructureDraft = {
   dlqName:"corvo-materialize-v2-dlq",
 };
 
+function infrastructureDraftFromConnection(connection: BrowserConnection): InfrastructureDraft {
+  return {
+    bffProjectName:"corvo-library-v2",
+    workerName:connection.workerName || defaultInfrastructureDraft.workerName,
+    d1DatabaseName:connection.d1DatabaseName || defaultInfrastructureDraft.d1DatabaseName,
+    r2BucketName:connection.r2BucketName || defaultInfrastructureDraft.r2BucketName,
+    queueName:connection.queueName || defaultInfrastructureDraft.queueName,
+    dlqName:connection.dlqName || defaultInfrastructureDraft.dlqName,
+  };
+}
+
 const primaryNav = [
   { id:"Visão geral", icon:"grid" as UiIconName, label:"Visão geral" },
   { id:"Assets", icon:"assets" as UiIconName, label:"Assets" },
@@ -293,6 +304,15 @@ function readViewCache<T>(key:string,maxAgeMs=10*60_000):T|null {
 function writeViewCache<T>(key:string,value:T){
   if(typeof window==="undefined")return;
   try{window.sessionStorage.setItem(`${VIEW_CACHE_PREFIX}${key}`,JSON.stringify({savedAt:Date.now(),value}));}catch{/* cache is opportunistic */}
+}
+function clearViewCache(){
+  if(typeof window==="undefined")return;
+  try{
+    for(let i=window.sessionStorage.length-1;i>=0;i-=1){
+      const key=window.sessionStorage.key(i);
+      if(key?.startsWith(VIEW_CACHE_PREFIX))window.sessionStorage.removeItem(key);
+    }
+  }catch{/* cache is opportunistic */}
 }
 
 function isTransientFetchError(error:unknown) {
@@ -1129,9 +1149,19 @@ export default function Home() {
         if(currentVersion!==EXPECTED_CORE_VERSION){
           setReleaseGateMessage("Atualizando o Core seguro…");
           try{
-            const updateResponse=await fetch("/api/control/update-core",{method:"POST",cache:"no-store"});
-            if(!updateResponse.ok){const value=await updateResponse.json().catch(()=>({})) as any;throw new Error(value?.detail||value?.error||`CORE_UPDATE_HTTP_${updateResponse.status}`);}
-          }catch(error){if(!isTransientFetchError(error))throw error;}
+            const updateController=new AbortController();
+            const updateTimeout=window.setTimeout(()=>updateController.abort(),45_000);
+            try{
+              const updateResponse=await fetch("/api/control/update-core",{method:"POST",cache:"no-store",signal:updateController.signal});
+              const updateValue=await updateResponse.json().catch(()=>({})) as any;
+              if(!updateResponse.ok)throw new Error(updateValue?.detail||updateValue?.error||`CORE_UPDATE_HTTP_${updateResponse.status}`);
+              const targetVersion=String(updateValue?.targetVersion||"").trim();
+              if(targetVersion&&targetVersion!==EXPECTED_CORE_VERSION)throw new Error(`CORE_BUNDLE_VERSION_MISMATCH:${targetVersion}:expected=${EXPECTED_CORE_VERSION}`);
+            }finally{window.clearTimeout(updateTimeout);}
+          }catch(error){
+            if(error instanceof DOMException&&error.name==="AbortError")throw new Error("CORE_UPDATE_REQUEST_TIMEOUT");
+            if(!isTransientFetchError(error))throw error;
+          }
           let versionOk=false;
           for(let attempt=0;attempt<30;attempt+=1){
             await sleep(attempt===0?900:Math.min(2200,900+attempt*70));
@@ -1171,7 +1201,14 @@ export default function Home() {
 
   useEffect(() => {
     const dispose = installCorvoFetchBridge();
-    setLocalConnection(readBrowserConnection());
+    const savedConnection=readBrowserConnection();
+    setLocalConnection(savedConnection);
+    if(savedConnection){
+      // Restore all non-secret setup fields from the browser profile before any
+      // D1 read. The Cloudflare API Token is intentionally never persisted.
+      setCloudflareAccountId(savedConnection.accountId || "");
+      setInfraDraft(infrastructureDraftFromConnection(savedConnection));
+    }
     refreshBrowserConnectionProfiles();
     setConnectionResolved(true);
     return dispose;
@@ -1179,8 +1216,13 @@ export default function Home() {
 
   useEffect(() => {
     if (!connectionResolved || !localConnection) return;
+    // Connection metadata is local and must survive a reload even if FAST READ
+    // or the schema gate is still warming up. Settings/health are best-effort
+    // here and are refreshed again after authoritative boot succeeds.
     void refreshCoreVersion();
-  }, [connectionResolved, localConnection, refreshCoreVersion]);
+    void refreshSettings();
+    void refreshHealth();
+  }, [connectionResolved, localConnection, refreshCoreVersion, refreshSettings, refreshHealth]);
 
   useEffect(() => {
     if (!connectionResolved || !localConnection || releaseGateState !== "idle") return;
@@ -1203,8 +1245,12 @@ export default function Home() {
   useEffect(() => {
     if (!localConnection) return;
     if (currentView === "Configurações") {
+      // Configuration is recoverable from the saved browser profile and Core
+      // independently of the dashboard FAST READ gate. Do not make the setup
+      // screen look empty just because the D1 overview is still loading.
       void refreshCoreVersion();
-      if(releaseGateState === "done"){void refreshSettings();void refreshHealth();}
+      void refreshSettings();
+      void refreshHealth();
       return;
     }
     if (releaseGateState !== "done") return;
@@ -1481,9 +1527,11 @@ export default function Home() {
     if(!next)return;
     setActiveConnectionProfileId(profileId);
     setLocalConnection(next);
-    // All dashboard state belongs to the selected Core. Reloading avoids any
-    // stale project/catalog data from the previous installation while the
-    // fetch bridge immediately starts using the newly active profile.
+    setCloudflareAccountId(next.accountId || "");
+    setInfraDraft(infrastructureDraftFromConnection(next));
+    // sessionStorage survives reloads. Clear view caches before switching Core
+    // so SEDE and FILIAL can never inherit each other's cached settings/data.
+    clearViewCache();
     window.location.reload();
   }
 
@@ -1513,7 +1561,10 @@ export default function Home() {
       setLocalConnection(connection);
       refreshBrowserConnectionProfiles();
       setCloudflareAccountId(connection.accountId);
-      setInfraDraft({ bffProjectName:"corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName });
+      setInfraDraft(infrastructureDraftFromConnection(connection));
+      // Remove pre-setup empty snapshots from this tab. They must not mask the
+      // newly persisted profile after a manual reload.
+      clearViewCache();
 
       setAutoSetupStage("Restaurando e preparando o D1…");
       const restoreResponse = await fetch("/api/setup/cloudflare/restore", {
