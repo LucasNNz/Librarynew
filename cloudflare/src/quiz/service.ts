@@ -8,7 +8,8 @@ export class QuizError extends Error { constructor(message:string, public status
 const safeId = (v:unknown) => { if(typeof v!=='string'||! /^[\w-]{1,100}$/.test(v))throw new QuizError('INVALID_ID');return v; };
 const json = (v:unknown) => JSON.stringify(v);
 const uuid = () => crypto.randomUUID();
-const LOCAL_EXECUTOR_PREFIX='local:';
+const LOCAL_EXECUTOR_PREFIX='local-';
+const LEGACY_LOCAL_EXECUTOR_PREFIX='local:';
 const ACTIVE_EXECUTOR_WINDOW_MS=30_000;
 const ACTIVE_LOCAL_EXECUTOR_WINDOW_MS=45_000;
 let ready: Promise<void>|undefined;
@@ -46,16 +47,22 @@ function validateCommand(c:any, batch=false) {
 }
 async function activeExecutorPresence(env:Env){
   const now=Date.now();
-  const localRow=await env.DB.prepare('SELECT COUNT(*) AS count, MAX(seen_at) AS seen FROM quiz_executors WHERE id LIKE ? AND seen_at>?').bind(`${LOCAL_EXECUTOR_PREFIX}%`,now-ACTIVE_LOCAL_EXECUTOR_WINDOW_MS).first<any>();
-  const remoteRow=await env.DB.prepare('SELECT COUNT(*) AS count, MAX(seen_at) AS seen FROM quiz_executors WHERE id NOT LIKE ? AND seen_at>?').bind(`${LOCAL_EXECUTOR_PREFIX}%`,now-ACTIVE_EXECUTOR_WINDOW_MS).first<any>();
+  const localRow=await env.DB.prepare('SELECT COUNT(*) AS count, MAX(seen_at) AS seen FROM quiz_executors WHERE (id LIKE ? OR id LIKE ?) AND seen_at>?').bind(`${LOCAL_EXECUTOR_PREFIX}%`,`${LEGACY_LOCAL_EXECUTOR_PREFIX}%`,now-ACTIVE_LOCAL_EXECUTOR_WINDOW_MS).first<any>();
+  const remoteRow=await env.DB.prepare('SELECT COUNT(*) AS count, MAX(seen_at) AS seen FROM quiz_executors WHERE id NOT LIKE ? AND id NOT LIKE ? AND seen_at>?').bind(`${LOCAL_EXECUTOR_PREFIX}%`,`${LEGACY_LOCAL_EXECUTOR_PREFIX}%`,now-ACTIVE_EXECUTOR_WINDOW_MS).first<any>();
   return {
     local:{count:Number(localRow?.count||0),seen_at:Number(localRow?.seen||0),online:Number(localRow?.count||0)>0},
     external:{count:Number(remoteRow?.count||0),seen_at:Number(remoteRow?.seen||0),online:Number(remoteRow?.count||0)>0}
   };
 }
+async function touchExecutor(env:Env,owner:string,now=Date.now()){
+  await env.DB.prepare('INSERT INTO quiz_executors(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at WHERE quiz_executors.seen_at<?').bind(owner,now,now-8_000).run();
+}
 export async function hasActiveLocalExecutors(env:Env){return (await activeExecutorPresence(env)).local.online;}
 export async function rendererStatus(env:Env){
   const presence=await activeExecutorPresence(env);
+  const now=Date.now();
+  const localLastSeenAt=presence.local.seen_at||null;
+  const localLastSeenMsAgo=localLastSeenAt?Math.max(0,now-localLastSeenAt):null;
   let browserAvailable=false,browserError:string|undefined,limits:any=null;
   if(env.BROWSER){
     try{
@@ -75,15 +82,18 @@ export async function rendererStatus(env:Env){
     browser_closed_ok:browserAvailable||presence.external.online,
     binding:!!env.BROWSER,
     local_executors:presence.local.count,
+    local_last_seen_at:localLastSeenAt,
+    local_last_seen_ms_ago:localLastSeenMsAgo,
+    local_executor_ttl_ms:ACTIVE_LOCAL_EXECUTOR_WINDOW_MS,
     external_executors:presence.external.count,
     fallback_mode:browserAvailable?'CLOUDFLARE_BROWSER_RENDERING':presence.external.online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',
     preference:'LOCAL_FIRST',
     limits,
     error:browserAvailable?undefined:browserError
   };
-  if(browserAvailable)return {online:true,mode:'CLOUDFLARE_BROWSER_RENDERING',browser_closed_ok:true,provider:'BROWSER_RUN',binding:'BROWSER',local_executors:0,external_executors:presence.external.count,fallback_mode:presence.external.online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',preference:'LOCAL_FIRST',limits};
-  if(presence.external.online)return {online:true,mode:'EXTERNAL_EXECUTOR',browser_closed_ok:true,provider:'EXTERNAL_EXECUTOR',binding:!!env.BROWSER,local_executors:0,external_executors:presence.external.count,fallback_mode:'UNAVAILABLE',preference:'LOCAL_FIRST',error:browserError};
-  return {online:false,mode:'UNAVAILABLE',browser_closed_ok:false,provider:'NONE',binding:!!env.BROWSER,local_executors:0,external_executors:0,fallback_mode:'UNAVAILABLE',preference:'LOCAL_FIRST',error:browserError};
+  if(browserAvailable)return {online:true,mode:'CLOUDFLARE_BROWSER_RENDERING',browser_closed_ok:true,provider:'BROWSER_RUN',binding:'BROWSER',local_executors:0,local_last_seen_at:localLastSeenAt,local_last_seen_ms_ago:localLastSeenMsAgo,local_executor_ttl_ms:ACTIVE_LOCAL_EXECUTOR_WINDOW_MS,external_executors:presence.external.count,fallback_mode:presence.external.online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',preference:'LOCAL_FIRST',limits};
+  if(presence.external.online)return {online:true,mode:'EXTERNAL_EXECUTOR',browser_closed_ok:true,provider:'EXTERNAL_EXECUTOR',binding:!!env.BROWSER,local_executors:0,local_last_seen_at:localLastSeenAt,local_last_seen_ms_ago:localLastSeenMsAgo,local_executor_ttl_ms:ACTIVE_LOCAL_EXECUTOR_WINDOW_MS,external_executors:presence.external.count,fallback_mode:'UNAVAILABLE',preference:'LOCAL_FIRST',error:browserError};
+  return {online:false,mode:'UNAVAILABLE',browser_closed_ok:false,provider:'NONE',binding:!!env.BROWSER,local_executors:0,local_last_seen_at:localLastSeenAt,local_last_seen_ms_ago:localLastSeenMsAgo,local_executor_ttl_ms:ACTIVE_LOCAL_EXECUTOR_WINDOW_MS,external_executors:0,fallback_mode:'UNAVAILABLE',preference:'LOCAL_FIRST',error:browserError};
 }
 async function executorOnline(env:Env){return (await rendererStatus(env)).online;}
 export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Promise<any>{
@@ -142,14 +152,20 @@ export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Pro
     if(!r.meta.changes){await env.MEDIA.delete(key);throw new QuizError('REVISION_CONFLICT',409);}return {ok:true,revision:row.revision+1};
   }
   // The following endpoints are reached only through the existing authenticated app/renderer channel.
+  if(op==='executor-ping'){
+    const owner=safeId(p.owner),now=Date.now();
+    if(!owner.startsWith(LOCAL_EXECUTOR_PREFIX))throw new QuizError('LOCAL_EXECUTOR_ID_REQUIRED',403);
+    await touchExecutor(env,owner,now);
+    return {ok:true,owner,seen_at:now,expires_in_ms:ACTIVE_LOCAL_EXECUTOR_WINDOW_MS};
+  }
   if(op==='claim-job'){
     const owner=safeId(p.owner),jobId=safeId(p.job_id),now=Date.now();
-    await env.DB.prepare('INSERT INTO quiz_executors(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at').bind(owner,now).run();
+    await touchExecutor(env,owner,now);
     const row:any=await env.DB.prepare(`UPDATE quiz_jobs SET status='RUNNING',owner=?,lease_until=?,updated_at=? WHERE id=? AND status='QUEUED' AND NOT EXISTS(SELECT 1 FROM quiz_jobs busy WHERE busy.document_id=quiz_jobs.document_id AND busy.id<>quiz_jobs.id AND busy.status IN ('RUNNING','CANCEL_REQUESTED')) RETURNING *`).bind(owner,now+14*60_000,now,jobId).first();
     if(!row){const pending:any=await env.DB.prepare('SELECT status FROM quiz_jobs WHERE id=?').bind(jobId).first();return {ok:true,job:null,status:pending?.status||'MISSING'};}const d=await doc(env,row.document_id);return {ok:true,job:{id:row.id,document_id:row.document_id,expected_revision:row.expected_revision,command:JSON.parse(row.request_json),revision:d.revision,project:await snapshot(env,d)}};
   }
   if(op==='claim'){
-    const owner=safeId(p.owner),now=Date.now();await env.DB.prepare('INSERT INTO quiz_executors(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at').bind(owner,now).run();
+    const owner=safeId(p.owner),now=Date.now();await touchExecutor(env,owner,now);
     await env.DB.prepare(`UPDATE quiz_jobs SET status='FAILED',result_json=?,updated_at=? WHERE status IN ('RUNNING','CANCEL_REQUESTED') AND lease_until<?`).bind(json({ok:false,error:'EXECUTOR_LOST',retry:'Submit a new request_id after reviewing persisted revision.'}),now,now).run();
     const row:any=await env.DB.prepare(`UPDATE quiz_jobs SET status='RUNNING',owner=?,lease_until=?,updated_at=? WHERE id=(SELECT q.id FROM quiz_jobs q WHERE q.status='QUEUED' AND NOT EXISTS(SELECT 1 FROM quiz_jobs busy WHERE busy.document_id=q.document_id AND busy.status IN ('RUNNING','CANCEL_REQUESTED')) ORDER BY q.created_at,q.id LIMIT 1) AND status='QUEUED' RETURNING *`).bind(owner,now+60_000,now).first();
     if(!row)return {ok:true,job:null};const d=await doc(env,row.document_id);return {ok:true,job:{id:row.id,document_id:row.document_id,expected_revision:row.expected_revision,command:JSON.parse(row.request_json),revision:d.revision,project:await snapshot(env,d)}};

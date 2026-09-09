@@ -37,8 +37,9 @@ export default function LocalQuizRendererClient() {
   const frame = useRef<HTMLIFrameElement | null>(null);
   const busy = useRef(false);
   const stopped = useRef(false);
-  const owner = useRef(`local:${crypto.randomUUID()}`);
+  const owner = useRef(`local-${crypto.randomUUID()}`);
   const currentJob = useRef<ClaimedJob | null>(null);
+  const lastExecutorPing = useRef(0);
 
   async function request(path: string, body: any, media = false): Promise<any> {
     const connection = readBrowserConnection();
@@ -182,6 +183,11 @@ export default function LocalQuizRendererClient() {
         }
         installBridge();
         await target.CorvoQuizStudio.detectLibrary?.().catch(() => false);
+        const now = Date.now();
+        if (now - lastExecutorPing.current >= 10_000) {
+          await rpc('executor-ping', { owner: owner.current });
+          lastExecutorPing.current = now;
+        }
         const claimed = await rpc('claim', { owner: owner.current });
         if (claimed?.job) {
           busy.current = true;
