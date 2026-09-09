@@ -57,20 +57,58 @@ const bridgeScript=(coreOrigin:string,jobId:string,owner:string)=>`(()=>{
   window.CorvoLibrary={serverAudio:false,getConnection:()=>({connection_label:'Librarynew Core renderer',push:true,headless:true}),registerQuizStudio:()=>{},quizRequest:async(op,p)=>{if(op==='asset.resolve')return rpc(op,p);if(op==='media.upload')return upload(p.blob);if(['quiz.state.push','quiz.visual.publish'].includes(op))return {ok:true};throw Error('UNSUPPORTED_HOST_OPERATION:'+op);}};
 })();`;
 
+type BrowserLimits={allowedBrowserAcquisitions?:number;timeUntilNextAllowedBrowserAcquisition?:number;activeSessions?:Array<{id?:string}>;maxConcurrentSessions?:number};
+const BROWSER_ACQUIRE_ATTEMPTS=5;
+const BROWSER_ACQUIRE_BASE_DELAY_MS=1_500;
+const BROWSER_ACQUIRE_MAX_DELAY_MS=15_000;
+
+function browserAcquireDelay(attempt:number,limits?:BrowserLimits|null,retryAfter?:string|null){
+  const header=Number(retryAfter||0);const headerMs=Number.isFinite(header)&&header>0?header*1000:0;
+  const hinted=Number(limits?.timeUntilNextAllowedBrowserAcquisition||0);
+  // Browser Run exposes the wait period numerically. It is normally a short
+  // duration; cap it so a malformed/stale value cannot hold a Worker forever.
+  const hintedMs=Number.isFinite(hinted)&&hinted>0?Math.min(BROWSER_ACQUIRE_MAX_DELAY_MS,hinted):0;
+  const exponential=Math.min(BROWSER_ACQUIRE_MAX_DELAY_MS,BROWSER_ACQUIRE_BASE_DELAY_MS*2**Math.max(0,attempt-1));
+  const jitter=Math.floor(Math.random()*750);
+  return Math.max(exponential,headerMs,hintedMs)+jitter;
+}
+async function readBrowserLimits(env:Env):Promise<BrowserLimits|null>{
+  if(!env.BROWSER)return null;
+  try{const r=await env.BROWSER.fetch(`${BROWSER_HOST}/v1/limits`);if(!r.ok)return null;return await r.json() as BrowserLimits;}catch{return null;}
+}
+function dailyBrowserLimit(text:string){return /browser time limit exceeded for today|daily browser|daily.*limit/i.test(text);}
+async function acquireBrowserSession(env:Env){
+  if(!env.BROWSER)throw new Error('BROWSER_BINDING_MISSING');
+  let last='';
+  for(let attempt=1;attempt<=BROWSER_ACQUIRE_ATTEMPTS;attempt++){
+    const limits=await readBrowserLimits(env);
+    if(limits?.allowedBrowserAcquisitions===0&&attempt<BROWSER_ACQUIRE_ATTEMPTS){await sleep(browserAcquireDelay(attempt,limits));continue;}
+    const acquired=await env.BROWSER.fetch(`${BROWSER_HOST}/v1/devtools/browser?keep_alive=${BROWSER_KEEP_ALIVE_MS}`,{method:'POST'});
+    const acquiredText=await acquired.text();
+    if(acquired.ok){
+      let browserSessionId='';
+      try{browserSessionId=String((JSON.parse(acquiredText) as {sessionId?:string}).sessionId||'');}catch{throw new Error('BROWSER_ACQUIRE_INVALID_JSON');}
+      if(!browserSessionId)throw new Error('BROWSER_SESSION_ID_MISSING');
+      return browserSessionId;
+    }
+    last=`BROWSER_ACQUIRE_${acquired.status}:${acquiredText.slice(0,400)}`;
+    if(acquired.status!==429)throw new Error(last);
+    if(dailyBrowserLimit(acquiredText))throw new Error(`BROWSER_DAILY_LIMIT_429:${acquiredText.slice(0,400)}`);
+    if(attempt>=BROWSER_ACQUIRE_ATTEMPTS)break;
+    await sleep(browserAcquireDelay(attempt,await readBrowserLimits(env),acquired.headers.get('retry-after')));
+  }
+  throw new Error(`${last||'BROWSER_ACQUIRE_429'}:RETRIES_EXHAUSTED`);
+}
+
 async function openPage(env:Env){
   if(!env.BROWSER)throw new Error('BROWSER_BINDING_MISSING');
   // Browser bindings are Fetchers whose hostname is intentionally ignored by
   // Cloudflare. The official @cloudflare/puppeteer client uses fake.host and
   // these exact /v1 endpoints. Do not use public API hostnames here.
-  const acquired=await env.BROWSER.fetch(`${BROWSER_HOST}/v1/devtools/browser?keep_alive=${BROWSER_KEEP_ALIVE_MS}`,{method:'POST'});
-  const acquiredText=await acquired.text();
-  if(!acquired.ok)throw new Error(`BROWSER_ACQUIRE_${acquired.status}:${acquiredText.slice(0,400)}`);
-  let browserSessionId='';
-  try{browserSessionId=String((JSON.parse(acquiredText) as {sessionId?:string}).sessionId||'');}catch{throw new Error('BROWSER_ACQUIRE_INVALID_JSON');}
-  if(!browserSessionId)throw new Error('BROWSER_SESSION_ID_MISSING');
+  const browserSessionId=await acquireBrowserSession(env);
 
   const upgraded=await env.BROWSER.fetch(`${BROWSER_HOST}/v1/devtools/browser/${encodeURIComponent(browserSessionId)}`,{
-    headers:{Upgrade:'websocket','cf-brapi-client':'corvo-library-cdp@0.20.63'}
+    headers:{Upgrade:'websocket','cf-brapi-client':'corvo-library-cdp@0.20.64'}
   });
   if(upgraded.status!==101&&!(upgraded as any).webSocket)throw new Error(`BROWSER_WEBSOCKET_${upgraded.status}`);
   const ws=(upgraded as any).webSocket as WebSocket|null;if(!ws)throw new Error('BROWSER_WEBSOCKET_MISSING');

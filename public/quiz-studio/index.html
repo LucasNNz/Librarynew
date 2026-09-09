@@ -4206,11 +4206,20 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
   function syncAnimatedBackgroundPreview(){ensureSceneExtras(state);const src=state.backgroundVideoUrl||state.backgroundVideo||'';const img=$('.backdrop:not(.backdrop-video)');if(src){if(bgPreviewVideo.src!==src){bgPreviewVideo.src=src;bgPreviewVideo.load();bgPreviewVideo.play().catch(()=>{})}bgPreviewVideo.style.display='block';if(img)img.style.display='none';}else{bgPreviewVideo.pause();bgPreviewVideo.removeAttribute('src');bgPreviewVideo.style.display='none';if(img)img.style.display='block';}}
   const renderBeforeAnimatedBg=render;render=function(){renderBeforeAnimatedBg();syncAnimatedBackgroundPreview();};
 
-  async function resolveCorvoAac(){
-    if(typeof AudioEncoder!=='function'||typeof AudioData!=='function')throw Error('Áudio AAC requer WebCodecs com AudioEncoder. Use Chrome/Edge atualizado.');
-    const configs=[{codec:'mp4a.40.2',sampleRate:AUDIO_SAMPLE_RATE,numberOfChannels:AUDIO_CHANNELS,bitrate:AUDIO_BITRATE,bitrateMode:'constant'},{codec:'mp4a.40.2',sampleRate:AUDIO_SAMPLE_RATE,numberOfChannels:AUDIO_CHANNELS,bitrate:AUDIO_BITRATE}];
-    for(const config of configs){try{const ok=await AudioEncoder.isConfigSupported(config);if(ok.supported)return config}catch{}}
-    throw Error('AAC não está disponível neste navegador. Remova o áudio ou use Chrome/Edge atualizado.');
+  async function resolveCorvoAudioCodec(){
+    if(typeof AudioEncoder!=='function'||typeof AudioData!=='function')throw Error('Áudio requer WebCodecs com AudioEncoder. O vídeo sem áudio continua disponível.');
+    const candidates=[
+      {name:'AAC',muxCodec:'aac',configs:[
+        {codec:'mp4a.40.2',sampleRate:AUDIO_SAMPLE_RATE,numberOfChannels:AUDIO_CHANNELS,bitrate:AUDIO_BITRATE,bitrateMode:'constant'},
+        {codec:'mp4a.40.2',sampleRate:AUDIO_SAMPLE_RATE,numberOfChannels:AUDIO_CHANNELS,bitrate:AUDIO_BITRATE}
+      ]},
+      {name:'Opus',muxCodec:'opus',configs:[
+        {codec:'opus',sampleRate:AUDIO_SAMPLE_RATE,numberOfChannels:AUDIO_CHANNELS,bitrate:Math.min(AUDIO_BITRATE,160000),bitrateMode:'variable'},
+        {codec:'opus',sampleRate:AUDIO_SAMPLE_RATE,numberOfChannels:AUDIO_CHANNELS,bitrate:Math.min(AUDIO_BITRATE,160000)}
+      ]}
+    ];
+    for(const candidate of candidates)for(const config of candidate.configs){try{const ok=await AudioEncoder.isConfigSupported(config);if(ok.supported)return {config,muxCodec:candidate.muxCodec,name:candidate.name}}catch{}}
+    throw Error('Nenhum codec de áudio compatível (AAC/Opus) está disponível neste navegador. Remova o áudio ou use outro executor.');
   }
   function checkExportAbort(signal){if(signal?.aborted)throw new DOMException('Exportação cancelada.','AbortError')}
   async function waitEncoderQueue(encoder,limit,signal,diag,label){
@@ -4228,11 +4237,11 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
     if(waited){diag.encoderWaits++;diag.encoderWaitMs+=performance.now()-start}
     diag.maxQueue=Math.max(diag.maxQueue,encoder.encodeQueueSize||0);
   }
-  function makeExportDiagnostics(duration,frameCount){return {started:performance.now(),duration,frameCount,paintTimes:[],encoderWaits:0,encoderWaitMs:0,maxQueue:0,audioChunks:0,transitionFrames:0,backgroundRecoveries:0,backgroundSeekFailures:0,backgroundHardFailures:0,frameRecoveries:0,frameFailures:0,storage:'memory',outputBytes:0,format:'',cancelled:false};}
+  function makeExportDiagnostics(duration,frameCount){return {started:performance.now(),duration,frameCount,paintTimes:[],encoderWaits:0,encoderWaitMs:0,maxQueue:0,audioChunks:0,audioCodec:'none',transitionFrames:0,backgroundRecoveries:0,backgroundSeekFailures:0,backgroundHardFailures:0,frameRecoveries:0,frameFailures:0,storage:'memory',outputBytes:0,format:'',cancelled:false};}
   function percentile(arr,p){if(!arr.length)return 0;const a=[...arr].sort((x,y)=>x-y),i=Math.min(a.length-1,Math.max(0,Math.round((a.length-1)*p)));return a[i]}
   function presentExportDiagnostics(diag){
     if(!diag)return;const wall=(performance.now()-diag.started)/1000,avg=diag.paintTimes.length?diag.paintTimes.reduce((a,b)=>a+b,0)/diag.paintTimes.length:0,p95=percentile(diag.paintTimes,.95),worst=Math.max(0,...diag.paintTimes),fps=wall>0?diag.frameCount/wall:0;
-    const lines=[`Vídeo: ${diag.duration.toFixed(2)} s · ${diag.frameCount} frames · ${diag.format}`,`Tempo total: ${wall.toFixed(2)} s · FPS efetivo: ${fps.toFixed(1)}`,`Pintura/frame: média ${avg.toFixed(1)} ms · p95 ${p95.toFixed(1)} ms · pior ${worst.toFixed(1)} ms`,`Encoder: ${diag.encoderWaits} esperas · ${(diag.encoderWaitMs/1000).toFixed(2)} s · fila máx ${diag.maxQueue}`,`AAC: ${diag.audioChunks} chunks`,`Transições: ${diag.transitionFrames} frames`, `Recuperação cenário: ${diag.backgroundRecoveries} · falhas de seek ${diag.backgroundSeekFailures} · falhas duras ${diag.backgroundHardFailures}`,`Frames recuperados: ${diag.frameRecoveries} · falhas: ${diag.frameFailures}`,`Saída: ${(diag.outputBytes/1024/1024).toFixed(1)} MB · ${diag.storage}${diag.cancelled?' · CANCELADA':''}`];
+    const lines=[`Vídeo: ${diag.duration.toFixed(2)} s · ${diag.frameCount} frames · ${diag.format}`,`Tempo total: ${wall.toFixed(2)} s · FPS efetivo: ${fps.toFixed(1)}`,`Pintura/frame: média ${avg.toFixed(1)} ms · p95 ${p95.toFixed(1)} ms · pior ${worst.toFixed(1)} ms`,`Encoder: ${diag.encoderWaits} esperas · ${(diag.encoderWaitMs/1000).toFixed(2)} s · fila máx ${diag.maxQueue}`,`Áudio ${diag.audioCodec||'none'}: ${diag.audioChunks} chunks`,`Transições: ${diag.transitionFrames} frames`, `Recuperação cenário: ${diag.backgroundRecoveries} · falhas de seek ${diag.backgroundSeekFailures} · falhas duras ${diag.backgroundHardFailures}`,`Frames recuperados: ${diag.frameRecoveries} · falhas: ${diag.frameFailures}`,`Saída: ${(diag.outputBytes/1024/1024).toFixed(1)} MB · ${diag.storage}${diag.cancelled?' · CANCELADA':''}`];
     const pre=$('#corvoDiagnosticsText');if(pre)pre.textContent=lines.join('\n');const details=$('#corvoDiagnostics');if(details)details.open=true;
   }
   function projectSceneAtTimeV2(list,time){
@@ -4284,7 +4293,7 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
           pcm[i*2]=Math.max(-32768,Math.min(32767,Math.round(l*volume*env*32767)));pcm[i*2+1]=Math.max(-32768,Math.min(32767,Math.round(r*volume*env*32767)));
         }
       }
-      const ad=new AudioData({format:'s16',sampleRate:AUDIO_SAMPLE_RATE,numberOfFrames:frames,numberOfChannels:AUDIO_CHANNELS,timestamp:Math.round(start/AUDIO_SAMPLE_RATE*1e6),data:pcm});try{encoder.encode(ad)}finally{ad.close()}diag.audioChunks++;await waitEncoderQueue(encoder,AUDIO_QUEUE_LIMIT,signal,diag,'Encoder AAC');if(start%(AUDIO_CHUNK_FRAMES*20)===0)await new Promise(r=>setTimeout(r,0));
+      const ad=new AudioData({format:'s16',sampleRate:AUDIO_SAMPLE_RATE,numberOfFrames:frames,numberOfChannels:AUDIO_CHANNELS,timestamp:Math.round(start/AUDIO_SAMPLE_RATE*1e6),data:pcm});try{encoder.encode(ad)}finally{ad.close()}diag.audioChunks++;await waitEncoderQueue(encoder,AUDIO_QUEUE_LIMIT,signal,diag,`Encoder ${diag.audioCodec||'áudio'}`);if(start%(AUDIO_CHUNK_FRAMES*20)===0)await new Promise(r=>setTimeout(r,0));
     }
   }
 
@@ -4306,11 +4315,11 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
     const {w:width,h:height}=exportDimensions(format),duration=project?projectDurationWithTransitions(sceneList):(Number(sceneList[0].duration)||8),frameCount=Math.max(1,Math.round(duration*EXPORT_FPS)),frameDuration=Math.round(1e6/EXPORT_FPS),diag=makeExportDiagnostics(duration,frameCount);diag.format=format;currentExportDiagnostics=diag;
     const hasProjectAudio=!!projectAudioSource(),estimatedBytes=Math.ceil(duration*((EXPORT_BITRATE+(hasProjectAudio?AUDIO_BITRATE:0))/8)*1.30+16*1024*1024);
     exportSetProgress(1,'Carregando muxer local…');const M=await ensureCorvoMuxer();exportSetProgress(3,'Preparando mídias…');await prewarmExportAssets(sceneList);checkExportAbort(signal);
-    const videoConfig=await resolveCorvoH264(width,height),useAudio=!!projectAudioSource();let audioBuffer=null,audioConfig=null;if(useAudio){exportSetProgress(4,'Preparando faixa principal adaptativa…');audioConfig=await resolveCorvoAac();audioBuffer=await decodeProjectAudio(projectAudioTrack)}
+    const videoConfig=await resolveCorvoH264(width,height),useAudio=!!projectAudioSource();let audioBuffer=null,audioChoice=null;if(useAudio){exportSetProgress(4,'Preparando faixa principal adaptativa…');audioChoice=await resolveCorvoAudioCodec();diag.audioCodec=audioChoice.name;audioBuffer=await decodeProjectAudio(projectAudioTrack)}
     const session=await createMuxTargetSession(M,duration,estimatedBytes);diag.storage=session.storage;const storageEl=$('#corvoStorageStatus');if(storageEl)storageEl.textContent=`Exportando via ${session.storage}${session.storage==='OPFS'?' · RAM protegida':''}.`;
-    const muxOptions={target:session.target,video:{codec:'avc',width,height,frameRate:EXPORT_FPS},fastStart:session.storage==='OPFS'?false:'in-memory',firstTimestampBehavior:'offset'};if(useAudio)muxOptions.audio={codec:'aac',numberOfChannels:AUDIO_CHANNELS,sampleRate:AUDIO_SAMPLE_RATE};const muxer=new M.Muxer(muxOptions);
+    const muxOptions={target:session.target,video:{codec:'avc',width,height,frameRate:EXPORT_FPS},fastStart:session.storage==='OPFS'?false:'in-memory',firstTimestampBehavior:'offset'};if(useAudio&&audioChoice)muxOptions.audio={codec:audioChoice.muxCodec,numberOfChannels:AUDIO_CHANNELS,sampleRate:AUDIO_SAMPLE_RATE};const muxer=new M.Muxer(muxOptions);
     let failure=null;const videoEncoder=new VideoEncoder({output:(chunk,meta)=>{try{muxer.addVideoChunk(chunk,meta)}catch(err){failure=err}},error:err=>{failure=err}});videoEncoder.configure(videoConfig);
-    let audioEncoder=null;if(useAudio){audioEncoder=new AudioEncoder({output:(chunk,meta)=>{try{muxer.addAudioChunk(chunk,meta)}catch(err){failure=err}},error:err=>{failure=err}});audioEncoder.configure(audioConfig)}
+    let audioEncoder=null;if(useAudio&&audioChoice){audioEncoder=new AudioEncoder({output:(chunk,meta)=>{try{muxer.addAudioChunk(chunk,meta)}catch(err){failure=err}},error:err=>{failure=err}});audioEncoder.configure(audioChoice.config)}
     const canvas=document.createElement('canvas'),lastGood=document.createElement('canvas');canvas.width=lastGood.width=width;canvas.height=lastGood.height=height;let haveLast=false;
     try{
       for(let frame=0;frame<frameCount;frame++){
@@ -4322,15 +4331,15 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
         if(frame%15===0||frame===frameCount-1){const pct=6+Math.round(frame/Math.max(1,frameCount-1)*78),sceneMsg=project&&info?` · cena ${info.index+1}/${sceneList.length}`:'';exportSetProgress(pct,`Renderizando vídeo${sceneMsg} · ${pct}%`);await new Promise(r=>setTimeout(r,0))}
       }
       exportSetProgress(86,'Finalizando H.264…');await videoEncoder.flush();if(failure)throw failure;
-      if(useAudio&&audioEncoder&&audioBuffer){exportSetProgress(89,'Codificando áudio AAC…');await encodeProjectAudio(audioBuffer,duration,projectAudioTrack,audioEncoder,muxer,signal,diag);await audioEncoder.flush();if(failure)throw failure}
-      checkExportAbort(signal);exportSetProgress(97,'Finalizando MP4…');muxer.finalize();const blob=await session.finish();diag.outputBytes=blob.size||0;exportSetProgress(100,'MP4 pronto.');presentExportDiagnostics(diag);return {blob,duration,width,height,diag,cleanup:session.cleanup};
+      if(useAudio&&audioEncoder&&audioBuffer){exportSetProgress(89,`Codificando áudio ${diag.audioCodec}…`);await encodeProjectAudio(audioBuffer,duration,projectAudioTrack,audioEncoder,muxer,signal,diag);await audioEncoder.flush();if(failure)throw failure}
+      checkExportAbort(signal);exportSetProgress(97,'Finalizando MP4…');muxer.finalize();const blob=await session.finish();diag.outputBytes=blob.size||0;exportSetProgress(100,'MP4 pronto.');presentExportDiagnostics(diag);return {blob,duration,width,height,diag,audioCodec:diag.audioCodec,cleanup:session.cleanup};
     }catch(err){if(err?.name==='AbortError')diag.cancelled=true;presentExportDiagnostics(diag);try{await session.abort?.()}catch{}throw err}
     finally{currentExportDiagnostics=null;if(videoEncoder.state!=='closed')videoEncoder.close();if(audioEncoder&&audioEncoder.state!=='closed')audioEncoder.close()}
   }
   async function exportSceneMp4V2(){
-    if(exportBusy)return;exportAbortController=new AbortController();exportSetBusy(true);try{const r=await renderCorvoMp4V2([deepClone(ensureSceneExtras(state))],{project:false,signal:exportAbortController.signal});downloadExportBlob(r.blob,`corvo-cena-${String(activeScene+1).padStart(2,'0')}-${r.width}x${r.height}-30fps.mp4`);setTimeout(()=>r.cleanup?.(),45000);status(`MP4 da cena exportado · ${r.width}×${r.height} · 30 FPS${projectAudioSource()?' · AAC':''}.`)}catch(err){const cancelled=err?.name==='AbortError';exportSetProgress(0,cancelled?'Exportação cancelada.':err?.message||'Falha ao exportar MP4.');status(cancelled?'Exportação cancelada com segurança.':err?.message||'Falha ao exportar MP4.')}finally{exportAbortController=null;exportSetBusy(false);syncV2Ui()}}
+    if(exportBusy)return;exportAbortController=new AbortController();exportSetBusy(true);try{const r=await renderCorvoMp4V2([deepClone(ensureSceneExtras(state))],{project:false,signal:exportAbortController.signal});downloadExportBlob(r.blob,`corvo-cena-${String(activeScene+1).padStart(2,'0')}-${r.width}x${r.height}-30fps.mp4`);setTimeout(()=>r.cleanup?.(),45000);status(`MP4 da cena exportado · ${r.width}×${r.height} · 30 FPS${projectAudioSource()?` · ${r.audioCodec}`:''}.`)}catch(err){const cancelled=err?.name==='AbortError';exportSetProgress(0,cancelled?'Exportação cancelada.':err?.message||'Falha ao exportar MP4.');status(cancelled?'Exportação cancelada com segurança.':err?.message||'Falha ao exportar MP4.')}finally{exportAbortController=null;exportSetBusy(false);syncV2Ui()}}
   async function exportProjectMp4V2(){
-    if(exportBusy)return;const list=selectedProjectScenes();if(!list.length){status('Não há cenas no formato selecionado.');return}const choice=$('#corvoProjectFormat')?.value||'auto';if(choice==='auto'&&new Set(list.map(s=>s.format)).size>1){status('O projeto mistura 16:9 e 9:16. Em Exportar, escolha “somente 16:9” ou “somente 9:16”.');return}exportAbortController=new AbortController();exportSetBusy(true);try{const r=await renderCorvoMp4V2(list,{project:true,signal:exportAbortController.signal}),suffix=choice==='auto'?'':`-${choice.replace(':','x')}`;downloadExportBlob(r.blob,`corvo-projeto-${list.length}-cenas${suffix}-${r.width}x${r.height}-30fps.mp4`);setTimeout(()=>r.cleanup?.(),45000);status(`MP4 do projeto exportado · ${list.length} cenas · 30 FPS${projectAudioSource()?' · AAC':''}.`)}catch(err){const cancelled=err?.name==='AbortError';exportSetProgress(0,cancelled?'Exportação cancelada.':err?.message||'Falha ao exportar projeto.');status(cancelled?'Exportação cancelada com segurança.':err?.message||'Falha ao exportar projeto.')}finally{exportAbortController=null;exportSetBusy(false);syncV2Ui()}}
+    if(exportBusy)return;const list=selectedProjectScenes();if(!list.length){status('Não há cenas no formato selecionado.');return}const choice=$('#corvoProjectFormat')?.value||'auto';if(choice==='auto'&&new Set(list.map(s=>s.format)).size>1){status('O projeto mistura 16:9 e 9:16. Em Exportar, escolha “somente 16:9” ou “somente 9:16”.');return}exportAbortController=new AbortController();exportSetBusy(true);try{const r=await renderCorvoMp4V2(list,{project:true,signal:exportAbortController.signal}),suffix=choice==='auto'?'':`-${choice.replace(':','x')}`;downloadExportBlob(r.blob,`corvo-projeto-${list.length}-cenas${suffix}-${r.width}x${r.height}-30fps.mp4`);setTimeout(()=>r.cleanup?.(),45000);status(`MP4 do projeto exportado · ${list.length} cenas · 30 FPS${projectAudioSource()?` · ${r.audioCodec}`:''}.`)}catch(err){const cancelled=err?.name==='AbortError';exportSetProgress(0,cancelled?'Exportação cancelada.':err?.message||'Falha ao exportar projeto.');status(cancelled?'Exportação cancelada com segurança.':err?.message||'Falha ao exportar projeto.')}finally{exportAbortController=null;exportSetBusy(false);syncV2Ui()}}
 
   $('#corvoCancelExport').onclick=()=>{if(exportAbortController&&!exportAbortController.signal.aborted){exportAbortController.abort();exportSetProgress(0,'Cancelando…');status('Cancelando exportação com segurança…')}};
   $('#corvoExportSceneMp4').onclick=()=>{if(!updateExporterCompatibility()){status('MP4 requer WebCodecs. Use Chrome ou Edge atualizado.');return}return exportSceneMp4V2()};
@@ -4338,7 +4347,7 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
 
   // Compatibilidade: áudio carregado requer AudioEncoder, vídeo silencioso continua disponível sem ele.
   const updateExporterCompatibilityBeforeV2=updateExporterCompatibility;
-  updateExporterCompatibility=function(){const videoOk=updateExporterCompatibilityBeforeV2();const msg=$('#corvoExportMessage');if(projectAudioSource()&&typeof AudioEncoder!=='function'&&msg)msg.textContent='Vídeo disponível, mas AAC requer AudioEncoder. Remova o áudio ou use Chrome/Edge atualizado.';return videoOk};
+  updateExporterCompatibility=function(){const videoOk=updateExporterCompatibilityBeforeV2();const msg=$('#corvoExportMessage');if(projectAudioSource()&&typeof AudioEncoder!=='function'&&msg)msg.textContent='Vídeo disponível, mas áudio requer AudioEncoder. Sem áudio, o MP4 continua disponível.';return videoOk};
 
   // Projeto v4 preserva áudio, transições e cenários animados.
   $('#save').onclick=()=>{const payload={version:4,kind:'corvo-project',mcp_schema:'corvo-quiz-app/v2',audio:projectAudioTrack,scenes:scenes.map(s=>ensureSceneExtras(deepClone(s)))};const url=URL.createObjectURL(new Blob([JSON.stringify(payload)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='corvo-projeto.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;status('Projeto salvo com cenas, transições, áudio e mídias.')};
@@ -4446,7 +4455,7 @@ $('#exportScaffold').onclick=()=>{try{const svg=scaffoldSVG();const url=URL.crea
         rendered=await renderCorvoMp4V2(list,{project:op==='export_project_mp4',signal:exportAbortController.signal});
         projectAudioTrack=savedAudio;let media=await libraryUpload(rendered.blob,'mp4');
         if(serverAudio){const response=await fetch(projectAudioSource(savedAudio));if(!response.ok)throw Error('AUDIO_UNAVAILABLE');const audio=await libraryUpload(await response.blob(),'audio');media=await libraryRequest('video.mux',{video_url:media.url,audio_url:audio.url,track:savedAudio,duration:rendered.duration},3600000);}
-        return {ok:true,download_url:media.url,width:rendered.width,height:rendered.height,audio_backend:media.audio_backend||'webcodecs',diagnostics:window.CorvoExporter.getDiagnostics()};
+        return {ok:true,download_url:media.url,width:rendered.width,height:rendered.height,audio_backend:media.audio_backend||(`webcodecs-${String(rendered.audioCodec||'none').toLowerCase()}`),audio_codec:rendered.audioCodec||'none',diagnostics:window.CorvoExporter.getDiagnostics()};
       }finally{projectAudioTrack=savedAudio;await rendered?.cleanup?.();exportAbortController=null;exportSetBusy(false);}
     }
     throw Error('UNKNOWN_COMMAND: '+op);
