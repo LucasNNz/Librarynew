@@ -187,37 +187,64 @@ async function bootstrapSql() {
   return `${baseline}\n\n-- CORVO V2 SAFE FORWARD MIGRATIONS\n${migrations.map(item => item.sql).join("\n\n")}`;
 }
 
+type D1ImportResponse = {
+  upload_url?: string;
+  filename?: string;
+  at_bookmark?: string;
+  status?: string;
+  success?: boolean;
+  error?: string;
+  messages?: string[];
+  result?: { num_queries?: number };
+};
+
+async function pollD1Import(token:string,base:string,initial:D1ImportResponse,reused:boolean) {
+  let state=initial;
+  for(let attempt=0;attempt<180;attempt+=1){
+    if(state.status === "complete" && state.success !== false) return {status:"complete",reused,numQueries:state.result?.num_queries||null};
+    if(state.status === "error" || state.success === false || state.error) throw new Error(state.error || "D1_IMPORT_FAILED");
+    const bookmark=String(state.at_bookmark||"").trim();
+    if(!bookmark) throw new Error(`D1_IMPORT_BOOKMARK_MISSING:${JSON.stringify({status:state.status,success:state.success,messages:state.messages||[]})}`);
+    await new Promise(resolve=>setTimeout(resolve,1000));
+    state=await cfApi<D1ImportResponse>(token,base,{method:"POST",body:JSON.stringify({action:"poll",current_bookmark:bookmark})});
+  }
+  throw new Error("D1_IMPORT_TIMEOUT");
+}
+
 async function importD1(token: string, accountId: string, databaseId: string, sql: string) {
   const etag = createHash("md5").update(sql).digest("hex");
   const base = `/accounts/${encodeURIComponent(accountId)}/d1/database/${encodeURIComponent(databaseId)}/import`;
-  const init = await cfApi<{ upload_url?: string; filename?: string; at_bookmark?: string; status?: string; success?: boolean }>(token, base, {
+  const init = await cfApi<D1ImportResponse>(token, base, {
     method: "POST",
     body: JSON.stringify({ action: "init", etag }),
   });
-  if (init.status === "complete" && init.success) return { status: "complete", reused: true };
-  if (!init.upload_url || !init.filename) throw new Error("D1_IMPORT_INIT_INVALID");
-  const upload = await fetch(init.upload_url, { method: "PUT", body: sql, headers: { "content-type": "application/sql" } });
+
+  // Cloudflare may skip the upload when the same SQL file/etag is already present.
+  // In that case `init` is already an import/polling response: it has no upload_url,
+  // and we must continue polling from at_bookmark instead of rejecting it.
+  if (!init.upload_url) {
+    if (init.status === "complete" && init.success !== false) return { status: "complete", reused: true, numQueries:init.result?.num_queries||null };
+    if (init.at_bookmark) return pollD1Import(token,base,init,true);
+    if (init.status === "error" || init.success === false || init.error) throw new Error(init.error || "D1_IMPORT_INIT_FAILED");
+    throw new Error(`D1_IMPORT_INIT_INVALID:${JSON.stringify({status:init.status,success:init.success,has_bookmark:Boolean(init.at_bookmark),has_filename:Boolean(init.filename),messages:init.messages||[]})}`);
+  }
+
+  if (!init.filename) throw new Error("D1_IMPORT_INIT_FILENAME_MISSING");
+  const upload = await fetch(init.upload_url, {
+    method: "PUT",
+    body: sql,
+    headers: { "content-type": "application/sql", "content-length": String(Buffer.byteLength(sql)) },
+  });
   if (!upload.ok) throw new Error(`D1_IMPORT_UPLOAD_HTTP_${upload.status}`);
   const returnedEtag = (upload.headers.get("etag") || "").replace(/\"/g, "");
-  if (returnedEtag && returnedEtag !== etag) throw new Error("D1_IMPORT_ETAG_MISMATCH");
-  const ingest = await cfApi<{ at_bookmark?: string; status?: string; success?: boolean; error?: string }>(token, base, {
+  if (!returnedEtag) throw new Error("D1_IMPORT_UPLOAD_ETAG_MISSING");
+  if (returnedEtag !== etag) throw new Error("D1_IMPORT_ETAG_MISMATCH");
+
+  const ingest = await cfApi<D1ImportResponse>(token, base, {
     method: "POST",
     body: JSON.stringify({ action: "ingest", etag, filename: init.filename }),
   });
-  let bookmark = ingest.at_bookmark;
-  if (ingest.status === "complete" && ingest.success) return { status: "complete", reused: false };
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    if (!bookmark) throw new Error(ingest.error || "D1_IMPORT_BOOKMARK_MISSING");
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const poll = await cfApi<{ at_bookmark?: string; status?: string; success?: boolean; error?: string; result?: { num_queries?: number } }>(token, base, {
-      method: "POST",
-      body: JSON.stringify({ action: "poll", current_bookmark: bookmark }),
-    });
-    bookmark = poll.at_bookmark || bookmark;
-    if (poll.status === "complete" || poll.success) return { status: "complete", reused: false, numQueries: poll.result?.num_queries || null };
-    if (poll.status === "error" || poll.error) throw new Error(poll.error || "D1_IMPORT_FAILED");
-  }
-  throw new Error("D1_IMPORT_TIMEOUT");
+  return pollD1Import(token,base,ingest,false);
 }
 
 const VERSION_LAST_MIGRATION: Record<string,string> = {
