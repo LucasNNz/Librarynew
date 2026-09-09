@@ -159,13 +159,19 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_media_lookup ON v2_project_media(project_id,kind,status,selected,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_titles_lookup ON v2_project_titles(project_id,status,slot_index,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_download_packages_project_type_status ON v2_download_packages(project_id,type,status,created_at DESC)");
-  await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.27.0',?)",[Date.now()]);
+  // This reconciler repairs the 2.27 baseline used by historical databases. Never
+  // downgrade a database that already crossed into the Quiz/Roteiro migrations.
+  const schemaBeforeWrite=await currentSchemaVersion(token,accountId,databaseId);
+  if(!["2.28.0","2.29.0"].includes(schemaBeforeWrite)){
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.27.0',?)",[Date.now()]);
+  }
   const missingColumns:Array<{table:string;column:string}>=[];
   for(const [table,specs] of Object.entries(CRITICAL_SCHEMA_COLUMNS)){
     const columns=await tableColumns(token,accountId,databaseId,table);
     for(const spec of specs) if(!columns.has(spec.name)) missingColumns.push({table,column:spec.name});
   }
-  return {ready:missingColumns.length===0,contractVersion:"2.27.0",missingTables:[],missingColumns,repaired};
+  const contractVersion=await currentSchemaVersion(token,accountId,databaseId) || "2.27.0";
+  return {ready:missingColumns.length===0,contractVersion,missingTables:[],missingColumns,repaired};
 }
 
 async function migrationFiles() {
@@ -218,7 +224,7 @@ const VERSION_LAST_MIGRATION: Record<string,string> = {
   "2.0.0":"9000_v2_core.sql", "2.1.0":"9001_v2_observability.sql", "2.2.0":"9002_v2_direct_upload.sql",
   "2.3.0":"9003_v2_control_plane.sql", "2.4.0":"9004_v2_archives.sql", "2.5.0":"9005_v2_delivery_hardening.sql",
   "2.6.0":"9006_v2_persistent_infrastructure.sql", "2.7.0":"9007_v2_migration_registry.sql", "2.8.0":"9008_v2_operational_cleanup_recovery.sql", "2.9.0":"9009_v2_runtime_heartbeats.sql", "2.10.0":"9010_v2_clean_zero_baseline.sql", "2.11.0":"9011_v2_purge_all_projects.sql", "2.12.0":"9012_v2_factory_zero_assets.sql", "2.13.0":"9013_v2_live_factory_zero_gate.sql", "2.14.1":"9014_v2_authoritative_factory_zero.sql", "2.15.0":"9015_v2_operational_clean_once.sql", "2.16.0":"9016_v2_collector_qa_pipeline.sql", "2.17.0":"9017_v2_schema_contract_gate.sql", "2.18.0":"9018_v2_safe_live_migration_executor.sql", "2.19.0":"9019_v2_project_slots_workflow.sql",
-  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql", "2.26.0":"9026_v2_qa_by_rejection.sql", "2.27.0":"9027_v2_d1_read_optimization.sql",
+  "2.20.0":"9020_v2_project_slot_customization.sql", "2.21.0":"9021_v2_production_model.sql", "2.22.0":"9022_v2_final_exports_forma.sql", "2.23.0":"9023_v2_persistent_slot_visual_tags.sql", "2.24.0":"9024_v2_persistent_operational_policies.sql", "2.25.0":"9025_v2_production_slot_rejection.sql", "2.26.0":"9026_v2_qa_by_rejection.sql", "2.27.0":"9027_v2_d1_read_optimization.sql", "2.28.0":"9028_quiz_studio.sql", "2.29.0":"9029_roteiro_cycle_quiz_handoff.sql",
 };
 
 async function currentSchemaVersion(token: string, accountId: string, databaseId: string) {
@@ -314,7 +320,9 @@ async function applyPendingMigrations(token: string, accountId: string, database
   }
   const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
   if(!schemaContract.ready) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(schemaContract)}`);
-  return {executed,skippedLegacy,schemaContract};
+  const finalSchemaVersion=await currentSchemaVersion(token,accountId,databaseId);
+  if(finalSchemaVersion!=="2.29.0") throw new Error(`SCHEMA_VERSION_MISMATCH:${finalSchemaVersion||"MISSING"}:expected=2.29.0`);
+  return {executed,skippedLegacy,schemaContract:{...schemaContract,contractVersion:finalSchemaVersion}};
 }
 
 export async function POST(request: NextRequest) {
@@ -331,7 +339,9 @@ export async function POST(request: NextRequest) {
       const sql = await bootstrapSql();
       const result = await importD1(token, accountId, databaseId, sql);
       const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
-      return NextResponse.json({ ok: true, imported: true, bytes: Buffer.byteLength(sql), migrationsApplied: (await migrationFiles()).filter(item=>!LEGACY_DESTRUCTIVE_MIGRATIONS.has(item.name)).map(item=>item.name), schemaContract, ...result }, { headers: { "cache-control": "no-store" } });
+      const finalSchemaVersion=await currentSchemaVersion(token,accountId,databaseId);
+      if(finalSchemaVersion!=="2.29.0") throw new Error(`SCHEMA_VERSION_MISMATCH:${finalSchemaVersion||"MISSING"}:expected=2.29.0`);
+      return NextResponse.json({ ok: true, imported: true, bytes: Buffer.byteLength(sql), migrationsApplied: (await migrationFiles()).filter(item=>!LEGACY_DESTRUCTIVE_MIGRATIONS.has(item.name)).map(item=>item.name), schemaContract:{...schemaContract,contractVersion:finalSchemaVersion}, ...result }, { headers: { "cache-control": "no-store" } });
     }
 
     // Existing historical/V2 database: never restore again. Only migrations that are not registered are applied.

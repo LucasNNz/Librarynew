@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 import type { Env } from "./types";
-import { catalogStats, getAsset, getAssetLink, getAssetLinks, listAssets, listUniverses } from "./core/assets";
+import { catalogStats, getAsset, getAssetLink, getAssetLinks, listAssets, listRoteiroCatalog, listUniverses } from "./core/assets";
 import { approveCandidate, deleteIngestCandidates, enqueueFastPushItems, fastPush, getOperation, linkCandidatesToProject, listCandidates, rejectCandidate } from "./core/ingest";
 import { attachProjectThumbFromFileObject, confirmDirectUpload, getDirectUpload, prepareDirectUpload } from "./core/direct-upload";
 import { approvePendingAssets, catalogAsset, deleteAssetPermanently, deleteAssetsPermanently, deletePendingAssetsPermanently, findDuplicateR2Keys, getAssetHistory, registerAssetUsage, rejectAsset, restoreAsset, updateAssetMetadata } from "./core/asset-ops";
@@ -25,7 +25,7 @@ import { controlJobResult, enqueueApprovalsByItems, enqueueFastApproveProjectIte
 import { confirmPackageDownload, decideProjectThumbs, decideProjectTitles, finalizeQaAndQueueDelivery, getFinalArtifactLink, getFinalProjectFiles, getPackageLink, listReadyPackages, projectProductionPackage, projectThumbLinks, pushProjectTitles, queueFinalExports, queueFinalPackage, validateProjectImagesZip } from "./core/production";
 import { addProjectQaEvent, attachProjectReferencesInline, attachProjectScriptInline, getProjectFileLink, listProjectFiles, readProjectFile } from "./core/project-files";
 import { listProjectArtifacts } from "./core/project-artifacts";
-import { assignAssetsToSlots, assignCandidatesToSlotsForQa, listProductionModel, listProductionSlotsForQa, productionModelCounts, rejectProductionSlotsBatch, upsertProductionSlots } from "./core/production-model";
+import { assignAssetsToSlots, assignCandidatesToSlotsForQa, listCollectorGaps, listProductionModel, listProductionSlotsForQa, productionModelCounts, rejectProductionSlotsBatch, upsertProductionSlots } from "./core/production-model";
 import { createSourceRoutingPlan, executeUntilDivergence, getPlanDetails, getPlanExceptions, getPlanStatus, getSourceRoutingPlan, getWorkPacket, setPlanStatus, supervisorExchange, tickPlans } from "./core/plans";
 import { collectionAnalysis, collectionReport, collectionStatus, configureCollectionSource, controlCollectionBatch, createCollectionBatch, enqueueCollection, listCollectionBatches, listCollectionSources } from "./core/collection";
 import { importMediaByPreparedUpload, importZipByUrl, prepareZipUpload, queueZipImport, syncR2Uncataloged } from "./core/imports-v2";
@@ -37,10 +37,12 @@ import { deleteMissingPendingMedia, repairPendingMedia, scanPendingMedia } from 
 import { writeD1StructureManifest } from "./core/recovery-manifest";
 import { heartbeatOperation, runtimeHeartbeatStatus, runtimeHeartbeatWatchdog } from "./core/heartbeats";
 import { enqueueQaDecisions, fastPushProjectCandidates, getProjectCollectionSnapshot, getQaWorkPacket, operationMaterializationTelemetry, submitQaDecisions } from "./core/collector-qa";
-import { createSlotTag, findSlotsByTag, listProjectTags, listSlotTags, removeSlotTag } from "./core/slot-tags";
+import { createSlotTag, findSlotsByTag, flagReferenceAttention, listProjectTags, listSlotTags, removeSlotTag } from "./core/slot-tags";
 import { applyPersistentPolicyToProject, createPersistentPolicy, editPersistentPolicy, listPersistentPolicies, listProjectPersistentPolicies, removePersistentPolicy, removePersistentPolicyFromProject, resolveApplicablePolicies, setPersistentPolicyActive } from "./core/persistent-policies";
 import { createD1TelemetryEnv, detectMcpToolName, recordD1RouteTelemetry, type D1RouteMetrics } from "./core/d1-telemetry";
 import { deduplicateWorkerUnique, listObsoleteProductionSlots, listWorkerUniqueConflicts, repairProjectIntegrity, repairProjectWorkerItems, retireObsoleteProductionSlots } from "./core/integrity-repair";
+import { getRoteiroCycleState } from "./core/roteiro-cycle";
+import { getProjectQuizPayload, processQuizRenderProject } from "./core/project-quiz";
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -152,7 +154,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.59" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.61" });
 
   server.registerTool("verificar_saude", {
     description: "Health check leve do Core. Sempre expõe core_version; D1/R2 são probes mínimos e não fazem varredura de catálogo.",
@@ -162,12 +164,12 @@ function createServer(env: Env, request: Request) {
       env.DB.prepare("SELECT 1 AS ok").first().then(()=>true).catch(()=>false),
       env.MEDIA.list({ limit: 1 }).then(()=>true).catch(()=>false),
     ]);
-    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.59", core_version:"0.20.59", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
+    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.61", core_version:"0.20.61", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.29.0" });
   });
   server.registerTool("obter_versao_core", {
     description: "Retorna a versão implantada do Core sem consultar D1, R2 ou Queue. Use para confirmar sincronização App ↔ Core mesmo durante bloqueio de cota D1.",
     inputSchema: {},
-  }, async () => output({ok:true,service:"corvo-core",version:"0.20.59",core_version:"0.20.59",schema_contract_version:"2.27.0",d1_read_required:false}));
+  }, async () => output({ok:true,service:"corvo-core",version:"0.20.61",core_version:"0.20.61",schema_contract_version:"2.29.0",d1_read_required:false}));
 
   server.registerTool("auditar_integridade_d1", {
     description: "Audita integridade lógica do D1 sem alterar dados. Separa orfandades históricas preservadas de inconsistências criadas pela V2.",
@@ -183,7 +185,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("buscar_assets", {
-    description: "Busca assets por texto, universo, tipo, status e uso. Mantém compatibilidade com a ferramenta histórica.",
+    description: "Busca assets com normalização case-insensitive, acentos e texto/universo básico; filtra por tipo, status e uso.",
     inputSchema: {
       texto: z.string().optional(),
       consulta: z.string().optional(),
@@ -202,6 +204,16 @@ function createServer(env: Env, request: Request) {
     if (nunca_usado) params.set("neverUsed", "true");
     return output(await listAssets(requestFor(request, `/assets?${params}`), env));
   });
+
+  server.registerTool("obter_catalogo_roteiro", {
+    description: "CATÁLOGO HOT PATH DO ROTEIRO: retorna somente assets APPROVED, compacto, paginado e ordenado por nunca usados/menos usados. Use antes de criar o conceito; permite multiuniverso.",
+    inputSchema: { texto:z.string().optional(), universo:z.string().optional(), subject:z.string().optional(), tipo:z.string().optional(), tag:z.string().optional(), nunca_usado:z.boolean().optional(), max_usos:z.number().int().min(0).optional(), limite:z.number().int().min(1).max(300).optional(), cursor:z.string().optional() },
+  }, async(v)=>output(await listRoteiroCatalog(env,{q:v.texto,universo:v.universo,subject:v.subject,tipo:v.tipo,tag:v.tag,nunca_usado:v.nunca_usado,max_usos:v.max_usos,limit:v.limite,cursor:v.cursor})));
+
+  server.registerTool("obter_proximo_modo_roteiro", {
+    description: "Lê o estado persistente do ciclo do Roteiro. Sequência fixa: 1-3 LIBRARY_ONLY, 4-5 HYBRID. O avanço ocorre somente após SCRIPT válido do projeto reservado.",
+    inputSchema: {},
+  }, async()=>output(await getRoteiroCycleState(env)));
 
   server.registerTool("obter_asset", {
     description: "Obtém um asset por AST-* com metadados e link temporário direto do R2.",
@@ -374,7 +386,7 @@ function createServer(env: Env, request: Request) {
   });
 
   server.registerTool("fast_push_project_candidates", {
-    description: "FAST PUSH consolidado por projeto/cena. Se item_id/cena ainda não existir, a Library cria/upserta a cena idempotentemente no projeto, aplica target_candidates/required_approved, enfileira apenas o necessário e mantém excedentes DISCOVERED como reserva. Nunca retorna sucesso silencioso com zero itens.",
+    description: "COLETOR EXTERNO / FAST PUSH consolidado por projeto/cena. Só use depois de obter_gaps_coletor indicar que não há asset adequado na Biblioteca e external_allowed=true. Em LIBRARY_ONLY o Core bloqueia coleta externa. Se item_id/cena ainda não existir, a Library cria/upserta a cena idempotentemente, enfileira apenas o necessário e mantém excedentes DISCOVERED como reserva.",
     inputSchema: {
       project_id: z.string().min(1),
       operation_id: z.string().optional(),
@@ -506,8 +518,8 @@ function createServer(env: Env, request: Request) {
   }, async ({limite,tags,next_actions}) => output(await listActionableProjects(env,{limit:limite||50,tagKeys:tags,nextActions:next_actions})));
 
   server.registerTool("criar_projeto_automatico", {
-    description: "Cria um projeto automático V2 usando a tabela histórica e ID opcional idempotente.",
-    inputSchema: { projeto_id:z.string().optional(), nome:z.string().min(1), project_domain:z.string().optional(), prioridade_fila:z.number().int().optional(), automatico:z.boolean().optional(), biblioteca_primeiro:z.boolean().optional(), busca_externa:z.boolean().optional(), zip_automatico:z.boolean().optional(), excluir_zip_ao_concluir:z.boolean().optional() },
+    description: "ROTEIRO/V2: cria projeto idempotente por projeto_id ou operation_id e, por padrão, reserva o giro persistente LIBRARY_ONLY/HYBRID. Retry deve reutilizar operation_id. O ciclo só avança depois do SCRIPT válido.",
+    inputSchema: { projeto_id:z.string().optional(), operation_id:z.string().optional(), usar_ciclo_roteiro:z.boolean().optional(), nome:z.string().min(1), project_domain:z.string().optional(), prioridade_fila:z.number().int().optional(), automatico:z.boolean().optional(), biblioteca_primeiro:z.boolean().optional(), busca_externa:z.boolean().optional(), zip_automatico:z.boolean().optional(), excluir_zip_ao_concluir:z.boolean().optional() },
   }, async (input) => output(await createAutomaticProject(env, input)));
 
   server.registerTool("obter_projeto_automatico", {
@@ -1158,6 +1170,11 @@ function createServer(env: Env, request: Request) {
     inputSchema:{ projeto_id:z.string().min(1), slots:z.array(z.object({ slot_id:z.string().optional(), target_file:z.string().optional(), motivo:z.string().optional() }).refine((v:any)=>Boolean(v.slot_id||v.target_file),{message:"slot_id ou target_file obrigatório"})).min(1).max(500), operation_id:z.string().optional(), rejected_by:z.string().optional() }
   }, async(v:any)=>output(await rejectProductionSlotsBatch(env,{projectId:v.projeto_id,slots:v.slots.map((slot:any)=>({slotId:slot.slot_id,targetFile:slot.target_file,reason:slot.motivo})),operationId:v.operation_id,rejectedBy:v.rejected_by})));
 
+  server.registerTool("obter_gaps_coletor", {
+    description: "COLETOR V2: retorna somente gaps/reposições UNRESOLVED/PENDING/RELINK_REQUIRED, já com candidatos APPROVED da Biblioteca primeiro. Nunca retorna ASSIGNED_FOR_QA/FROZEN. Em LIBRARY_ONLY, externo é proibido.",
+    inputSchema: { projeto_id:z.string().optional(), limite:z.number().int().min(1).max(200).optional(), candidatos_biblioteca:z.number().int().min(1).max(10).optional() },
+  }, async(v)=>output(await listCollectorGaps(env,{projectId:v.projeto_id,limit:v.limite,libraryCandidatesPerGap:v.candidatos_biblioteca})));
+
   server.registerTool("assign_assets_to_slots", {
     description:"Coletor/Relinker: vincula AST já APPROVED da Biblioteca ao PSLOT sem copiar bytes, mas deixa o uso do projeto em ASSIGNED_FOR_QA. Nunca congela/aprova o uso automaticamente.",
     inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), actor:z.string().optional(), assignments:z.array(z.object({slot_id:z.string().optional(),target_file:z.string().min(1),asset_id:z.string().min(1),observation:z.string().optional()})).min(1).max(500) },
@@ -1178,8 +1195,13 @@ function createServer(env: Env, request: Request) {
     description:"CAMINHO VISUAL OBRIGATÓRIO DO QA POR REJEIÇÃO: retorna PSLOTs ASSIGNED_FOR_QA e os próprios pixels como ImageContent inline do MCP, lidos diretamente do R2. Não depende de navegador, preview_url, domínio workers.dev, clique, confirmação ou permissão no chat. O QA deve inspecionar as imagens inline, rejeitar apenas não conformes e depois chamar finalizar_qa_projeto. Use offset para continuar lotes maiores.",
     inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(12).optional(), offset:z.number().int().min(0).optional() },
   }, async(v)=>outputProductionSlotsQaInline(request,env,v.projeto_id,v.limite,v.offset));
+  server.registerTool("sinalizar_referencia_atencao", {
+    description: "QA SEMÂNTICO: use somente quando o problema é do roteiro/referência/universo, não para crop/pose/imagem ruim. Cria REFERENCIA_ATENÇÃO e roteia o projeto ao Roteiro.",
+    inputSchema: { projeto_id:z.string().min(1), slot_id:z.string().min(1), motivo:z.string().min(1), qa:z.string().optional() },
+  }, async(v)=>output(await flagReferenceAttention(env,{projectId:v.projeto_id,slotId:v.slot_id,note:v.motivo,createdBy:v.qa||"MCP_QA"})));
+
   server.registerTool("finalizar_qa_projeto", {
-    description:"Fecha a rodada de QA por rejeição e automatiza o pós-QA: o QA rejeita apenas os não conformes e os sobreviventes viram FROZEN. Promove externas sobreviventes, reconcilia PITEMs pela verdade dos PSLOTs e, somente quando RELINK_REQUIRED/PENDING/ASSIGNED_FOR_QA e tags REVISAR/REVISADO_PARA_QA estiverem zerados, enfileira imagens.zip para geração + validação interna antes de READY_FOR_DOWNLOAD. Idempotente por operation_id.",
+    description:"QA por rejeição: rejeição visual comum abre RELINK_REQUIRED para o Coletor; sobreviventes viram FROZEN. Quando não há gaps/relinks/QA pendente nem tags bloqueantes, o Core faz handoff automático next_action=QUIZ_RENDER. Erro semântico/referência deve usar sinalizar_referencia_atencao. Idempotente por operation_id.",
     inputSchema:{ projeto_id:z.string().min(1), operation_id:z.string().optional(), finalizado_por:z.string().optional() },
   }, async(v)=>output(await finalizeQaAndQueueDelivery(env,{projectId:v.projeto_id,operationId:v.operation_id,finalizedBy:v.finalizado_por})));
   server.registerTool("validar_imagens_zip_projeto", {
@@ -1200,7 +1222,7 @@ function createServer(env: Env, request: Request) {
 
   server.registerTool("obter_thumbs_links", { description:"Lista thumbs do projeto com links temporários do R2.", inputSchema:{ projeto_id:z.string().min(1), limite:z.number().int().min(1).max(100).optional() } }, async(v)=>output(await projectThumbLinks(request,env,v.projeto_id,v.limite||50)));
   server.registerTool("fast_decidir_thumbs_lote", { description:"Decide thumbs em lote (APPROVE, REJECT ou SELECT).", inputSchema:{ projeto_id:z.string().min(1), decisoes:z.array(z.object({thumb_id:z.string().min(1),acao:z.string().min(1),motivo:z.string().optional()})).max(100) } }, async(v)=>output(await decideProjectThumbs(env,v.projeto_id,v.decisoes.map((d: {thumb_id:string;acao:string;motivo?:string})=>({mediaId:d.thumb_id,action:d.acao,reason:d.motivo})) )));
-  server.registerTool("fast_push_titulos", { description:"Registra candidatos de título no projeto sem duplicar infraestrutura de produção.", inputSchema:{ projeto_id:z.string().min(1), titulos:z.array(z.union([z.string(),z.object({texto:z.string().min(1),origem:z.string().optional()})])).min(1).max(100) } }, async(v)=>output(await pushProjectTitles(env,v.projeto_id,v.titulos.map((t: string|{texto:string;origem?:string})=>typeof t==="string"?{text:t}:{text:t.texto,agentOrigin:t.origem}))));
+  server.registerTool("fast_push_titulos", { description:"ROTEIRO: grava até 3 títulos no próprio projeto; idempotente por texto/slot. O agendamento separado de Títulos não é necessário.", inputSchema:{ projeto_id:z.string().min(1), titulos:z.array(z.union([z.string(),z.object({texto:z.string().min(1),origem:z.string().optional()})])).min(1).max(100) } }, async(v)=>output(await pushProjectTitles(env,v.projeto_id,v.titulos.map((t: string|{texto:string;origem?:string})=>typeof t==="string"?{text:t}:{text:t.texto,agentOrigin:t.origem}))));
   server.registerTool("listar_pacote_producao_projeto", { description:"Retorna itens, arquivos, thumbs, títulos e pacotes do projeto.", inputSchema:{ projeto_id:z.string().min(1) } }, async(v)=>output((await projectProductionPackage(request,env,v.projeto_id))||{error:"NOT_FOUND"}));
   server.registerTool("decidir_thumbs_projeto", { description:"Alias completo para decisão de thumbs do projeto.", inputSchema:{ projeto_id:z.string().min(1), decisoes:z.array(z.object({thumb_id:z.string().min(1),acao:z.string().min(1),motivo:z.string().optional()})).max(100) } }, async(v)=>output(await decideProjectThumbs(env,v.projeto_id,v.decisoes.map((d: {thumb_id:string;acao:string;motivo?:string})=>({mediaId:d.thumb_id,action:d.acao,reason:d.motivo})))));
   server.registerTool("decidir_titulos_projeto", { description:"Aprova, rejeita ou seleciona títulos de produção.", inputSchema:{ projeto_id:z.string().min(1), decisoes:z.array(z.object({titulo_id:z.string().min(1),acao:z.string().min(1)})).max(100) } }, async(v)=>output(await decideProjectTitles(env,v.projeto_id,v.decisoes.map((d: {titulo_id:string;acao:string})=>({titleId:d.titulo_id,action:d.acao})))));
@@ -1310,6 +1332,16 @@ function createServer(env: Env, request: Request) {
     description: "Auditoria completa somente leitura: cruza todas as referências conhecidas do D1 com o inventário físico do R2 e reporta faltantes, órfãos e chaves compartilhadas.",
     inputSchema: { max_objetos:z.number().int().min(1000).max(50000).optional() },
   }, async ({max_objetos}) => output(await fullStorageAudit(env,max_objetos||10000)));
+
+  server.registerTool("obter_payload_quiz_projeto", {
+    description: "QUIZ HANDOFF: retorna em uma chamada SCRIPT + 3 títulos + cenas + presets + slots + asset_id final de cada imagem e readiness do projeto.",
+    inputSchema: { projeto_id:z.string().min(1) },
+  }, async(v)=>output(await getProjectQuizPayload(env,v.projeto_id)));
+
+  server.registerTool("processar_quiz_render", {
+    description: "AGENDAMENTO QUIZ: processa somente next_action=QUIZ_RENDER; cria/reutiliza Quiz por project_id, importa o projeto, acompanha jobs e renderiza MP4. Sucesso vira VIDEO_READY; falha mantém QUIZ_RENDER para retry idempotente.",
+    inputSchema: { projeto_id:z.string().optional() },
+  }, async(v)=>output(await processQuizRenderProject(env,request,{projectId:v.projeto_id})));
 
   registerQuizTools(server,env,request);
   return server;

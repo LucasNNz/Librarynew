@@ -3,7 +3,7 @@ import type { Env } from "../types";
 type ColumnSpec = { name:string; ddl:string };
 type TableSpec = { table:string; columns:ColumnSpec[] };
 
-const CONTRACT_VERSION = "2.27.0";
+const CONTRACT_VERSION = "2.29.0";
 
 const REQUIRED: TableSpec[] = [
   {
@@ -48,6 +48,10 @@ const REQUIRED: TableSpec[] = [
       { name:"closed_reason", ddl:"ALTER TABLE automatic_projects ADD COLUMN closed_reason TEXT" },
       { name:"workflow_updated_at", ddl:"ALTER TABLE automatic_projects ADD COLUMN workflow_updated_at INTEGER" },
       { name:"production_reconciled_at", ddl:"ALTER TABLE automatic_projects ADD COLUMN production_reconciled_at INTEGER" },
+      { name:"visual_strategy", ddl:"ALTER TABLE automatic_projects ADD COLUMN visual_strategy TEXT" },
+      { name:"cycle_position", ddl:"ALTER TABLE automatic_projects ADD COLUMN cycle_position INTEGER" },
+      { name:"roteiro_cycle_advanced_at", ddl:"ALTER TABLE automatic_projects ADD COLUMN roteiro_cycle_advanced_at INTEGER" },
+      { name:"creation_operation_id", ddl:"ALTER TABLE automatic_projects ADD COLUMN creation_operation_id TEXT" },
     ],
   },
   {
@@ -115,7 +119,7 @@ export async function inspectCriticalSchema(env:Env) {
     const columns = await tableColumns(env, spec.table);
     for (const column of spec.columns) if (!columns.has(column.name)) missingColumns.push({table:spec.table,column:column.name});
   }
-  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access","v2_reference_pools","v2_production_scenes","v2_production_slots","v2_production_slot_history","v2_slot_tags","v2_project_policy_links","v2_mcp_route_telemetry"]) if (!(await tableExists(env,table))) missingTables.push(table);
+  for (const table of ["v2_ingest_operations","v2_ingest_events","v2_project_workflow_tags","v2_project_slot_access","v2_reference_pools","v2_production_scenes","v2_production_slots","v2_production_slot_history","v2_slot_tags","v2_project_policy_links","v2_mcp_route_telemetry","v2_roteiro_cycle_state","v2_project_quiz_render","v2_asset_search_index"]) if (!(await tableExists(env,table))) missingTables.push(table);
   return {
     ready: missingTables.length===0 && missingColumns.length===0,
     contractVersion: CONTRACT_VERSION,
@@ -183,7 +187,23 @@ export async function reconcileCriticalSchema(env:Env) {
     repaired.push("tables:production_model");
     before=await inspectCriticalSchema(env);
   }
-  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access','v2_reference_pools','v2_production_scenes','v2_production_slots','v2_production_slot_history','v2_slot_tags','v2_project_policy_links','v2_mcp_route_telemetry'].includes(table));
+
+  if(before.missingTables.includes("v2_roteiro_cycle_state")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_roteiro_cycle_state (id TEXT PRIMARY KEY NOT NULL,next_position INTEGER NOT NULL DEFAULT 1 CHECK(next_position BETWEEN 1 AND 5),reserved_project_id TEXT,reserved_operation_id TEXT,reserved_at INTEGER,updated_at INTEGER NOT NULL)`);
+    await env.DB.prepare("INSERT OR IGNORE INTO v2_roteiro_cycle_state(id,next_position,updated_at) VALUES ('ROTEIRO',1,?)").bind(Date.now()).run();
+    repaired.push("table:v2_roteiro_cycle_state");before=await inspectCriticalSchema(env);
+  }
+  if(before.missingTables.includes("v2_project_quiz_render")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_project_quiz_render (project_id TEXT PRIMARY KEY NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,quiz_id TEXT NOT NULL,payload_hash TEXT,import_job_id TEXT,render_job_id TEXT,status TEXT NOT NULL DEFAULT 'PENDING',attempt INTEGER NOT NULL DEFAULT 0,video_url TEXT,last_error TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,completed_at INTEGER)`);
+    await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_quiz_render_status ON v2_project_quiz_render(status,updated_at)");
+    repaired.push("table:v2_project_quiz_render");before=await inspectCriticalSchema(env);
+  }
+  if(before.missingTables.includes("v2_asset_search_index")){
+    await env.DB.exec(`CREATE TABLE IF NOT EXISTS v2_asset_search_index (asset_id TEXT PRIMARY KEY NOT NULL REFERENCES assets(id) ON DELETE CASCADE,name_norm TEXT NOT NULL DEFAULT '',universe_norm TEXT NOT NULL DEFAULT '',subject_norm TEXT NOT NULL DEFAULT '',kind_norm TEXT NOT NULL DEFAULT '',tags_norm TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL)`);
+    repaired.push("table:v2_asset_search_index");before=await inspectCriticalSchema(env);
+  }
+
+  const hardMissing=before.missingTables.filter(table=>!['v2_project_workflow_tags','v2_project_slot_access','v2_reference_pools','v2_production_scenes','v2_production_slots','v2_production_slot_history','v2_slot_tags','v2_project_policy_links','v2_mcp_route_telemetry','v2_roteiro_cycle_state','v2_project_quiz_render','v2_asset_search_index'].includes(table));
   if (hardMissing.length) return { ...before, repaired, error:"CRITICAL_TABLE_MISSING" };
 
   for (const spec of REQUIRED) {
@@ -222,6 +242,8 @@ export async function reconcileCriticalSchema(env:Env) {
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_pslot_candidate ON v2_production_slots(candidate_id) WHERE candidate_id IS NOT NULL");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_project_items_collection_qa ON automatic_project_items(project_id,collection_status,qa_status,priority,updated_at)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_automatic_projects_lifecycle_updated ON automatic_projects(lifecycle_status,updated_at DESC,id DESC)");
+  await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_automatic_projects_creation_operation ON automatic_projects(creation_operation_id) WHERE creation_operation_id IS NOT NULL");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_automatic_projects_quiz_render ON automatic_projects(updated_at ASC,id ASC) WHERE next_action='QUIZ_RENDER' AND COALESCE(lifecycle_status,'ACTIVE')='ACTIVE'");
   await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_media_slot ON v2_project_media(project_id,kind,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('THUMB_REJECTED','REJECTED')");
   await env.DB.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_titles_slot ON v2_project_titles(project_id,slot_index) WHERE slot_index IS NOT NULL AND status NOT IN ('TITLE_REJECTED','REJECTED')");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_automatic_projects_actionable ON automatic_projects(queue_priority DESC,updated_at ASC,id ASC) WHERE COALESCE(lifecycle_status,'ACTIVE')='ACTIVE' AND next_action IS NOT NULL");

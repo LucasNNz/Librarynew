@@ -100,6 +100,7 @@ export async function deployWorker(input: WorkerDeployInput) {
       { type: "d1", name: "DB", id: input.databaseId },
       { type: "r2_bucket", name: "MEDIA", bucket_name: input.r2BucketName },
       { type: "images", name: "IMAGES" },
+      { type: "browser", name: "BROWSER" },
       { type: "queue", name: "MATERIALIZE_QUEUE", queue_name: input.queueName },
       { type: "secret_text", name: "CORVO_INTERNAL_KEY", text: input.internalKey },
       { type: "secret_text", name: "CORVO_APP_KEY", text: input.appKey },
@@ -235,6 +236,9 @@ export async function updateWorkerBundlePreservingBindings(token: string, accoun
     main_module: "corvo-core-v2.mjs",
     compatibility_date: "2026-08-29",
     keep_bindings: ["d1", "r2_bucket", "images", "queue", "secret_text", "plain_text"],
+    // Existing installations did not have Browser Rendering. Adding this
+    // binding during a bundle update makes the Quiz executor self-hosted.
+    bindings: [{ type: "browser", name: "BROWSER" }],
   };
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");

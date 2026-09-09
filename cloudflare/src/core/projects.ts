@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { getRoteiroCycleState, releaseRoteiroCycleReservation, reserveRoteiroCycle } from "./roteiro-cycle";
 import { id, nowMs } from "./ids";
 import { expireProjectWorkflowTags, projectIsClosed, projectSlotSnapshot, projectWriteGuard, setProjectLifecycle } from "./project-workflow";
 import { materializeScenesFromProjectScript, parseProjectScriptScenes } from "./project-script-parser";
@@ -16,7 +17,7 @@ function decodeCursor(value?: string | null) {
 export async function listAutomaticProjects(env: Env, limit=50, cursorValue?: string | null) {
   const safe=Math.max(1,Math.min(limit,200)); const cursor=decodeCursor(cursorValue); const values:unknown[]=[]; let where="";
   if(cursor){where=" WHERE (updated_at < ? OR (updated_at = ? AND id < ?))"; values.push(cursor.updatedAt,cursor.updatedAt,cursor.projectId);}
-  const result=await env.DB.prepare(`SELECT id,name,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,pending_count,failed_count,created_at,updated_at,completed_at,lifecycle_status,mcp_locked,rejected_at,closed_reason,workflow_updated_at FROM automatic_projects${where} ORDER BY updated_at DESC,id DESC LIMIT ?`).bind(...values,safe+1).all<Record<string,unknown>>();
+  const result=await env.DB.prepare(`SELECT id,name,status,pipeline_status,next_action,project_domain,visual_strategy,cycle_position,queue_priority,state_version,total_items,approved_count,pending_count,failed_count,created_at,updated_at,completed_at,lifecycle_status,mcp_locked,rejected_at,closed_reason,workflow_updated_at FROM automatic_projects${where} ORDER BY updated_at DESC,id DESC LIMIT ?`).bind(...values,safe+1).all<Record<string,unknown>>();
   const rows=result.results||[]; const hasMore=rows.length>safe; const items=rows.slice(0,safe); const last=items[items.length-1];
   if(items.length){
     const placeholders=items.map(()=>"?").join(",");
@@ -62,7 +63,7 @@ export async function listActionableProjects(env: Env, input: { limit?:number; t
 }
 
 export async function getShortOperationalSnapshot(env: Env, projectId:string, sinceVersion?:number) {
-  const project=await env.DB.prepare(`SELECT id,status,pipeline_status,next_action,project_domain,queue_priority,state_version,total_items,approved_count,frozen_count,collecting_count,materializing_count,waiting_qa_count,relink_count,technical_count,pending_count,failed_count,active_version,updated_at,workflow_updated_at,lifecycle_status,mcp_locked FROM automatic_projects WHERE id=? LIMIT 1`).bind(projectId).first<Record<string,unknown>>();
+  const project=await env.DB.prepare(`SELECT id,status,pipeline_status,next_action,project_domain,visual_strategy,cycle_position,queue_priority,state_version,total_items,approved_count,frozen_count,collecting_count,materializing_count,waiting_qa_count,relink_count,technical_count,pending_count,failed_count,active_version,updated_at,workflow_updated_at,lifecycle_status,mcp_locked FROM automatic_projects WHERE id=? LIMIT 1`).bind(projectId).first<Record<string,unknown>>();
   if(!project)return null;
   const version=Number(project.state_version||1);
   if(sinceVersion!=null&&Number(sinceVersion)===version)return {project_id:projectId,state_version:version,changed:false,not_modified:true};
@@ -74,7 +75,7 @@ export async function getShortOperationalSnapshot(env: Env, projectId:string, si
     SUM(CASE WHEN status IN ('UNRESOLVED','PENDING') OR ((asset_id IS NULL AND candidate_id IS NULL) AND status NOT IN ('RELINK_REQUIRED')) THEN 1 ELSE 0 END) AS pending
     FROM v2_production_slots WHERE project_id=? AND version=? AND status<>'RETIRED'`).bind(projectId,activeVersion).first<Record<string,unknown>>();
   const total=Number(production?.total||0),assigned=Number(production?.assigned_for_qa||0),frozen=Number(production?.frozen||0),relink=Number(production?.relink_required||0),pending=Number(production?.pending||0);
-  return {project_id:projectId,state_version:version,changed:true,not_modified:false,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,project_domain:project.project_domain,queue_priority:Number(project.queue_priority||1),counts:{total:Number(project.total_items||0),approved:Number(project.approved_count||0),frozen:Number(project.frozen_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0)},production:{production_slots_total:total,production_slots_assigned_for_qa:assigned,production_slots_frozen:frozen,production_slots_relink_required:relink,production_slots_pending:pending,qa_complete:total>0&&frozen>=total&&assigned===0&&relink===0&&pending===0},lifecycle_status:project.lifecycle_status,mcp_locked:Boolean(project.mcp_locked),updated_at:project.updated_at,workflow_updated_at:project.workflow_updated_at,read_profile:"FAST_CONTROL_PLANE_NO_FILES_NO_POLICIES_NO_R2"};
+  return {project_id:projectId,state_version:version,changed:true,not_modified:false,status:project.status,pipeline_status:project.pipeline_status,next_action:project.next_action,project_domain:project.project_domain,visual_strategy:project.visual_strategy||null,cycle_position:project.cycle_position==null?null:Number(project.cycle_position),queue_priority:Number(project.queue_priority||1),counts:{total:Number(project.total_items||0),approved:Number(project.approved_count||0),frozen:Number(project.frozen_count||0),collecting:Number(project.collecting_count||0),materializing:Number(project.materializing_count||0),waiting_qa:Number(project.waiting_qa_count||0),relink:Number(project.relink_count||0),technical:Number(project.technical_count||0),pending:Number(project.pending_count||0),failed:Number(project.failed_count||0)},production:{production_slots_total:total,production_slots_assigned_for_qa:assigned,production_slots_frozen:frozen,production_slots_relink_required:relink,production_slots_pending:pending,qa_complete:total>0&&frozen>=total&&assigned===0&&relink===0&&pending===0},lifecycle_status:project.lifecycle_status,mcp_locked:Boolean(project.mcp_locked),updated_at:project.updated_at,workflow_updated_at:project.workflow_updated_at,read_profile:"FAST_CONTROL_PLANE_NO_FILES_NO_POLICIES_NO_R2"};
 }
 
 export async function getProjectBlockers(env: Env, projectId:string) {
@@ -125,17 +126,47 @@ export async function getProjectBlockers(env: Env, projectId:string) {
   };
 }
 
-export async function createAutomaticProject(env: Env, input: { projeto_id?:string; nome:string; project_domain?:string; prioridade_fila?:number; automatico?:boolean; biblioteca_primeiro?:boolean; busca_externa?:boolean; zip_automatico?:boolean; excluir_zip_ao_concluir?:boolean }) {
-  const projectId=input.projeto_id?.trim()||id("PROJ");
+export async function createAutomaticProject(env: Env, input: { projeto_id?:string; nome:string; project_domain?:string; prioridade_fila?:number; automatico?:boolean; biblioteca_primeiro?:boolean; busca_externa?:boolean; zip_automatico?:boolean; excluir_zip_ao_concluir?:boolean; operation_id?:string; usar_ciclo_roteiro?:boolean }) {
+  const operationId=String(input.operation_id||"").trim()||id("OP");
+  if(input.operation_id){
+    const byOperation=await env.DB.prepare("SELECT * FROM automatic_projects WHERE creation_operation_id=? LIMIT 1").bind(operationId).first<Record<string,unknown>>();
+    if(byOperation)return {project:byOperation,idempotent:true,operation_id:operationId,cycle:byOperation.cycle_position?{cycle_position:Number(byOperation.cycle_position),visual_strategy:String(byOperation.visual_strategy||"")}:null};
+  }
+  const reservedCycle=input.operation_id&&!input.projeto_id?await getRoteiroCycleState(env):null;
+  const reservedProjectId=reservedCycle?.reserved_operation_id===operationId?String(reservedCycle.reserved_project_id||"").trim():"";
+  const projectId=input.projeto_id?.trim()||reservedProjectId||id("PROJ");
   const existing=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
-  if(existing)return {project:existing,idempotent:true};
+  if(existing)return {project:existing,idempotent:true,operation_id:String(existing.creation_operation_id||operationId),cycle:existing.cycle_position?{cycle_position:Number(existing.cycle_position),visual_strategy:String(existing.visual_strategy||"")}:null};
+  const useCycle=input.usar_ciclo_roteiro!==false;
+  let cycle:any=null;
+  if(useCycle){
+    cycle=await reserveRoteiroCycle(env,{projectId,operationId});
+    if(cycle?.error)return cycle;
+  }
   const ts=nowMs();
-  await env.DB.prepare(`INSERT INTO automatic_projects (
-    id,name,status,automatic,library_first,external_search,parallel_materialization,automatic_technical_qa,automatic_zip,delete_zip_on_complete,circuit_breaker,
-    active_version,created_at,updated_at,pipeline_status,project_domain,queue_priority,state_version,total_items,approved_count,frozen_count,collecting_count,materializing_count,waiting_qa_count,relink_count,technical_count,waiting_seed_count,failed_count,pending_count
-  ) VALUES (?,?, 'WAITING_FILES', ?,?,?,1,1,?,?,1,1,?,?,'AGUARDANDO',?,?,1,0,0,0,0,0,0,0,0,0,0,0)`)
-    .bind(projectId,input.nome.trim(),input.automatico===false?0:1,input.biblioteca_primeiro===false?0:1,input.busca_externa===false?0:1,input.zip_automatico===false?0:1,input.excluir_zip_ao_concluir===false?0:1,ts,ts,input.project_domain?.trim()||"GENERAL",Number(input.prioridade_fila||1)).run();
-  return {project:await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>(),idempotent:false};
+  const strategy=useCycle?String(cycle.visual_strategy):null;
+  const position=useCycle?Number(cycle.cycle_position):null;
+  const libraryFirst=useCycle?1:(input.biblioteca_primeiro===false?0:1);
+  const externalSearch=useCycle?(strategy==="HYBRID"?1:0):(input.busca_externa===false?0:1);
+  try{
+    const insert=await env.DB.prepare(`INSERT OR IGNORE INTO automatic_projects (
+      id,name,status,automatic,library_first,external_search,parallel_materialization,automatic_technical_qa,automatic_zip,delete_zip_on_complete,circuit_breaker,
+      active_version,created_at,updated_at,pipeline_status,project_domain,queue_priority,state_version,total_items,approved_count,frozen_count,collecting_count,materializing_count,waiting_qa_count,relink_count,technical_count,waiting_seed_count,failed_count,pending_count,
+      visual_strategy,cycle_position,creation_operation_id
+    ) VALUES (?,?, 'WAITING_FILES', ?,?,?,1,1,?,?,1,1,?,?,'AGUARDANDO',?,?,1,0,0,0,0,0,0,0,0,0,0,0,?,?,?)`)
+      .bind(projectId,input.nome.trim(),input.automatico===false?0:1,libraryFirst,externalSearch,input.zip_automatico===false?0:1,input.excluir_zip_ao_concluir===false?0:1,ts,ts,input.project_domain?.trim()||"GENERAL",Number(input.prioridade_fila||1),strategy,position,operationId).run();
+    if(!Number(insert.meta.changes||0)){
+      const raced=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=? OR creation_operation_id=? LIMIT 1").bind(projectId,operationId).first<Record<string,unknown>>();
+      if(raced)return {project:raced,idempotent:true,operation_id:operationId,cycle:raced.cycle_position?{cycle_position:Number(raced.cycle_position),visual_strategy:String(raced.visual_strategy||"")}:null};
+      if(useCycle)await releaseRoteiroCycleReservation(env,projectId,"PROJECT_INSERT_NOT_APPLIED");
+      return {error:"PROJECT_CREATE_CONFLICT",status:409,operation_id:operationId};
+    }
+    const project=await env.DB.prepare("SELECT * FROM automatic_projects WHERE id=?").bind(projectId).first<Record<string,unknown>>();
+    return {project,idempotent:false,operation_id:operationId,cycle:useCycle?{cycle_position:position,visual_strategy:strategy,advance_rule:"ONLY_AFTER_SCRIPT_PARSED_SUCCESSFULLY"}:null};
+  }catch(error){
+    if(useCycle)await releaseRoteiroCycleReservation(env,projectId,"PROJECT_CREATE_EXCEPTION").catch(()=>undefined);
+    throw error;
+  }
 }
 
 export async function getAutomaticProject(env: Env, projectId:string) {

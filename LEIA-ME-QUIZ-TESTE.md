@@ -1,23 +1,17 @@
-# Librarynew 0.20.59 — Quiz Teste integrado
+# Librarynew 0.20.60 — Quiz Teste integrado
 
 O Quiz Teste está incluído no Librarynew, com entrada no menu, editor manual original e comandos no **mesmo endpoint /mcp**. Não foi criado outro MCP.
 
 ## Ativação
 
-1. Publique este projeto no lugar da versão anterior do Librarynew, pelo processo de publicação que você já utiliza. Execute `npm ci` e `npm run build` para gerar a aplicação.
-2. Atualize também o Core pelo fluxo existente de Configurações. O bundle embarcado já contém os novos comandos. App e Core devem mostrar **0.20.59**. As tabelas do Quiz são adicionais; a migração `cloudflare/migrations/9028_quiz_studio.sql` não apaga tabelas da Library e também é aplicada de forma idempotente no primeiro acesso ao módulo.
-3. Para operação automática com o navegador do usuário fechado, mantenha o executor incluído rodando em um servidor com Docker. Na pasta `quiz-executor`, configure `CORVO_CORE_URL` e `CORVO_APP_KEY` com a conexão já existente da Library e execute:
+1. Publique este projeto no lugar da versão anterior e execute `npm ci` e `npm run build`.
+2. Em **Configurações**, atualize o Core pelo fluxo já existente. O pacote adiciona automaticamente o binding `BROWSER` do Cloudflare Browser Rendering ao mesmo Worker, conserva D1/R2/fila/chaves e mantém o mesmo endpoint `/mcp`. App e Core devem mostrar **0.20.60**.
+3. Atualize as ferramentas da conexão MCP 19 no GPT e execute `quiz_comandos`. O resultado esperado é `renderer_online:true`, `renderer.mode:"CLOUDFLARE_BROWSER_RENDERING"` e `default_quiz_id:"quiz-teste"`.
+4. O documento `quiz-teste` é criado idempotentemente com uma cena real e revisão 1 no primeiro acesso. O editor manual abre o mesmo snapshot persistido.
 
-   ```bash
-   docker compose up -d --build
-   ```
+O executor é acionado pela fila do Core e abre uma sessão isolada do Cloudflare Browser Rendering para cada job. O navegador pessoal pode ficar fechado. A sessão recebe somente um lease temporário do job e pode resolver assets e enviar artefatos ao R2; nenhuma chave é entregue ao GPT ou gravada no Quiz.
 
-   Essas configurações pertencem ao servidor. Não devem ser enviadas ao GPT, colocadas em prompts ou gravadas no projeto de quiz. O executor não publica outra porta/MCP; ele consulta o Core existente.
-4. Abra **Quiz Teste** no menu da Library para criar/editar manualmente. Atualize a lista de ferramentas da conexão MCP existente no GPT. `quiz_comandos` informa se o executor está online.
-
-**O executor é necessário para executar comandos do editor, gerar previews e exportar automaticamente.** O Worker Cloudflare existente não executa Canvas/WebCodecs. Sem o executor, consultas ao estado salvo e edição manual continuam disponíveis, mas comandos automáticos permanecem na fila. Não é necessário deixar o editor aberto no computador pessoal quando o executor está ativo.
-
-Esta entrega é código testado localmente; não foi publicada na sua infraestrutura.
+A pasta `quiz-executor` permanece como alternativa compatível para ambientes que prefiram Docker/FFmpeg. Ela não é necessária quando o binding `BROWSER` está disponível.
 
 ## Ferramentas MCP
 
@@ -30,20 +24,21 @@ Esta entrega é código testado localmente; não foi publicada na sua infraestru
 | `quiz_executar` | Executar qualquer operação do editor pela superfície compartilhada |
 | `quiz_alterar` | Editar uma cena por patch |
 | `quiz_alterar_lote` | Aplicar até 200 edições com rollback integral em caso de erro |
-| `quiz_ver` | Gerar PNG real e PNG de debug com coordenadas |
-| `quiz_operacao` | Consultar resultado, erro e links; `inline_preview:true` devolve PNG no MCP |
+| `quiz_ver` | Gerar PNG real e devolvê-lo inline automaticamente quando terminar no tempo de espera |
+| `quiz_gerar_mp4` | Gerar MP4 de uma cena ou do projeto e retornar o job |
+| `quiz_operacao` | Consultar `SUCCEEDED`/erro/links; PNG concluído é inline por padrão |
 | `quiz_cancelar` | Cancelar fila/exportação |
 
 ## Fluxo recomendado para o GPT
 
 1. Consulte `quiz_comandos` e `quiz_listar`.
-2. Crie um quiz com `quiz_criar` usando um `id` estável.
+2. Leia diretamente `quiz-teste`, que já nasce persistido; use `quiz_criar` apenas para outro Quiz.
 3. Descubra os campos reais com `quiz_executar`, `op:"get_schema"`. O resultado inclui schema, exemplo completo de cena, controles editáveis e áudio.
 4. Consulte a operação até `SUCCEEDED`, `FAILED` ou `CANCELLED`.
 5. Busque imagens com as ferramentas já existentes da Library. Envie somente `asset_id` nos patches.
 6. Prefira `quiz_alterar_lote` para várias cenas. Reutilize exatamente o mesmo `request_id` ao repetir uma solicitação após falha de rede.
-7. Consulte `quiz_ver` e depois `quiz_operacao` com `inline_preview:true` para inspecionar o PNG na própria resposta MCP.
-8. Exporte com `export_scene_mp4` ou `export_project_mp4`. O resultado contém um link direto para o MP4 salvo pelo Core.
+7. Chame `quiz_ver`; ele aguarda até 25 segundos por padrão e já inclui o PNG na resposta quando concluído. Se ainda estiver processando, consulte `quiz_operacao`.
+8. Chame `quiz_gerar_mp4` e consulte `quiz_operacao` até `SUCCEEDED`. O resultado contém `download_url` para o MP4 persistido no Core.
 
 `QUEUED` significa recebido, não aplicado. Edições e renders executam fora da requisição MCP, evitando deixar o chat esperando a exportação. O tempo de render depende da duração, efeitos e capacidade do servidor; não é instantâneo.
 
@@ -93,12 +88,12 @@ Ações de apresentação/interface realizadas no executor referem-se ao navegad
 
 - Edições manuais são salvas automaticamente e alterações remotas são atualizadas por revisão.
 - Se houver edição simultânea, a versão antiga não sobrescreve a nova. A tela mantém a edição local e oferece salvar uma cópia antes de carregar a versão atual.
-- O executor usa lease com heartbeat. Se cair, a operação é marcada como falha, em vez de ser repetida silenciosamente.
+- O executor integrado usa um lease por job e a fila existente do Core. Uma sessão não pode acessar outro job.
 - Snapshot e conclusão da operação são confirmados na mesma transação D1.
 - Imagens/áudio manuais são enviados pelo host diretamente ao armazenamento. MP4s são enviados em partes de até 8 MiB, sem atravessar o chat.
 - Links de mídia são URLs de capacidade com identificador aleatório, sem API key. Quem possuir o link poderá abri-lo. As URLs são persistentes enquanto a mídia existir.
 - Assets da Library são resolvidos novamente antes de preview/exportação para renovar URLs assinadas expiradas.
-- O mesmo renderer Canvas do editor produz o vídeo. O executor inclui FFmpeg para AAC, mantendo volume, repetição e envelope de fades sem depender de AAC disponível no Chromium do servidor.
+- O mesmo renderer Canvas/WebCodecs do editor produz PNG e MP4 no navegador Cloudflare. A alternativa Docker inclui FFmpeg para AAC.
 - Limites atuais: 1.000 cenas, lote de 200 operações, comando de aproximadamente 2 MB, snapshot de aproximadamente 8 MB e mídia de até 5 GB. Projetos extensos podem exigir mais RAM/disco e tempo de render.
 
 Nenhuma operação desta integração requer materialização de arquivos no chat, nova chave para o Quiz ou confirmação adicionada pelo módulo. **A política de aprovação do próprio cliente GPT continua sendo controlada pelo cliente; o código de um MCP não pode garantir nem desativar essas aprovações.**

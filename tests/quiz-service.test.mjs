@@ -1,24 +1,26 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {env,rpc,quizRpc,serveQuizMedia,uploadQuizMedia,uploadQuizPart,project,sqlite} from './quiz-fixture.mjs';
+import {env,rpc,quizRpc,serveQuizMedia,uploadQuizMedia,uploadQuizPart,project,sqlite,queueMessages} from './quiz-fixture.mjs';
 test('persistent state, duplicate requests, revision conflict, atomic commit, queue, cancellation, media',async()=>{
-  const created=await rpc('create',{id:'test',title:'Test'});assert.equal(created.revision,0);
-  assert.equal((await rpc('save',{id:'test',expected_revision:0,project})).revision,1);
-  await assert.rejects(rpc('save',{id:'test',expected_revision:0,project}),/REVISION_CONFLICT/);
+  const catalog=await rpc('catalog');assert.equal(catalog.renderer_online,true);assert.equal(catalog.renderer.mode,'CLOUDFLARE_BROWSER_RENDERING');assert.equal(catalog.default_quiz_id,'quiz-teste');
+  const bootstrap=await rpc('read',{id:'quiz-teste',full:true});assert.equal(bootstrap.revision,1);assert.equal(bootstrap.project.scenes.length,1);
+  const created=await rpc('create',{id:'test',title:'Test'});assert.equal(created.revision,1);assert.equal(created.initialized,true);
+  assert.equal((await rpc('save',{id:'test',expected_revision:1,project})).revision,2);
+  await assert.rejects(rpc('save',{id:'test',expected_revision:1,project}),/REVISION_CONFLICT/);
   const enqueue=()=>rpc('execute',{id:'test',request_id:'edit1',command:{op:'apply',scene:1,patch:{title:'MCP'}}});
-  const first=await enqueue(),retry=await enqueue();assert.equal(first.id,retry.id);
+  const first=await enqueue(),retry=await enqueue();assert.equal(first.id,retry.id);assert.equal(queueMessages.at(-1).kind,'QUIZ_JOB');assert.equal(queueMessages.at(-1).coreOrigin,'https://core.example');
   const claim=await rpc('claim',{owner:'renderer'});assert.equal(claim.job.id,first.id);
   await rpc('execute',{id:'test',request_id:'edit2',command:{op:'get_schema'}});
   assert.equal((await rpc('claim',{owner:'renderer2'})).job,null);
   // Manual save after renderer claim must win; render result cannot overwrite it.
-  await rpc('save',{id:'test',expected_revision:1,project});
-  const failed=await rpc('complete',{owner:'renderer',job_id:first.id,revision:1,project:{...project,scenes:[{title:'MCP'}]},result:{ok:true}});
+  await rpc('save',{id:'test',expected_revision:2,project});
+  const failed=await rpc('complete',{owner:'renderer',job_id:first.id,revision:2,project:{...project,scenes:[{title:'MCP'}]},result:{ok:true}});
   assert.equal(failed.status,'FAILED');assert.equal(failed.result.error,'REVISION_CONFLICT');
   assert.equal((await rpc('read',{id:'test',full:true})).project.scenes[0].title,'Manual');
   const next=await rpc('claim',{owner:'renderer'});
-  const completed=await rpc('complete',{owner:'renderer',job_id:next.job.id,revision:2,project,result:{ok:true}});assert.equal(completed.status,'SUCCEEDED');assert.equal(completed.result.revision,3);
+  const completed=await rpc('complete',{owner:'renderer',job_id:next.job.id,revision:3,project,result:{ok:true}});assert.equal(completed.status,'SUCCEEDED');assert.equal(completed.result.revision,4);
   const pending=await rpc('execute',{id:'test',request_id:'cancel',command:{op:'export_project_mp4'}});await rpc('cancel',{job_id:pending.id});assert.equal((await rpc('job',{job_id:pending.id})).status,'CANCELLED');
-  const running=await rpc('execute',{id:'test',request_id:'cancel2',command:{op:'export_project_mp4'}});await rpc('claim',{owner:'renderer'});await rpc('cancel',{job_id:running.id});assert.equal((await rpc('heartbeat',{owner:'renderer',job_id:running.id})).cancel,true);await rpc('complete',{owner:'renderer',job_id:running.id,revision:3,project,result:{ok:true}});assert.equal((await rpc('read',{id:'test'})).revision,3);
+  const running=await rpc('execute',{id:'test',request_id:'cancel2',command:{op:'export_project_mp4'}});await rpc('claim',{owner:'renderer'});await rpc('cancel',{job_id:running.id});assert.equal((await rpc('heartbeat',{owner:'renderer',job_id:running.id})).cancel,true);await rpc('complete',{owner:'renderer',job_id:running.id,revision:4,project,result:{ok:true}});assert.equal((await rpc('read',{id:'test'})).revision,4);
   await assert.rejects(rpc('execute',{id:'test',request_id:'bad',command:{op:'apply_batch',operations:[{op:'oops'}]}}),/UNKNOWN_COMMAND/);
   await assert.rejects(rpc('execute',{id:'test',request_id:'bad2',command:JSON.parse('{"op":"apply","patch":{"__proto__":{}}}')}),/UNSAFE_KEY/);
   const m=await uploadQuizMedia(env,new Request('https://core.example/quiz/media',{method:'POST',headers:{'content-type':'image/png'},body:'abcdef'}));

@@ -26,6 +26,7 @@ async function cloudflarePut(env: Env, bundle: string) {
       { type: "d1", name: "DB", id: databaseId },
       { type: "r2_bucket", name: "MEDIA", bucket_name: r2BucketName },
       { type: "images", name: "IMAGES" },
+      { type: "browser", name: "BROWSER" },
       { type: "queue", name: "MATERIALIZE_QUEUE", queue_name: queueName },
       { type: "secret_text", name: "CORVO_INTERNAL_KEY", text: env.CORVO_INTERNAL_KEY },
       { type: "secret_text", name: "CORVO_APP_KEY", text: env.CORVO_APP_KEY },

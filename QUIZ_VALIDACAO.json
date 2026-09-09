@@ -1,6 +1,6 @@
 {
-  "version": "0.20.59",
-  "mcp_tools": 10,
+  "version": "0.20.60",
+  "mcp_tools": 11,
   "editor_commands": 39,
   "checks": {
     "typescript_structural": "passed",
@@ -8,10 +8,13 @@
     "d1_sqlite_state_concurrency_cancel_idempotency": "passed",
     "real_browser_scene_text_layout_batch_rollback": "passed",
     "headless_executor_png_mp4_h264_aac_multipart_download": "passed",
-    "manual_ui_autosave_remote_refresh": "passed"
+    "manual_ui_autosave_remote_refresh": "passed",
+    "core_queue_cloudflare_browser_binding": "passed_structural",
+    "default_quiz_persisted_revision_1": "passed",
+    "quiz_ver_inline_default": "passed_structural"
   },
-  "test_environment": "Node 24, Chromium headless, SQLite D1-compatible test adapter and in-memory R2 test adapter. No remote infrastructure deployment. Production target Node 22 / Cloudflare / Docker.",
-  "limits": "No production load test or full-length long-video benchmark. Executor installation required for automatic commands.",
+  "test_environment": "Node 24, Chromium headless, SQLite D1-compatible adapter and in-memory R2 adapter. Production target Node 22 / Cloudflare Browser Rendering; live account deployment is validated after installation by renderer_online.",
+  "limits": "No production-account deployment or full-length load benchmark was performed in this build environment. Cloudflare Browser Rendering must be enabled for the account.",
   "modified_files": [
     ".validate-frontend-stubs.d.ts",
     "app/api/health/route.ts",
@@ -27,7 +30,12 @@
     "lib/generated-core-bundle.ts",
     "next-env.d.ts",
     "package.json",
-    "tsconfig.json"
+    "tsconfig.json",
+    "cloudflare/src/core/http.ts",
+    "cloudflare/src/core/control-plane.ts",
+    "cloudflare/src/types.ts",
+    "lib/cloudflare-control.ts",
+    "cloudflare/wrangler.jsonc.example"
   ],
   "new_files": [
     "LEIA-ME-QUIZ-TESTE.md",
@@ -56,6 +64,8 @@
     "tests/quiz-e2e.mjs",
     "tests/quiz-fixture.mjs",
     "tests/quiz-service.test.mjs",
-    "tests/quiz-ui.mjs"
+    "tests/quiz-ui.mjs",
+    "cloudflare/src/quiz/browser-executor.ts",
+    "cloudflare/src/quiz/default-project.ts"
   ]
 }

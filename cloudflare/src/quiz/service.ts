@@ -1,5 +1,6 @@
 import type { Env } from '../types';
 import { getAssetLink } from '../core/assets';
+import DEFAULT_QUIZ_PROJECT from './default-project';
 
 export const COMMANDS = ['get_schema','get_state','get_project','get_scene','summary','apply','set_scene','apply_batch','set_many','apply_placement','set_scene_placement','set_active_scene','add_scene','add_text_scene','duplicate_scene','delete_scene','move_scene','replace_project','set_audio','reset_scene','set_selection','apply_to_selection','auto_layout','get_coordinates','get_visual','export_scene','export_scene_package','export_png','export_scene_mp4','export_project_mp4','export_project','get_diagnostics','present','stop_present','set_control','set_playback','set_editor_visible','import_scenes','export_overlay_placement'] as const;
 const READ_COMMANDS = new Set(['get_schema','get_state','get_project','get_scene','summary','get_coordinates','get_visual','export_scene','export_scene_package','export_png','export_scene_mp4','export_project_mp4','export_project','get_diagnostics','present','stop_present','set_selection']);
@@ -9,13 +10,22 @@ const json = (v:unknown) => JSON.stringify(v);
 const uuid = () => crypto.randomUUID();
 let ready: Promise<void>|undefined;
 export function ensureQuiz(env:Env) {
-  return ready ||= env.DB.exec(`CREATE TABLE IF NOT EXISTS quiz_documents(id TEXT PRIMARY KEY,title TEXT NOT NULL,project_id TEXT,revision INTEGER NOT NULL DEFAULT 0,snapshot_key TEXT,summary_json TEXT NOT NULL DEFAULT '{}',updated_at INTEGER NOT NULL);
+  return ready ||= (async()=>{await env.DB.exec(`CREATE TABLE IF NOT EXISTS quiz_documents(id TEXT PRIMARY KEY,title TEXT NOT NULL,project_id TEXT,revision INTEGER NOT NULL DEFAULT 0,snapshot_key TEXT,summary_json TEXT NOT NULL DEFAULT '{}',updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS quiz_jobs(id TEXT PRIMARY KEY,document_id TEXT NOT NULL,request_json TEXT NOT NULL,status TEXT NOT NULL,expected_revision INTEGER,client_id TEXT NOT NULL,owner TEXT,lease_until INTEGER,result_json TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,UNIQUE(document_id,client_id));
 CREATE INDEX IF NOT EXISTS quiz_jobs_queue ON quiz_jobs(status,created_at);
 CREATE INDEX IF NOT EXISTS quiz_jobs_document ON quiz_jobs(document_id,status);
 CREATE TABLE IF NOT EXISTS quiz_media(id TEXT PRIMARY KEY,r2_key TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS quiz_uploads(id TEXT PRIMARY KEY,r2_key TEXT NOT NULL,upload_id TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,created_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS quiz_executors(id TEXT PRIMARY KEY,seen_at INTEGER NOT NULL);`).then(()=>undefined).catch(e=>{ready=undefined;throw e;});
+CREATE TABLE IF NOT EXISTS quiz_executors(id TEXT PRIMARY KEY,seen_at INTEGER NOT NULL);`);
+    // A fresh installation is immediately useful to both the manual editor and MCP.
+    // The snapshot is bundled code, not a chat materialization.
+    const existing=await env.DB.prepare('SELECT id FROM quiz_documents WHERE id=?').bind('quiz-teste').first();
+    if(!existing){
+      const key='quiz/snapshots/quiz-teste/initial-v1.json';
+      await env.MEDIA.put(key,json(DEFAULT_QUIZ_PROJECT),{httpMetadata:{contentType:'application/json'}});
+      await env.DB.prepare('INSERT OR IGNORE INTO quiz_documents(id,title,revision,snapshot_key,summary_json,updated_at) VALUES(?,?,?,?,?,?)').bind('quiz-teste','Quiz Teste',1,key,json({total_scenes:1,active_scene:1,format:'16:9',initialized:true}),Date.now()).run();
+    }
+  })().catch(e=>{ready=undefined;throw e;});
 }
 async function doc(env:Env,id:unknown):Promise<any>{const row=await env.DB.prepare('SELECT * FROM quiz_documents WHERE id=?').bind(safeId(id)).first();if(!row)throw new QuizError('QUIZ_NOT_FOUND',404);return row;}
 async function snapshot(env:Env,row:any){if(!row.snapshot_key)return null;const obj=await env.MEDIA.get(row.snapshot_key);if(!obj)throw new QuizError('SNAPSHOT_MISSING',503);return JSON.parse(await obj.text());}
@@ -31,7 +41,13 @@ function validateCommand(c:any, batch=false) {
   // Do not accept object keys used for prototype mutation at any nesting level.
   const walk=(v:any)=>{if(v&&typeof v==='object')for(const k of Object.keys(v)){if(['__proto__','constructor','prototype'].includes(k))throw new QuizError('UNSAFE_KEY');walk(v[k]);}};walk(c);
 }
-async function executorOnline(env:Env){const r=await env.DB.prepare('SELECT MAX(seen_at) AS seen FROM quiz_executors').first<any>();return Number(r?.seen||0)>Date.now()-30_000;}
+export async function rendererStatus(env:Env){
+  if(env.BROWSER){try{const r=await env.BROWSER.fetch('https://cloudflare.browser/v1/limits');if(r.ok)return {online:true,mode:'CLOUDFLARE_BROWSER_RENDERING',browser_closed_ok:true};}catch{/* external executor fallback below */}}
+  const r=await env.DB.prepare('SELECT MAX(seen_at) AS seen FROM quiz_executors').first<any>();
+  const online=Number(r?.seen||0)>Date.now()-30_000;
+  return {online,mode:online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',browser_closed_ok:online};
+}
+async function executorOnline(env:Env){return (await rendererStatus(env)).online;}
 export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Promise<any>{
   await ensureQuiz(env);
   if(op==='upload-start'){
@@ -48,11 +64,12 @@ export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Pro
     await env.DB.batch([env.DB.prepare('INSERT OR IGNORE INTO quiz_media(id,r2_key,mime,size,created_at) VALUES(?,?,?,?,?)').bind(u.id,u.r2_key,u.mime,u.size,Date.now()),env.DB.prepare('DELETE FROM quiz_uploads WHERE id=?').bind(u.id)]);
     return {ok:true,id:u.id,url:`${new URL(request.url).origin}/quiz/media/${u.id}`,mime:u.mime,size:u.size};
   }
-  if(op==='catalog')return {ok:true,commands:COMMANDS,batch_limit:200,scene_index:'1-based',workflow:'create → execute (request_id) → job until SUCCEEDED → inspect result URLs; same request_id prevents duplicate submission',reads:'read returns persisted state immediately; get_schema gives ALL editable fields from the real editor',renderer_online:await executorOnline(env),approval:'Uses existing Library MCP. No chat file/materialization tools. Client approval policies remain controlled by the client.'};
-  if(op==='list'){const limit=Math.min(100,Math.max(1,Number(p.limit)||30));const r=await env.DB.prepare('SELECT id,title,project_id,revision,summary_json,updated_at FROM quiz_documents ORDER BY updated_at DESC LIMIT ? OFFSET ?').bind(limit,Math.max(0,Number(p.offset)||0)).all<any>();return {ok:true,items:r.results.map(({summary_json,...r})=>({...r,summary:JSON.parse(summary_json)})),renderer_online:await executorOnline(env)};}
+  if(op==='catalog'){const renderer=await rendererStatus(env);return {ok:true,commands:COMMANDS,batch_limit:200,scene_index:'1-based',default_quiz_id:'quiz-teste',workflow:'read quiz-teste → execute (request_id) → job until SUCCEEDED → inspect result URLs; same request_id prevents duplicate submission',reads:'read returns persisted state immediately; get_schema gives ALL editable fields from the real editor',renderer_online:renderer.online,renderer,approval:'Uses existing Library MCP. No chat file/materialization tools. Client approval policies remain controlled by the client.'};}
+  if(op==='list'){const limit=Math.min(100,Math.max(1,Number(p.limit)||30));const r=await env.DB.prepare('SELECT id,title,project_id,revision,summary_json,updated_at FROM quiz_documents ORDER BY updated_at DESC,id ASC LIMIT ? OFFSET ?').bind(limit,Math.max(0,Number(p.offset)||0)).all<any>();return {ok:true,items:r.results.map(({summary_json,...r})=>({...r,summary:JSON.parse(summary_json)})),renderer_online:await executorOnline(env)};}
   if(op==='create'){
     const id=p.id?safeId(p.id):uuid();if(p.project_id){const project=await env.DB.prepare('SELECT id FROM automatic_projects WHERE id=?').bind(p.project_id).first();if(!project)throw new QuizError('LIBRARY_PROJECT_NOT_FOUND',404);}
-    await env.DB.prepare('INSERT OR IGNORE INTO quiz_documents(id,title,project_id,updated_at) VALUES(?,?,?,?)').bind(id,String(p.title||'Quiz Teste').slice(0,160),p.project_id||null,Date.now()).run();return {ok:true,id,revision:(await doc(env,id)).revision};
+    const key=`quiz/snapshots/${id}/initial-v1.json`;await env.MEDIA.put(key,json(DEFAULT_QUIZ_PROJECT),{httpMetadata:{contentType:'application/json'}});
+    await env.DB.prepare('INSERT OR IGNORE INTO quiz_documents(id,title,project_id,revision,snapshot_key,summary_json,updated_at) VALUES(?,?,?,1,?,?,?)').bind(id,String(p.title||'Quiz Teste').slice(0,160),p.project_id||null,key,json({total_scenes:1,active_scene:1,format:'16:9',initialized:true}),Date.now()).run();return {ok:true,id,revision:(await doc(env,id)).revision,initialized:true};
   }
   if(op==='read'){
     const row=await doc(env,p.id);if(p.if_revision===row.revision)return {ok:true,id:row.id,revision:row.revision,changed:false};
@@ -67,7 +84,9 @@ export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Pro
     validateCommand(p.command);const row=await doc(env,p.id);const client=safeId(p.request_id);const existing=await env.DB.prepare('SELECT id,status FROM quiz_jobs WHERE document_id=? AND client_id=?').bind(row.id,client).first();if(existing)return {ok:true,...existing,deduplicated:true};
     if(p.expected_revision!==undefined&&p.expected_revision!==row.revision)throw new QuizError('REVISION_CONFLICT',409);
     const id=uuid(),now=Date.now();await env.DB.prepare("INSERT OR IGNORE INTO quiz_jobs(id,document_id,request_json,status,expected_revision,client_id,created_at,updated_at) VALUES(?,?,?,'QUEUED',?,?,?,?)").bind(id,row.id,json(p.command),p.expected_revision??null,client,now,now).run();
-    const actual=await env.DB.prepare('SELECT id,status FROM quiz_jobs WHERE document_id=? AND client_id=?').bind(row.id,client).first();return {ok:true,...actual,renderer_online:await executorOnline(env),poll_after_ms:1000};
+    const actual:any=await env.DB.prepare('SELECT id,status FROM quiz_jobs WHERE document_id=? AND client_id=?').bind(row.id,client).first();
+    if(actual?.id&&env.MATERIALIZE_QUEUE)await env.MATERIALIZE_QUEUE.send({kind:'QUIZ_JOB',jobId:String(actual.id),coreOrigin:new URL(request.url).origin});
+    return {ok:true,...actual,renderer_online:await executorOnline(env),poll_after_ms:1000};
   }
   if(op==='job'){
     const row:any=await env.DB.prepare('SELECT id,document_id,status,result_json,updated_at FROM quiz_jobs WHERE id=?').bind(safeId(p.job_id)).first();if(!row)throw new QuizError('JOB_NOT_FOUND',404);const {result_json,...rest}=row;return {ok:true,...rest,result:result_json?JSON.parse(result_json):null};
@@ -85,6 +104,12 @@ export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Pro
     if(!r.meta.changes){await env.MEDIA.delete(key);throw new QuizError('REVISION_CONFLICT',409);}return {ok:true,revision:row.revision+1};
   }
   // The following endpoints are reached only through the existing authenticated app/renderer channel.
+  if(op==='claim-job'){
+    const owner=safeId(p.owner),jobId=safeId(p.job_id),now=Date.now();
+    await env.DB.prepare('INSERT INTO quiz_executors(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at').bind(owner,now).run();
+    const row:any=await env.DB.prepare(`UPDATE quiz_jobs SET status='RUNNING',owner=?,lease_until=?,updated_at=? WHERE id=? AND status='QUEUED' AND NOT EXISTS(SELECT 1 FROM quiz_jobs busy WHERE busy.document_id=quiz_jobs.document_id AND busy.id<>quiz_jobs.id AND busy.status IN ('RUNNING','CANCEL_REQUESTED')) RETURNING *`).bind(owner,now+14*60_000,now,jobId).first();
+    if(!row){const pending:any=await env.DB.prepare('SELECT status FROM quiz_jobs WHERE id=?').bind(jobId).first();return {ok:true,job:null,status:pending?.status||'MISSING'};}const d=await doc(env,row.document_id);return {ok:true,job:{id:row.id,document_id:row.document_id,expected_revision:row.expected_revision,command:JSON.parse(row.request_json),revision:d.revision,project:await snapshot(env,d)}};
+  }
   if(op==='claim'){
     const owner=safeId(p.owner),now=Date.now();await env.DB.prepare('INSERT INTO quiz_executors(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at').bind(owner,now).run();
     await env.DB.prepare(`UPDATE quiz_jobs SET status='FAILED',result_json=?,updated_at=? WHERE status IN ('RUNNING','CANCEL_REQUESTED') AND lease_until<?`).bind(json({ok:false,error:'EXECUTOR_LOST',retry:'Submit a new request_id after reviewing persisted revision.'}),now,now).run();
@@ -131,4 +156,12 @@ export async function uploadQuizPart(env:Env,request:Request,id:string,part:numb
   const u:any=await env.DB.prepare('SELECT * FROM quiz_uploads WHERE id=?').bind(safeId(id)).first();if(!u)throw new QuizError('UPLOAD_NOT_FOUND',404);
   const bytes=await request.arrayBuffer();if(!bytes.byteLength||bytes.byteLength>8*1024*1024)throw new QuizError('INVALID_PART_SIZE');
   return {ok:true,...await env.MEDIA.resumeMultipartUpload(u.r2_key,u.upload_id).uploadPart(part,bytes)};
+}
+
+/** Restricts the browser bridge to the single leased job that launched it. */
+export async function authorizeQuizExecutor(env:Env,request:Request){
+  await ensureQuiz(env);const job=request.headers.get('x-quiz-job'),owner=request.headers.get('x-quiz-owner');
+  if(!job||!owner)return false;
+  const row=await env.DB.prepare("SELECT id FROM quiz_jobs WHERE id=? AND owner=? AND status IN ('RUNNING','CANCEL_REQUESTED') AND lease_until>?").bind(job,owner,Date.now()).first();
+  return !!row;
 }

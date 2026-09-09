@@ -87,3 +87,16 @@ export async function findSlotsByTag(env:Env,input:{tagKey:string;projectId?:str
     ORDER BY t.updated_at DESC LIMIT ?`).bind(...params).all<Record<string,unknown>>();
   return {tag_key:tagKey,total:(rows.results||[]).length,items:(rows.results||[]).map(row=>({...mapTag(row),project_name:row.project_name,project_status:row.project_status,pipeline_status:row.pipeline_status,lifecycle_status:row.lifecycle_status,project_updated_at:row.project_updated_at}))};
 }
+
+
+export async function flagReferenceAttention(env:Env,input:{projectId:string;slotId:string;note:string;createdBy?:string}){
+  const projectId=clean(input.projectId),slotId=clean(input.slotId),note=limitText(input.note,4000);
+  if(!projectId||!slotId||!note)return {error:"INVALID_REFERENCE_ATTENTION",required:["project_id","slot_id","note"],status:400} as const;
+  const slot=await env.DB.prepare("SELECT id,target_file,subject,universe,semantic_reference,status FROM v2_production_slots WHERE project_id=? AND (id=? OR slot_key=?) AND status<>'RETIRED' LIMIT 1").bind(projectId,slotId,slotId).first<Record<string,unknown>>();
+  if(!slot)return {error:"PRODUCTION_SLOT_NOT_FOUND",status:404} as const;
+  const tagged=await createSlotTag(env,{projectId,slotId:String(slot.id),tagKey:"REFERENCIA_ATENÇÃO",emoji:"⚠️",label:"Referência atenção",note,createdBy:input.createdBy||"QA_SEMANTIC"});
+  if((tagged as any)?.error)return tagged;
+  const ts=nowMs();
+  await env.DB.prepare("UPDATE automatic_projects SET pipeline_status='ROTEIRO_ATTENTION',next_action='ROTEIRO_REFERENCIA_ATENCAO',state_version=state_version+CASE WHEN COALESCE(next_action,'')<>'ROTEIRO_REFERENCIA_ATENCAO' OR COALESCE(pipeline_status,'')<>'ROTEIRO_ATTENTION' THEN 1 ELSE 0 END,workflow_updated_at=?,updated_at=? WHERE id=?").bind(ts,ts,projectId).run();
+  return {ok:true,project_id:projectId,slot_id:String(slot.id),target_file:slot.target_file||null,subject:slot.subject||null,universe:slot.universe||null,reference:slot.semantic_reference||null,tag:"REFERENCIA_ATENÇÃO",route:"ROTEIRO",next_action:"ROTEIRO_REFERENCIA_ATENCAO",visual_rejection:false,tag_result:tagged};
+}

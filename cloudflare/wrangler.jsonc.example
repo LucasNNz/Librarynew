@@ -19,6 +19,9 @@
   "images": {
     "binding": "IMAGES"
   },
+  "browser": {
+    "binding": "BROWSER"
+  },
   "queues": {
     "producers": [
       {

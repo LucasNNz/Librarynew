@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { id, nowMs, stableId } from "./ids";
 import { materializeProductionModel, type ProductionSceneSeed } from "./production-model";
+import { advanceRoteiroCycleAfterScript } from "./roteiro-cycle";
 
 function clean(value: unknown){return String(value??"").trim();}
 
@@ -178,7 +179,8 @@ export async function materializeScenesFromProjectScript(env:Env,input:{projectI
     const productionSeeds:ProductionSceneSeed[]=scenes.map(scene=>({sceneKey:scene.itemKey,number:scene.number,title:scene.title,universe:scene.universe,subject:scene.subject,concept:scene.concept,reference:scene.reference,scriptExcerpt:scene.scriptExcerpt,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass,slots:scene.targetSlots.map(slot=>({targetFile:slot.targetFile,visualRole:slot.visualRole,preset:scene.preset,context:scene.scriptExcerpt,compositionClass:scene.compositionClass}))}));
     const production=await materializeProductionModel(env,{projectId,version:Number(project.active_version||1),scenes:productionSeeds});
     await env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PRODUCTION_RECONCILED","OK",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,sceneCount:scenes.length,productionOnly:true,production}),ts).run().catch(()=>undefined);
-    return {ok:true,sceneCount:scenes.length,created:0,updated:0,production,productionOnly:true,projectStatus:project.status,pipelineStatus:project.pipeline_status,nextAction:null,items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
+    const roteiroCycle=await advanceRoteiroCycleAfterScript(env,{projectId,sceneCount:scenes.length,scriptFileId:input.fileId}).catch(error=>({error:error instanceof Error?error.message:String(error)}));
+    return {ok:true,sceneCount:scenes.length,created:0,updated:0,production,productionOnly:true,projectStatus:project.status,pipelineStatus:project.pipeline_status,nextAction:null,roteiro_cycle:roteiroCycle,items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
   }
 
   let created=0,updated=0;
@@ -227,8 +229,9 @@ export async function materializeScenesFromProjectScript(env:Env,input:{projectI
   }));
   const production=await materializeProductionModel(env,{projectId,version:Number(project.active_version||1),scenes:productionSeeds});
   await env.DB.batch([
-    env.DB.prepare(`UPDATE automatic_projects SET status='ACTIVE',pipeline_status='PROCESSANDO',next_action='DISPATCH',started_at=COALESCE(started_at,?),total_items=(SELECT COUNT(*) FROM automatic_project_items WHERE project_id=?),state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?`).bind(ts,projectId,ts,ts,projectId),
+    env.DB.prepare(`UPDATE automatic_projects SET status='ACTIVE',pipeline_status='ROTEIRO_LIBRARY_ASSIGNMENT',next_action='ROTEIRO_ASSIGN_LIBRARY',started_at=COALESCE(started_at,?),total_items=(SELECT COUNT(*) FROM automatic_project_items WHERE project_id=?),state_version=state_version+1,workflow_updated_at=?,updated_at=? WHERE id=?`).bind(ts,projectId,ts,ts,projectId),
     env.DB.prepare("INSERT INTO automatic_project_events (id,project_id,event,status,detail,created_at) VALUES (?,?,?,?,?,?)").bind(id("PEV"),projectId,"SCRIPT_PARSED_SCENES","OK",JSON.stringify({fileId:input.fileId||null,fileName:input.fileName||null,sceneCount:scenes.length,created,updated,production,itemKeys:scenes.slice(0,200).map(scene=>scene.itemKey)}),ts),
   ]);
-  return {ok:true,sceneCount:scenes.length,created,updated,production,projectStatus:"ACTIVE",pipelineStatus:"PROCESSANDO",nextAction:"DISPATCH",items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
+  const roteiroCycle=await advanceRoteiroCycleAfterScript(env,{projectId,sceneCount:scenes.length,scriptFileId:input.fileId}).catch(error=>({error:error instanceof Error?error.message:String(error)}));
+  return {ok:true,sceneCount:scenes.length,created,updated,production,projectStatus:"ACTIVE",pipelineStatus:"ROTEIRO_LIBRARY_ASSIGNMENT",nextAction:"ROTEIRO_ASSIGN_LIBRARY",roteiro_cycle:roteiroCycle,items:scenes.map(scene=>({item_key:scene.itemKey,title:scene.title,universe:scene.universe||null,subject:scene.subject||null,target_files:scene.targetFiles}))};
 }

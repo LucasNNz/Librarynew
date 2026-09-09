@@ -1,0 +1,11 @@
+{
+  "version": "0.20.61",
+  "schema": "2.29.0",
+  "feature": "Roteiro Library cycle + collector gaps + QA->Quiz handoff",
+  "structural_typecheck_core": true,
+  "structural_typecheck_app": true,
+  "migration_9029_sqlite": true,
+  "requirements_gate": {"passed": 30, "total": 30, "ok": true},
+  "generated_core_bundle": "UNBUILT_FAIL_SAFE_REGENERATED_BY_PREBUILD",
+  "quiz_service_runtime_test": "NOT_RUN_NPM_REGISTRY_DNS_EAI_AGAIN"
+}

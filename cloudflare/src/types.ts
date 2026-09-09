@@ -2,6 +2,8 @@ export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
   MATERIALIZE_QUEUE: Queue<CorvoQueueJob>;
+  /** Cloudflare Browser Rendering. It runs Quiz jobs inside the Core, even with the editor closed. */
+  BROWSER?: { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
   CORVO_INTERNAL_KEY: string;
   CORVO_APP_KEY: string;
   CORVO_SIGNING_KEY: string;
@@ -112,4 +114,10 @@ export type ImportZipJob = {
   importId: string;
 };
 
-export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | QaDecisionsJob | PackageJob | CollectionJob | AssetExportJob | ImportZipJob;
+export type QuizJob = {
+  kind: "QUIZ_JOB";
+  jobId: string;
+  coreOrigin: string;
+};
+
+export type CorvoQueueJob = MaterializeJob | FastApproveJob | SupervisorDecisionsJob | QaDecisionsJob | PackageJob | CollectionJob | AssetExportJob | ImportZipJob | QuizJob;

@@ -1,0 +1,25 @@
+{
+  "version": "0.20.60",
+  "result": "PASSED",
+  "features": {
+    "same_mcp_endpoint": true,
+    "cloudflare_browser_binding": true,
+    "queue_driven_quiz_jobs": true,
+    "renderer_online_health": true,
+    "default_quiz_id": "quiz-teste",
+    "default_quiz_revision": 1,
+    "browser_personal_required": false,
+    "quiz_ver_inline_png_default": true,
+    "dedicated_mp4_tool": "quiz_gerar_mp4",
+    "all_editor_commands_via_quiz_executar": 39,
+    "chat_materialization_required": false
+  },
+  "gates": {
+    "typescript_app_and_worker": "PASSED",
+    "production_build_and_embedded_core": "PASSED",
+    "d1_r2_queue_unit_integration": "PASSED",
+    "manual_editor_autosave_remote_refresh": "PASSED",
+    "headless_png_mp4_h264_aac_multipart": "PASSED"
+  },
+  "production_activation_check": "After publishing App and updating Core, quiz_comandos must report renderer_online=true and renderer.mode=CLOUDFLARE_BROWSER_RENDERING."
+}

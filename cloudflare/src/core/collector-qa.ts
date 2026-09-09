@@ -29,6 +29,15 @@ export async function fastPushProjectCandidates(env: Env, input: { projectId: st
   const guard = await projectWriteGuard(env, projectId);
   if (!guard.ok) return guard;
   const project = guard.project as Record<string,unknown>;
+  if (collectorClean(project.visual_strategy).toUpperCase() === "LIBRARY_ONLY") {
+    return {
+      error: "EXTERNAL_COLLECTION_FORBIDDEN_LIBRARY_ONLY",
+      status: 409,
+      projectId,
+      visual_strategy: "LIBRARY_ONLY",
+      instruction: "Este giro deve trabalhar 100% com assets APPROVED da Biblioteca; resolva os gaps com assign_assets_to_slots ou corrija o conceito do Roteiro.",
+    } as const;
+  }
   const operationId = collectorClean(input.operationId) || id("OP");
   await updateProjectWorkflow(env,{projectId,activate:["COLLECTOR_WORKING"],ownerId:"MCP_COLLECTOR",executionId:operationId,ttlSeconds:300,metadata:{source:"fast_push_project_candidates"}}).catch(()=>undefined);
   const created = nowMs();
