@@ -1,0 +1,49 @@
+# CORVO STUDIO — EXEMPLO DE COORDENADAS
+# Exemplo 16:9 (1920x1080)
+#
+# CARDS A-D: valores sem unidade usam pixels de referência.
+# PNGs: valores pequenos sem unidade (até 150) e valores com % são percentuais.
+# Para pixels em PNG, escreva px explicitamente, por exemplo 960px.
+
+SET_SCENE_PLACEMENT
+REFERENCE_WIDTH=1920
+REFERENCE_HEIGHT=1080
+
+# --- CARDS ---
+A_CENTER_X=650
+A_BASE_Y=730
+B_CENTER_X=1270
+B_BASE_Y=730
+C_CENTER_X=350
+C_BASE_Y=730
+D_CENTER_X=1570
+D_BASE_Y=730
+
+# --- PNG 1 ---
+PNG_1_CENTER_X=25%
+PNG_1_BASE_Y=82%
+PNG_1_SCALE=24
+PNG_1_DEPTH=under
+PNG_1_NAME=mao-esquerda
+
+# --- PNG 2 ---
+PNG_2_CENTER_X=75%
+PNG_2_BASE_Y=82%
+PNG_2_SCALE=24
+PNG_2_DEPTH=under
+PNG_2_NAME=mao-direita
+
+# --- PNG 3 ---
+PNG_3_CENTER_X=50%
+PNG_3_BASE_Y=42%
+PNG_3_SCALE=20
+PNG_3_DEPTH=over
+PNG_3_NAME=camada-central
+
+# Exemplo equivalente em pixels para PNG 1:
+# PNG_1_CENTER_X=480px
+# PNG_1_BASE_Y=886px
+#
+# DEPTH=under -> card por cima do PNG
+# DEPTH=over  -> PNG por cima do card
+# Faixa manual permitida para X/Y dos PNGs: -50% a 150%.

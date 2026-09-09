@@ -1,0 +1,12 @@
+import {readFile,writeFile} from 'node:fs/promises';
+const service=await readFile('cloudflare/src/quiz/service.ts','utf8');
+const commands=service.split('export const COMMANDS = ')[1].split(' as const')[0];
+let adapter=await readFile('quiz-executor/editor-adapter.js','utf8');
+adapter=adapter.replace(/(window\.CorvoQuizStudio\.capabilities=\(\)=>\(\{version:'library-quiz\/v2',batch:true,max_batch_ops:200,commands:)\[.*?\](\}\);)/,(_,a,b)=>a+commands+b);
+let html=await readFile('public/quiz-studio/index.html','utf8');
+const start=html.indexOf('  // Inserted inside the original exporter scope:');
+const marker='  handleStudioCommand=libraryExecute;',end=html.indexOf(marker,start)+marker.length;
+if(start<0||end<marker.length)throw Error('ADAPTER_MARKER_MISSING');
+html=html.slice(0,start)+adapter.trimEnd()+html.slice(end);
+await writeFile('quiz-executor/editor-adapter.js',adapter);await writeFile('public/quiz-studio/index.html',html);
+console.log('Quiz adapter and command catalog synchronized.');

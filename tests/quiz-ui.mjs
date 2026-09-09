@@ -1,0 +1,16 @@
+import {env,rpc,quizRpc} from './quiz-fixture.mjs';
+import {spawn} from 'node:child_process';
+import {createRequire} from 'node:module';import assert from 'node:assert/strict';
+const app=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','3000'],{stdio:['ignore','pipe','pipe']});await new Promise((resolve,reject)=>{app.stdout.on('data',b=>{if(b.toString().includes('Ready'))resolve()});app.once('exit',()=>reject(Error('APP_START_FAILED')))});
+const require=createRequire(import.meta.url);const {chromium}=require('../quiz-executor/node_modules/playwright');
+const browser=await chromium.launch({executablePath:process.env.CHROME_EXECUTABLE||'/tmp/chromium',headless:true,args:['--disable-dev-shm-usage']});const page=await browser.newPage({viewport:{width:1600,height:1000}});const errors=[];page.on('request',r=>{if(r.url().includes('host-client'))console.log('MODULE',r.url())});page.on('requestfailed',r=>console.log('FAILED',r.url(),r.failure()));page.on('pageerror',e=>errors.push(e.message));
+await rpc('create',{id:'manual',title:'Edição manual'});
+await page.addInitScript(()=>localStorage.setItem('corvo-library-v2:connection:v1',JSON.stringify({coreUrl:'https://test.workers.dev',appKey:'test-only'})));
+await page.route('**/api/core-proxy/quiz/rpc',async route=>{const body=route.request().postDataJSON();console.log('RPC',body.op);try{const data=await quizRpc(env,new Request('https://test.workers.dev/quiz/rpc'),body.op,body.payload);await route.fulfill({json:data});}catch(e){await route.fulfill({status:409,json:{ok:false,error:e.message}});}});
+try{
+ await page.goto('http://127.0.0.1:3000/quiz');console.log('UI loaded');await page.getByRole('status').filter({hasText:'Edição manual com salvamento automático.'}).waitFor();const frame=page.frameLocator('iframe');await frame.locator('#titleInput').waitFor({state:'visible'});console.log('editor ready');await frame.locator('#titleInput').fill('EDIÇÃO MANUAL SALVA');
+ console.log('filled',await page.frames()[1].evaluate(()=>({summary:window.CorvoQuizStudio.getSummary().title,snapshot:window.CorvoQuizStudio.snapshot().scenes[0].title}))); await page.getByRole('status').filter({hasText:/Salvo/}).waitFor();assert.equal((await rpc('read',{id:'manual',full:true})).project.scenes[0].title,'EDIÇÃO MANUAL SALVA');
+ const saved=await rpc('read',{id:'manual',full:true});saved.project.scenes[0].title='ATUALIZADO PELO MCP';await rpc('save',{id:'manual',expected_revision:saved.revision,project:saved.project});
+ await page.waitForFunction(()=>document.querySelector('iframe')?.contentDocument.querySelector('#titleInput')?.value==='ATUALIZADO PELO MCP');
+ await page.screenshot({path:'/tmp/quiz-integrated.png'});assert.deepEqual(errors,[]);console.log('PASS: integrated /quiz → same connection → manual autosave → remote revision refresh');
+}catch(e){console.log('STATE',await page.locator('body').innerText(),errors);console.log('FRAME',await page.frames()[1]?.evaluate(()=>({api:!!window.CorvoQuizStudio,ready:!!window.CorvoQuizStudio?.snapshot,inputs:[...document.querySelectorAll('input')].map(x=>x.id).filter(Boolean)})));throw e;}finally{await browser.close();app.kill('SIGTERM');}

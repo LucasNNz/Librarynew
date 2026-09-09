@@ -16,3 +16,6 @@ declare module "zod" { export const z:any }
 interface Cache{match(request:Request):Promise<Response|undefined>;put(request:Request,response:Response):Promise<void>}
 interface CacheStorage{readonly default:Cache}
 declare const caches: CacheStorage;
+
+interface R2MultipartUpload {uploadId:string;uploadPart(n:number,data:ArrayBuffer):Promise<{partNumber:number;etag:string}>;complete(parts:{partNumber:number;etag:string}[]):Promise<R2Object>;abort():Promise<void>}
+interface R2Bucket {createMultipartUpload(key:string,options?:unknown):Promise<R2MultipartUpload>;resumeMultipartUpload(key:string,id:string):R2MultipartUpload}

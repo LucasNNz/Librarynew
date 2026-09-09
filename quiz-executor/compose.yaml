@@ -1,0 +1,11 @@
+services:
+  quiz-executor:
+    build:
+      context: ..
+      dockerfile: quiz-executor/Dockerfile
+    restart: unless-stopped
+    init: true
+    shm_size: 2gb
+    environment:
+      CORVO_CORE_URL: ${CORVO_CORE_URL:?Informe o Core existente}
+      CORVO_APP_KEY: ${CORVO_APP_KEY:?Informe a conexão existente}

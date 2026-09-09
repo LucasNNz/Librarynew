@@ -1,3 +1,4 @@
+import { registerQuizTools } from "./quiz/mcp";
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
@@ -151,7 +152,7 @@ function requestFor(baseRequest: Request, path: string, init?: RequestInit) {
 }
 
 function createServer(env: Env, request: Request) {
-  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.58" });
+  const server = new McpServer({ name: "corvo-library-v2", version: "0.20.59" });
 
   server.registerTool("verificar_saude", {
     description: "Health check leve do Core. Sempre expõe core_version; D1/R2 são probes mínimos e não fazem varredura de catálogo.",
@@ -161,12 +162,12 @@ function createServer(env: Env, request: Request) {
       env.DB.prepare("SELECT 1 AS ok").first().then(()=>true).catch(()=>false),
       env.MEDIA.list({ limit: 1 }).then(()=>true).catch(()=>false),
     ]);
-    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.58", core_version:"0.20.58", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
+    return output({ ok:d1Ok&&r2Ok, architecture:"D1_R2_QUEUE", version:"0.20.59", core_version:"0.20.59", d1:d1Ok?"ok":"error", r2:r2Ok?"ok":"error", schema_contract_version:"2.27.0" });
   });
   server.registerTool("obter_versao_core", {
     description: "Retorna a versão implantada do Core sem consultar D1, R2 ou Queue. Use para confirmar sincronização App ↔ Core mesmo durante bloqueio de cota D1.",
     inputSchema: {},
-  }, async () => output({ok:true,service:"corvo-core",version:"0.20.58",core_version:"0.20.58",schema_contract_version:"2.27.0",d1_read_required:false}));
+  }, async () => output({ok:true,service:"corvo-core",version:"0.20.59",core_version:"0.20.59",schema_contract_version:"2.27.0",d1_read_required:false}));
 
   server.registerTool("auditar_integridade_d1", {
     description: "Audita integridade lógica do D1 sem alterar dados. Separa orfandades históricas preservadas de inconsistências criadas pela V2.",
@@ -1310,6 +1311,7 @@ function createServer(env: Env, request: Request) {
     inputSchema: { max_objetos:z.number().int().min(1000).max(50000).optional() },
   }, async ({max_objetos}) => output(await fullStorageAudit(env,max_objetos||10000)));
 
+  registerQuizTools(server,env,request);
   return server;
 }
 

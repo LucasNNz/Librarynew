@@ -11,6 +11,7 @@ declare module "react" {
   export type Dispatch<A> = (value: A) => void;
   export interface ChangeEvent<T = Element> { target: T; currentTarget: T; }
   export interface FormEvent<T = Element> { preventDefault(): void; currentTarget: T; target: EventTarget; }
+  export function useRef<T>(value:T): {current:T};
   export function useState<S>(initialState: S | (() => S)): [S, Dispatch<SetStateAction<S>>];
   export function useEffect(effect: () => void | (() => void), deps?: readonly unknown[]): void;
   export function useMemo<T>(factory: () => T, deps: readonly unknown[]): T;

@@ -50,7 +50,7 @@ export async function addProjectQaEvent(env:Env,projectId:string,input:{status:s
 
 
 async function sha256Hex(bytes: Uint8Array) {
-  const digest=await crypto.subtle.digest("SHA-256",bytes);
+  const digest=await crypto.subtle.digest("SHA-256",new Uint8Array(bytes).buffer);
   return [...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
 }
 

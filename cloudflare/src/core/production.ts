@@ -176,7 +176,7 @@ function expectedMimeForTarget(value:string){const ext=extOf(value);if(ext==="jp
 function formatLabelForMime(mime:string){if(mime==="image/jpeg")return"jpg";if(mime==="image/png")return"png";if(mime==="image/webp")return"webp";return"";}
 function mimeForArtifactType(type:string){if(type==="PROJECT_SCRIPT_TXT")return"text/plain; charset=utf-8";return"application/zip";}
 function filenameForArtifactType(type:string){if(type==="PROJECT_IMAGES_ZIP")return"imagens.zip";if(type==="PROJECT_SCRIPT_TXT")return"roteiro.txt";if(type==="PROJECT_PUBLICATION_ZIP")return"thumbs_titulos.zip";return"projeto.zip";}
-async function sha256Hex(value:Uint8Array|string){const bytes=typeof value==="string"?new TextEncoder().encode(value):value;const digest=await crypto.subtle.digest("SHA-256",bytes);return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");}
+async function sha256Hex(value:Uint8Array|string){const bytes=typeof value==="string"?new TextEncoder().encode(value):value;const digest=await crypto.subtle.digest("SHA-256",new Uint8Array(bytes).buffer);return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");}
 
 async function mapLimit<T,R>(items:T[],limit:number,worker:(item:T,index:number)=>Promise<R>):Promise<R[]>{
   const output=new Array<R>(items.length);let cursor=0;const width=Math.max(1,Math.min(limit,items.length||1));

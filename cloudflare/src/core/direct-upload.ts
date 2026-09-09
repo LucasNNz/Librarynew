@@ -257,7 +257,7 @@ function remoteUrlFromFileObject(value: unknown) {
   return "";
 }
 
-async function sha256Bytes(bytes:Uint8Array){const digest=await crypto.subtle.digest("SHA-256",bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");}
+async function sha256Bytes(bytes:Uint8Array){const digest=await crypto.subtle.digest("SHA-256",new Uint8Array(bytes).buffer);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");}
 
 async function persistMcpThumbBytes(env:Env,input:{projectId:string;bytes:Uint8Array;fileName:string;mimeHint?:string;sourceUrl?:string;agentOrigin?:string}){
   const project=await env.DB.prepare("SELECT id FROM automatic_projects WHERE id=?").bind(input.projectId).first();

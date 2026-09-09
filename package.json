@@ -1,6 +1,6 @@
 {
   "name": "corvo-library-v2",
-  "version": "0.20.58",
+  "version": "0.20.59",
   "private": true,
   "engines": {
     "node": "22.x"
@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit --pretty false",
     "validate:structural": "tsc -p tsconfig.validate.json --pretty false && tsc -p cloudflare/tsconfig.validate.json --pretty false",
     "prebuild": "node scripts/build-core-bundle.mjs",
-    "build:core-bundle": "node scripts/build-core-bundle.mjs"
+    "build:core-bundle": "node scripts/build-core-bundle.mjs",
+    "test:quiz": "node --test tests/quiz-service.test.mjs"
   },
   "dependencies": {
     "next": "16.2.6",

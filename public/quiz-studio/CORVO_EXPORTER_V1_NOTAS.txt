@@ -1,0 +1,102 @@
+CORVO EXPORTER V2.2 — ÁUDIO FORMA + TRANSIÇÃO ADAPTATIVA
+
+Base: Corvo Quiz Studio v33 + pipeline de produção V2.
+
+ENTREGUE NESTA REVISÃO
+
+1. MESMA FAIXA PRINCIPAL DO FORMA(6)(1)
+- arquivo incluído no pacote: audio/faixa-principal.mp3;
+- bytes copiados diretamente do ZIP Forma(6)(1), sem recodificação;
+- duração real lida do arquivo: aproximadamente 2441,639 s (40m41,639s);
+- MP3 estéreo, 192 kbps;
+- NÃO foram incluídos os sons curtos de abertura ou encerramento/resultado;
+- a faixa principal é carregada por padrão em projetos novos.
+
+2. ÁUDIO PRINCIPAL ADAPTATIVO — MESMA REGRA DO FORMA
+- a fonte original permanece inteira;
+- o projeto usa uma instância virtual ajustada à duração atual;
+- projeto menor que a música: corta somente o excedente e reposiciona o fade-out no novo final;
+- projeto maior que a música: não estica e não cria áudio artificial; após o fim da faixa fica silêncio;
+- Repetir/loop existe somente como opção manual e vem DESLIGADO por padrão;
+- fade-in padrão: 1,25 s;
+- fade-out padrão: 2,00 s;
+- aumentar ou reduzir a duração do projeto recalcula automaticamente o ponto de corte/fade;
+- volume continua regulável;
+- usuário ainda pode trocar a faixa por outro arquivo ou restaurar a faixa principal incluída.
+
+3. AAC NO MP4
+- a faixa MP3 original é decodificada e codificada em AAC no MP4 final;
+- AAC 48 kHz, estéreo, 192 kbps via WebCodecs/AudioEncoder;
+- envelope de volume é aplicado durante a geração do PCM;
+- a duração AAC acompanha exatamente a duração final do projeto, incluindo os blocos de transição.
+
+4. TRANSIÇÕES COMO BLOCO INDEPENDENTE — MODELO FORMA
+- a transição NÃO consome os primeiros segundos da próxima cena;
+- a transição NÃO reduz o tempo útil da cena anterior;
+- cada transição é inserida virtualmente ENTRE duas cenas;
+- o último frame da cena anterior fica congelado;
+- o primeiro frame da próxima cena fica congelado;
+- o efeito de transição trabalha somente sobre esses dois frames congelados;
+- quando a transição termina, a próxima cena começa em tempo local 0.
+
+5. RETIMING / CÁLCULO AUTOMÁTICO
+- duração padrão da transição: 2,00 s;
+- referência equivalente ao Forma: 1,00 s do frame final anterior + 1,00 s do primeiro frame seguinte;
+- ao alterar a duração da transição, a progressão do efeito é normalizada de 0 a 1;
+- portanto o efeito inteiro é recalculado proporcionalmente para 0,5 s, 1 s, 2 s, 3 s, 5 s etc.;
+- a duração das cenas pode mudar sem deformar ou consumir a transição;
+- a duração total do projeto agora é: soma das cenas + soma dos blocos de transição;
+- cenas após a primeira recebem Dissolver de 2 s como padrão; o usuário pode trocar por Corte, Deslizar, Flash ou Zoom + fade.
+
+6. TRANSIÇÕES DISPONÍVEIS
+- Corte direto;
+- Dissolver / crossfade;
+- Deslizar;
+- Flash;
+- Zoom + fade.
+
+7. PROJETOS LONGOS / PROTEÇÃO DE RAM
+- até 5 min: ArrayBuffer em memória por padrão;
+- a partir de 5 min: prioriza OPFS / armazenamento temporário;
+- a partir de 10 min: OPFS é obrigatório para evitar estouro de memória;
+- remove o arquivo temporário após o download ou aborta com segurança em falha/cancelamento.
+
+8. FUNDO ANIMADO COM RECUPERAÇÃO
+- cenário aceita imagem, MP4 ou WebM;
+- em falha de seek/frame, tenta novamente e pode reutilizar o último frame válido;
+- diagnóstico registra recuperações e falhas.
+
+9. MP4-MUXER LOCAL
+- mp4-muxer.js v5.2.2 está incluído no ZIP;
+- sem dependência de CDN;
+- licença MIT acompanha o pacote.
+
+10. DIAGNÓSTICO E SEGURANÇA
+- progresso de exportação;
+- botão Cancelar exportação;
+- backpressure do VideoEncoder/AudioEncoder;
+- watchdog para encoder;
+- FPS efetivo, pintura por frame, fila do encoder;
+- chunks AAC;
+- frames de transição;
+- recuperações de cenário;
+- tamanho e armazenamento da saída.
+
+11. FORMATOS MISTURADOS
+- Projeto completo exige cenas do mesmo formato;
+- pode exportar somente 16:9;
+- pode exportar somente 9:16.
+
+PERFIL DE PRODUÇÃO
+- MP4: H.264 / AVC;
+- resolução: 1920×1080 ou 1080×1920;
+- 30 FPS;
+- vídeo: 8 Mbps;
+- áudio final: AAC 48 kHz estéreo, 192 kbps;
+- fonte de áudio embutida: MP3 192 kbps, aproximadamente 40m41,639s.
+
+REQUISITOS DO NAVEGADOR
+- Chrome ou Edge atualizado com WebCodecs para MP4;
+- AudioEncoder é necessário quando há áudio;
+- mantenha a pasta audio junto do index.html ao publicar/extrair o projeto;
+- OPFS precisa estar disponível para projetos de 10 minutos ou mais.
