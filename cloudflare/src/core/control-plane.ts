@@ -327,6 +327,15 @@ export async function applyMigrationsFromApp(env: Env) {
     await registerMigration(env,d1ReadOptimizationMigration,"APPLIED","schema_contract_reconciled");
     applied.add(d1ReadOptimizationMigration.name);
   }
+  // 2.29.0 is fully represented by reconcileCriticalSchema(), including
+  // the roteiro cycle tables, quiz handoff table, normalized asset index and
+  // its invalidation triggers. Never replay its ADD COLUMN statements after
+  // reconciliation, otherwise existing databases fail on visual_strategy.
+  const roteiroCycleQuizMigration=items.find(item=>item.name==="9029_roteiro_cycle_quiz_handoff.sql");
+  if(preSchemaContract?.ready&&roteiroCycleQuizMigration&&!applied.has(roteiroCycleQuizMigration.name)){
+    await registerMigration(env,roteiroCycleQuizMigration,"APPLIED","schema_contract_reconciled_2_29");
+    applied.add(roteiroCycleQuizMigration.name);
+  }
 
   for(const item of items){
     if(applied.has(item.name)) continue;

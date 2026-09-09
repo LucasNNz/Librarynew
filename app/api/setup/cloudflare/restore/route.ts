@@ -61,6 +61,10 @@ const CRITICAL_SCHEMA_COLUMNS: Record<string, Array<{name:string;ddl:string}>> =
     {name:"closed_reason",ddl:"ALTER TABLE automatic_projects ADD COLUMN closed_reason TEXT"},
     {name:"workflow_updated_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN workflow_updated_at INTEGER"},
     {name:"production_reconciled_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN production_reconciled_at INTEGER"},
+    {name:"visual_strategy",ddl:"ALTER TABLE automatic_projects ADD COLUMN visual_strategy TEXT"},
+    {name:"cycle_position",ddl:"ALTER TABLE automatic_projects ADD COLUMN cycle_position INTEGER"},
+    {name:"roteiro_cycle_advanced_at",ddl:"ALTER TABLE automatic_projects ADD COLUMN roteiro_cycle_advanced_at INTEGER"},
+    {name:"creation_operation_id",ddl:"ALTER TABLE automatic_projects ADD COLUMN creation_operation_id TEXT"},
   ],
   v2_project_media: [
     {name:"slot_index",ddl:"ALTER TABLE v2_project_media ADD COLUMN slot_index INTEGER"},
@@ -112,7 +116,21 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
     await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_workflow_tag_unique ON v2_project_workflow_tags(project_id,tag)");
     repaired.push("table:v2_project_workflow_tags");
   }
-  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_download_packages","v2_ingest_operations","v2_ingest_events","v2_production_slots","v2_production_slot_history","v2_mcp_route_telemetry"]){
+  if(!(await tableExists(token,accountId,databaseId,"v2_roteiro_cycle_state"))){
+    await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_roteiro_cycle_state (id TEXT PRIMARY KEY NOT NULL,next_position INTEGER NOT NULL DEFAULT 1 CHECK(next_position BETWEEN 1 AND 5),reserved_project_id TEXT,reserved_operation_id TEXT,reserved_at INTEGER,updated_at INTEGER NOT NULL)`);
+    await queryD1(token,accountId,databaseId,"INSERT OR IGNORE INTO v2_roteiro_cycle_state(id,next_position,updated_at) VALUES ('ROTEIRO',1,?)",[Date.now()]);
+    repaired.push("table:v2_roteiro_cycle_state");
+  }
+  if(!(await tableExists(token,accountId,databaseId,"v2_project_quiz_render"))){
+    await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_project_quiz_render (project_id TEXT PRIMARY KEY NOT NULL REFERENCES automatic_projects(id) ON DELETE CASCADE,quiz_id TEXT NOT NULL,payload_hash TEXT,import_job_id TEXT,render_job_id TEXT,status TEXT NOT NULL DEFAULT 'PENDING',attempt INTEGER NOT NULL DEFAULT 0,video_url TEXT,last_error TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,completed_at INTEGER)`);
+    await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_quiz_render_status ON v2_project_quiz_render(status,updated_at)");
+    repaired.push("table:v2_project_quiz_render");
+  }
+  if(!(await tableExists(token,accountId,databaseId,"v2_asset_search_index"))){
+    await queryD1(token,accountId,databaseId,`CREATE TABLE IF NOT EXISTS v2_asset_search_index (asset_id TEXT PRIMARY KEY NOT NULL REFERENCES assets(id) ON DELETE CASCADE,name_norm TEXT NOT NULL DEFAULT '',universe_norm TEXT NOT NULL DEFAULT '',subject_norm TEXT NOT NULL DEFAULT '',kind_norm TEXT NOT NULL DEFAULT '',tags_norm TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL DEFAULT 0)`);
+    repaired.push("table:v2_asset_search_index");
+  }
+  for(const table of ["v2_ingest_candidates","automatic_project_items","automatic_projects","v2_project_media","v2_project_titles","v2_download_packages","v2_ingest_operations","v2_ingest_events","v2_production_slots","v2_production_slot_history","v2_mcp_route_telemetry","v2_roteiro_cycle_state","v2_project_quiz_render","v2_asset_search_index"]){
     if(!(await tableExists(token,accountId,databaseId,table))) missingTables.push(table);
   }
   if(missingTables.length) return {ready:false,contractVersion:"2.27.0",missingTables,missingColumns:[],repaired};
@@ -159,7 +177,16 @@ async function reconcileCriticalSchemaRemote(token:string,accountId:string,datab
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_media_lookup ON v2_project_media(project_id,kind,status,selected,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_titles_lookup ON v2_project_titles(project_id,status,slot_index,updated_at DESC)");
   await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_download_packages_project_type_status ON v2_download_packages(project_id,type,status,created_at DESC)");
-  // This reconciler repairs the 2.27 baseline used by historical databases. Never
+  await queryD1(token,accountId,databaseId,"INSERT OR IGNORE INTO v2_roteiro_cycle_state(id,next_position,updated_at) VALUES ('ROTEIRO',1,?)",[Date.now()]);
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_project_quiz_render_status ON v2_project_quiz_render(status,updated_at)");
+  await queryD1(token,accountId,databaseId,"CREATE UNIQUE INDEX IF NOT EXISTS idx_automatic_projects_creation_operation ON automatic_projects(creation_operation_id) WHERE creation_operation_id IS NOT NULL AND creation_operation_id<>''");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_automatic_projects_quiz_render ON automatic_projects(updated_at ASC,id ASC) WHERE next_action='QUIZ_RENDER' AND COALESCE(lifecycle_status,'ACTIVE')='ACTIVE'");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_asset_search_universe ON v2_asset_search_index(universe_norm,asset_id)");
+  await queryD1(token,accountId,databaseId,"CREATE INDEX IF NOT EXISTS idx_v2_asset_search_kind ON v2_asset_search_index(kind_norm,asset_id)");
+  await queryD1(token,accountId,databaseId,`CREATE TRIGGER IF NOT EXISTS trg_v2_asset_search_insert AFTER INSERT ON assets BEGIN INSERT OR REPLACE INTO v2_asset_search_index(asset_id,name_norm,universe_norm,subject_norm,kind_norm,tags_norm,updated_at) VALUES(NEW.id,'','','','','',0); END`);
+  await queryD1(token,accountId,databaseId,`CREATE TRIGGER IF NOT EXISTS trg_v2_asset_search_update AFTER UPDATE OF name,universe,subject,kind,tags,updated_at ON assets BEGIN INSERT OR REPLACE INTO v2_asset_search_index(asset_id,name_norm,universe_norm,subject_norm,kind_norm,tags_norm,updated_at) VALUES(NEW.id,'','','','','',0); END`);
+  await queryD1(token,accountId,databaseId,`CREATE TRIGGER IF NOT EXISTS trg_v2_asset_search_delete AFTER DELETE ON assets BEGIN DELETE FROM v2_asset_search_index WHERE asset_id=OLD.id; END`);
+  // This reconciler repairs the forward schema before pending migrations are replayed.
   // downgrade a database that already crossed into the Quiz/Roteiro migrations.
   const schemaBeforeWrite=await currentSchemaVersion(token,accountId,databaseId);
   if(!["2.28.0","2.29.0"].includes(schemaBeforeWrite)){
@@ -327,6 +354,16 @@ async function applyPendingMigrations(token: string, accountId: string, database
     await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[d1ReadOptimizationMigration.name,"APPLIED","schema_contract_reconciled",checksum,now]);
     applied.add(d1ReadOptimizationMigration.name);
   }
+  const roteiroCycleQuizMigration=files.find(item=>item.name==="9029_roteiro_cycle_quiz_handoff.sql");
+  let roteiroCycleQuizReconciled=false;
+  if(preSchemaContract?.ready && roteiroCycleQuizMigration && !applied.has(roteiroCycleQuizMigration.name)){
+    const checksum=createHash("sha256").update(roteiroCycleQuizMigration.sql).digest("hex");
+    const now=Date.now();
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migrations_applied (name,checksum,applied_at) VALUES (?,?,?)",[roteiroCycleQuizMigration.name,checksum,now]);
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_migration_decisions (name,decision,reason,checksum,decided_at) VALUES (?,?,?,?,?)",[roteiroCycleQuizMigration.name,"APPLIED","schema_contract_reconciled_2_29",checksum,now]);
+    applied.add(roteiroCycleQuizMigration.name);
+    roteiroCycleQuizReconciled=true;
+  }
 
   for (const item of files) {
     if (applied.has(item.name)) continue;
@@ -347,6 +384,9 @@ async function applyPendingMigrations(token: string, accountId: string, database
   }
   const schemaContract=await reconcileCriticalSchemaRemote(token,accountId,databaseId);
   if(!schemaContract.ready) throw new Error(`SCHEMA_CONTRACT_NOT_READY:${JSON.stringify(schemaContract)}`);
+  if(roteiroCycleQuizReconciled || applied.has("9029_roteiro_cycle_quiz_handoff.sql")){
+    await queryD1(token,accountId,databaseId,"INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version','2.29.0',?)",[Date.now()]);
+  }
   const finalSchemaVersion=await currentSchemaVersion(token,accountId,databaseId);
   if(finalSchemaVersion!=="2.29.0") throw new Error(`SCHEMA_VERSION_MISMATCH:${finalSchemaVersion||"MISSING"}:expected=2.29.0`);
   return {executed,skippedLegacy,schemaContract:{...schemaContract,contractVersion:finalSchemaVersion}};

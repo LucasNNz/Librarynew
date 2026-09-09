@@ -267,6 +267,13 @@ export async function reconcileCriticalSchema(env:Env) {
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_media_lookup ON v2_project_media(project_id,kind,status,selected,updated_at DESC)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_titles_lookup ON v2_project_titles(project_id,status,slot_index,updated_at DESC)");
   await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_download_packages_project_type_status ON v2_download_packages(project_id,type,status,created_at DESC)");
+  await env.DB.prepare("INSERT OR IGNORE INTO v2_roteiro_cycle_state(id,next_position,updated_at) VALUES ('ROTEIRO',1,?)").bind(Date.now()).run();
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_project_quiz_render_status ON v2_project_quiz_render(status,updated_at)");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_asset_search_universe ON v2_asset_search_index(universe_norm,asset_id)");
+  await env.DB.exec("CREATE INDEX IF NOT EXISTS idx_v2_asset_search_kind ON v2_asset_search_index(kind_norm,asset_id)");
+  await env.DB.exec(`CREATE TRIGGER IF NOT EXISTS trg_v2_asset_search_insert AFTER INSERT ON assets BEGIN INSERT OR REPLACE INTO v2_asset_search_index(asset_id,name_norm,universe_norm,subject_norm,kind_norm,tags_norm,updated_at) VALUES(NEW.id,'','','','','',0); END`);
+  await env.DB.exec(`CREATE TRIGGER IF NOT EXISTS trg_v2_asset_search_update AFTER UPDATE OF name,universe,subject,kind,tags,updated_at ON assets BEGIN INSERT OR REPLACE INTO v2_asset_search_index(asset_id,name_norm,universe_norm,subject_norm,kind_norm,tags_norm,updated_at) VALUES(NEW.id,'','','','','',0); END`);
+  await env.DB.exec(`CREATE TRIGGER IF NOT EXISTS trg_v2_asset_search_delete AFTER DELETE ON assets BEGIN DELETE FROM v2_asset_search_index WHERE asset_id=OLD.id; END`);
   await env.DB.prepare(`UPDATE automatic_projects SET lifecycle_status=CASE WHEN upper(COALESCE(status,'')) IN ('COMPLETED','DONE','CONCLUIDO','CONCLUÍDO') THEN 'COMPLETED' WHEN upper(COALESCE(status,'')) IN ('REJECTED','REJEITADO','CANCELLED','CANCELADO') THEN 'REJECTED' ELSE COALESCE(NULLIF(lifecycle_status,''),'ACTIVE') END,mcp_locked=CASE WHEN upper(COALESCE(status,'')) IN ('COMPLETED','DONE','CONCLUIDO','CONCLUÍDO','REJECTED','REJEITADO','CANCELLED','CANCELADO') THEN 1 ELSE COALESCE(mcp_locked,0) END,workflow_updated_at=COALESCE(workflow_updated_at,updated_at)`).run();
   await env.DB.exec("CREATE TABLE IF NOT EXISTS v2_schema_meta (key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL)");
   await env.DB.prepare("INSERT OR REPLACE INTO v2_schema_meta(key,value,updated_at) VALUES ('schema_version',?,?)").bind(CONTRACT_VERSION,ts).run();
