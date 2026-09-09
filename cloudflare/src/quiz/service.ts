@@ -8,6 +8,9 @@ export class QuizError extends Error { constructor(message:string, public status
 const safeId = (v:unknown) => { if(typeof v!=='string'||! /^[\w-]{1,100}$/.test(v))throw new QuizError('INVALID_ID');return v; };
 const json = (v:unknown) => JSON.stringify(v);
 const uuid = () => crypto.randomUUID();
+const LOCAL_EXECUTOR_PREFIX='local:';
+const ACTIVE_EXECUTOR_WINDOW_MS=30_000;
+const ACTIVE_LOCAL_EXECUTOR_WINDOW_MS=45_000;
 let ready: Promise<void>|undefined;
 export function ensureQuiz(env:Env) {
   return ready ||= (async()=>{await env.DB.exec(`CREATE TABLE IF NOT EXISTS quiz_documents(id TEXT PRIMARY KEY,title TEXT NOT NULL,project_id TEXT,revision INTEGER NOT NULL DEFAULT 0,snapshot_key TEXT,summary_json TEXT NOT NULL DEFAULT '{}',updated_at INTEGER NOT NULL);
@@ -41,11 +44,46 @@ function validateCommand(c:any, batch=false) {
   // Do not accept object keys used for prototype mutation at any nesting level.
   const walk=(v:any)=>{if(v&&typeof v==='object')for(const k of Object.keys(v)){if(['__proto__','constructor','prototype'].includes(k))throw new QuizError('UNSAFE_KEY');walk(v[k]);}};walk(c);
 }
+async function activeExecutorPresence(env:Env){
+  const now=Date.now();
+  const localRow=await env.DB.prepare('SELECT COUNT(*) AS count, MAX(seen_at) AS seen FROM quiz_executors WHERE id LIKE ? AND seen_at>?').bind(`${LOCAL_EXECUTOR_PREFIX}%`,now-ACTIVE_LOCAL_EXECUTOR_WINDOW_MS).first<any>();
+  const remoteRow=await env.DB.prepare('SELECT COUNT(*) AS count, MAX(seen_at) AS seen FROM quiz_executors WHERE id NOT LIKE ? AND seen_at>?').bind(`${LOCAL_EXECUTOR_PREFIX}%`,now-ACTIVE_EXECUTOR_WINDOW_MS).first<any>();
+  return {
+    local:{count:Number(localRow?.count||0),seen_at:Number(localRow?.seen||0),online:Number(localRow?.count||0)>0},
+    external:{count:Number(remoteRow?.count||0),seen_at:Number(remoteRow?.seen||0),online:Number(remoteRow?.count||0)>0}
+  };
+}
+export async function hasActiveLocalExecutors(env:Env){return (await activeExecutorPresence(env)).local.online;}
 export async function rendererStatus(env:Env){
-  if(env.BROWSER){try{const r=await env.BROWSER.fetch('https://cloudflare.browser/v1/limits');if(r.ok)return {online:true,mode:'CLOUDFLARE_BROWSER_RENDERING',browser_closed_ok:true};}catch{/* external executor fallback below */}}
-  const r=await env.DB.prepare('SELECT MAX(seen_at) AS seen FROM quiz_executors').first<any>();
-  const online=Number(r?.seen||0)>Date.now()-30_000;
-  return {online,mode:online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',browser_closed_ok:online};
+  const presence=await activeExecutorPresence(env);
+  let browserAvailable=false,browserError:string|undefined,limits:any=null;
+  if(env.BROWSER){
+    try{
+      // Cloudflare Browser Run bindings intentionally use a fake hostname; the
+      // binding routes /v1 internally. This matches @cloudflare/puppeteer.
+      const r=await env.BROWSER.fetch('https://fake.host/v1/limits');
+      const text=await r.text();
+      if(r.ok){
+        browserAvailable=true;try{limits=JSON.parse(text);}catch{/* additive diagnostics only */}
+      }else browserError=`BROWSER_LIMITS_${r.status}:${text.slice(0,240)}`;
+    }catch(e){browserError=e instanceof Error?e.message:String(e);}
+  }else browserError='BROWSER_BINDING_MISSING';
+  if(presence.local.online)return {
+    online:true,
+    mode:'LOCAL_BROWSER',
+    provider:'LOCAL_BROWSER',
+    browser_closed_ok:browserAvailable||presence.external.online,
+    binding:!!env.BROWSER,
+    local_executors:presence.local.count,
+    external_executors:presence.external.count,
+    fallback_mode:browserAvailable?'CLOUDFLARE_BROWSER_RENDERING':presence.external.online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',
+    preference:'LOCAL_FIRST',
+    limits,
+    error:browserAvailable?undefined:browserError
+  };
+  if(browserAvailable)return {online:true,mode:'CLOUDFLARE_BROWSER_RENDERING',browser_closed_ok:true,provider:'BROWSER_RUN',binding:'BROWSER',local_executors:0,external_executors:presence.external.count,fallback_mode:presence.external.online?'EXTERNAL_EXECUTOR':'UNAVAILABLE',preference:'LOCAL_FIRST',limits};
+  if(presence.external.online)return {online:true,mode:'EXTERNAL_EXECUTOR',browser_closed_ok:true,provider:'EXTERNAL_EXECUTOR',binding:!!env.BROWSER,local_executors:0,external_executors:presence.external.count,fallback_mode:'UNAVAILABLE',preference:'LOCAL_FIRST',error:browserError};
+  return {online:false,mode:'UNAVAILABLE',browser_closed_ok:false,provider:'NONE',binding:!!env.BROWSER,local_executors:0,external_executors:0,fallback_mode:'UNAVAILABLE',preference:'LOCAL_FIRST',error:browserError};
 }
 async function executorOnline(env:Env){return (await rendererStatus(env)).online;}
 export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Promise<any>{
@@ -64,7 +102,7 @@ export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Pro
     await env.DB.batch([env.DB.prepare('INSERT OR IGNORE INTO quiz_media(id,r2_key,mime,size,created_at) VALUES(?,?,?,?,?)').bind(u.id,u.r2_key,u.mime,u.size,Date.now()),env.DB.prepare('DELETE FROM quiz_uploads WHERE id=?').bind(u.id)]);
     return {ok:true,id:u.id,url:`${new URL(request.url).origin}/quiz/media/${u.id}`,mime:u.mime,size:u.size};
   }
-  if(op==='catalog'){const renderer=await rendererStatus(env);return {ok:true,commands:COMMANDS,batch_limit:200,scene_index:'1-based',default_quiz_id:'quiz-teste',workflow:'read quiz-teste → execute (request_id) → job until SUCCEEDED → inspect result URLs; same request_id prevents duplicate submission',reads:'read returns persisted state immediately; get_schema gives ALL editable fields from the real editor',renderer_online:renderer.online,renderer,approval:'Uses existing Library MCP. No chat file/materialization tools. Client approval policies remain controlled by the client.'};}
+  if(op==='catalog'){const renderer=await rendererStatus(env);return {ok:true,commands:COMMANDS,batch_limit:200,scene_index:'1-based',default_quiz_id:'quiz-teste',workflow:'read quiz-teste → execute (request_id) → job until SUCCEEDED → inspect result URLs; same request_id prevents duplicate submission',reads:'read returns persisted state immediately; get_schema gives ALL editable fields from the real editor',renderer_online:renderer.online,renderer,renderer_strategy:'LOCAL_FIRST_FALLBACK_TO_BROWSER_RUN',approval:'Uses existing Library MCP. No chat file/materialization tools. Client approval policies remain controlled by the client.'};}
   if(op==='list'){const limit=Math.min(100,Math.max(1,Number(p.limit)||30));const r=await env.DB.prepare('SELECT id,title,project_id,revision,summary_json,updated_at FROM quiz_documents ORDER BY updated_at DESC,id ASC LIMIT ? OFFSET ?').bind(limit,Math.max(0,Number(p.offset)||0)).all<any>();return {ok:true,items:r.results.map(({summary_json,...r})=>({...r,summary:JSON.parse(summary_json)})),renderer_online:await executorOnline(env)};}
   if(op==='create'){
     const id=p.id?safeId(p.id):uuid();if(p.project_id){const project=await env.DB.prepare('SELECT id FROM automatic_projects WHERE id=?').bind(p.project_id).first();if(!project)throw new QuizError('LIBRARY_PROJECT_NOT_FOUND',404);}

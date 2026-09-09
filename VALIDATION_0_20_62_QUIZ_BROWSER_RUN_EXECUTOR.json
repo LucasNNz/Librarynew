@@ -1,0 +1,22 @@
+{
+  "release": "0.20.62",
+  "schema": "2.29.0",
+  "scope": "QUIZ_BROWSER_RUN_EXECUTOR",
+  "checks": {
+    "browser_binding_internal_limits": "PASS",
+    "browser_binding_internal_acquire": "PASS",
+    "browser_level_cdp_websocket": "PASS",
+    "target_flatten_session": "PASS",
+    "long_render_heartbeat": "PASS",
+    "browser_finally_close": "PASS",
+    "renderer_status_no_desktop_dependency": "PASS",
+    "structural_typecheck": "PASS"
+  },
+  "behavior_gate": {
+    "passed": 24,
+    "total": 24,
+    "ok": true
+  },
+  "structural_typecheck": "PASS",
+  "live_cloudflare_browser_run": "NOT_EXECUTED_REQUIRES_DEPLOYED_ACCOUNT_BINDING"
+}

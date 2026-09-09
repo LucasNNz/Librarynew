@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {env,rpc,quizRpc,serveQuizMedia,uploadQuizMedia,uploadQuizPart,project,sqlite,queueMessages} from './quiz-fixture.mjs';
 test('persistent state, duplicate requests, revision conflict, atomic commit, queue, cancellation, media',async()=>{
-  const catalog=await rpc('catalog');assert.equal(catalog.renderer_online,true);assert.equal(catalog.renderer.mode,'CLOUDFLARE_BROWSER_RENDERING');assert.equal(catalog.default_quiz_id,'quiz-teste');
+  const catalog=await rpc('catalog');assert.equal(catalog.renderer_online,true);assert.equal(catalog.renderer.mode,'CLOUDFLARE_BROWSER_RENDERING');assert.equal(catalog.renderer.preference,'LOCAL_FIRST');assert.equal(catalog.default_quiz_id,'quiz-teste');
+  await rpc('claim',{owner:'local:test-renderer'});const localCatalog=await rpc('catalog');assert.equal(localCatalog.renderer.mode,'LOCAL_BROWSER');assert.equal(localCatalog.renderer.local_executors,1);
   const bootstrap=await rpc('read',{id:'quiz-teste',full:true});assert.equal(bootstrap.revision,1);assert.equal(bootstrap.project.scenes.length,1);
   const created=await rpc('create',{id:'test',title:'Test'});assert.equal(created.revision,1);assert.equal(created.initialized,true);
   assert.equal((await rpc('save',{id:'test',expected_revision:1,project})).revision,2);

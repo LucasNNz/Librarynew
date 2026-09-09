@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import LocalQuizRendererClient from "./local-quiz-renderer-client";
 
 export const metadata: Metadata = {
   title: "Corvo Library V2",
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="pt-BR"><body>{children}</body></html>;
+  return <html lang="pt-BR"><body><LocalQuizRendererClient />{children}</body></html>;
 }
