@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import type { Asset, AutomaticProject, FinalProjectFiles, ProjectArtifactInventory, ProjectSlotSnapshot, OperationalPolicyContext, Batch, Candidate, CatalogResponse, CatalogStats, DispatcherHealth, ImportRecord, LibraryRequest, MaterializationStats, Operation, StorageAudit, R2Explorer, PendingR2Reconcile, R2CatalogSync, UniverseFacet } from "../lib/contracts";
-import { clearBrowserConnection, installCorvoFetchBridge, readBrowserConnection, saveBrowserConnection, type BrowserConnection } from "../lib/browser-connection";
+import { clearBrowserConnection, installCorvoFetchBridge, listBrowserConnections, readActiveBrowserConnectionProfile, readBrowserConnection, saveBrowserConnection, setActiveBrowserConnection, type BrowserConnection, type BrowserConnectionProfile } from "../lib/browser-connection";
 
 type SchemaContractState = {
   ready?: boolean;
@@ -82,7 +82,7 @@ const primaryNav = [
   { id:"Análise", icon:"chart" as UiIconName, label:"Análise" },
   { id:"Configurações", icon:"settings" as UiIconName, label:"Configurações" },
 ] as const;
-const APP_VERSION = "0.20.63";
+const APP_VERSION = "0.20.64";
 const EXPECTED_CORE_VERSION = APP_VERSION;
 const MAX_IMPORT_ZIP_BYTES = 48 * 1024 * 1024;
 
@@ -436,6 +436,7 @@ export default function Home() {
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupCopied, setSetupCopied] = useState(false);
   const [setupAdvanced, setSetupAdvanced] = useState(false);
+  const [addingConnection, setAddingConnection] = useState(false);
   const [infraProfile, setInfraProfile] = useState<InfrastructureProfile | null>(null);
   const [infraEvents, setInfraEvents] = useState<Array<Record<string,unknown>>>([]);
   const [infraEditing, setInfraEditing] = useState(false);
@@ -443,6 +444,8 @@ export default function Home() {
   const [infraMessage, setInfraMessage] = useState("");
   const [infraSaving, setInfraSaving] = useState(false);
   const [localConnection, setLocalConnection] = useState<BrowserConnection | null>(null);
+  const [connectionProfiles, setConnectionProfiles] = useState<BrowserConnectionProfile[]>([]);
+  const [activeConnectionProfileId, setActiveConnectionProfileId] = useState("");
   const [connectionResolved, setConnectionResolved] = useState(false);
   const [cloudflareToken, setCloudflareToken] = useState("");
   const [browserRecoveryToken, setBrowserRecoveryToken] = useState("");
@@ -1169,6 +1172,7 @@ export default function Home() {
   useEffect(() => {
     const dispose = installCorvoFetchBridge();
     setLocalConnection(readBrowserConnection());
+    refreshBrowserConnectionProfiles();
     setConnectionResolved(true);
     return dispose;
   }, []);
@@ -1408,6 +1412,7 @@ export default function Home() {
   }
 
   function openInfrastructureSetup(edit = false) {
+    setAddingConnection(false);
     setInfraMessage("");
     setInfraEditing(edit || !infraProfile);
     setSetupAdvanced(false);
@@ -1416,6 +1421,19 @@ export default function Home() {
     setCloudflareAccountId(localConnection?.accountId || "");
     setAutoSetupStage("");
     if (infraProfile) setInfraDraft({bffProjectName:infraProfile.bffProjectName,workerName:infraProfile.workerName,d1DatabaseName:infraProfile.d1DatabaseName,r2BucketName:infraProfile.r2BucketName,queueName:infraProfile.queueName,dlqName:infraProfile.dlqName});
+    setSetupOpen(true);
+  }
+
+  function openAdditionalBrowserConnection() {
+    setAddingConnection(true);
+    setInfraMessage("");
+    setInfraEditing(true);
+    setSetupAdvanced(false);
+    setCloudflareToken("");
+    setCloudflareAccounts([]);
+    setCloudflareAccountId("");
+    setAutoSetupStage("");
+    setInfraDraft(defaultInfrastructureDraft);
     setSetupOpen(true);
   }
 
@@ -1449,6 +1467,26 @@ export default function Home() {
     }
   }
 
+  function refreshBrowserConnectionProfiles() {
+    const profiles=listBrowserConnections();
+    const active=readActiveBrowserConnectionProfile();
+    setConnectionProfiles(profiles);
+    setActiveConnectionProfileId(active?.id || "");
+    return {profiles,active};
+  }
+
+  function switchBrowserConnection(profileId:string) {
+    if(!profileId || profileId===activeConnectionProfileId)return;
+    const next=setActiveBrowserConnection(profileId);
+    if(!next)return;
+    setActiveConnectionProfileId(profileId);
+    setLocalConnection(next);
+    // All dashboard state belongs to the selected Core. Reloading avoids any
+    // stale project/catalog data from the previous installation while the
+    // fetch bridge immediately starts using the newly active profile.
+    window.location.reload();
+  }
+
   async function runAutomaticSetup() {
     if (!cloudflareToken.trim()) { setInfraMessage("Cole o API Token da Cloudflare."); return; }
     setAutoSetupBusy(true); setInfraMessage("");
@@ -1473,6 +1511,7 @@ export default function Home() {
       const connection = provision.connection as BrowserConnection;
       saveBrowserConnection(connection);
       setLocalConnection(connection);
+      refreshBrowserConnectionProfiles();
       setCloudflareAccountId(connection.accountId);
       setInfraDraft({ bffProjectName:"corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName });
 
@@ -1503,7 +1542,7 @@ export default function Home() {
         const lockResponse = await fetch("/api/infrastructure/config", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ bffProjectName:"corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName }) });
         const locked = await lockResponse.json();
         if (!lockResponse.ok) throw new Error(locked.error || `LOCK_HTTP_${lockResponse.status}`);
-      } else if (infraProfile && infraEditing) {
+      } else if (infraProfile && infraEditing && !addingConnection) {
         const changeResponse = await fetch("/api/infrastructure/config", { method:"PATCH", headers:{"content-type":"application/json"}, body:JSON.stringify({ bffProjectName:infraProfile.bffProjectName || "corvo-library-v2", workerName:connection.workerName, d1DatabaseName:connection.d1DatabaseName, r2BucketName:connection.r2BucketName, queueName:connection.queueName, dlqName:connection.dlqName, expectedRevision:infraProfile.revision, confirmChange:true }) });
         const changed = await changeResponse.json();
         if (!changeResponse.ok) throw new Error(changed.error || `CHANGE_HTTP_${changeResponse.status}`);
@@ -1511,6 +1550,7 @@ export default function Home() {
       }
       setCloudflareToken("");
       setCloudflareAccounts([]);
+      setAddingConnection(false);
       setAutoSetupStage("Pronto. A configuração ficou gravada e travada.");
       setInfraMessage("Configuração concluída dentro do próprio app. Nenhuma variável manual na hospedagem e nada instalado no computador.");
       await Promise.all([refreshHealth(),refreshSettings(),refreshStats(),fetchCatalog(null,false)]);
@@ -1522,10 +1562,13 @@ export default function Home() {
 
   function forgetBrowserConnection() {
     clearBrowserConnection();
-    setLocalConnection(null);
+    const next=readBrowserConnection();
+    setLocalConnection(next);
+    refreshBrowserConnectionProfiles();
     setHealth(null);
     setInfraProfile(null);
-    setInfraMessage("Conexão local removida deste navegador. Os recursos Cloudflare não foram apagados.");
+    setInfraMessage(next?"Acesso atual removido. Outro acesso salvo neste navegador foi selecionado automaticamente.":"Conexão local removida deste navegador. Os recursos Cloudflare não foram apagados.");
+    if(next)window.location.reload();
   }
 
   function openMcpConnection() {
@@ -1564,6 +1607,7 @@ export default function Home() {
       const nextConnection:BrowserConnection={...localConnection,appKey:nextKey,savedAt:Date.now()};
       saveBrowserConnection(nextConnection);
       setLocalConnection(nextConnection);
+      refreshBrowserConnectionProfiles();
       setMcpKeyRotatedAt(rotatedAt);
       setMcpKeyMessage("Chave anterior revogada. Nova chave gerada e salva automaticamente neste navegador.");
 
@@ -1595,7 +1639,7 @@ export default function Home() {
       const value=await response.json().catch(()=>({})) as any;
       if(!response.ok||!value?.browserToken)throw new Error(value?.error||`BROWSER_RECOVERY_HTTP_${response.status}`);
       const nextConnection:BrowserConnection={...localConnection,appKey:String(value.browserToken),savedAt:Date.now()};
-      saveBrowserConnection(nextConnection);setLocalConnection(nextConnection);
+      saveBrowserConnection(nextConnection);setLocalConnection(nextConnection);refreshBrowserConnectionProfiles();
       setDetectedCoreVersion(String(value.coreVersion||EXPECTED_CORE_VERSION));
       setBrowserRecoveryToken("");
       setBrowserRecoveryMessage(`Navegador reconectado${value.updatedCore?" e Core atualizado":""}. Validando dados reais…`);
@@ -2079,11 +2123,12 @@ Tudo é configurado pela própria tela Configurações.
 
         {currentView === "Configurações" && <section className="modulePanel configPanel">
           <span className="eyebrow">INFRAESTRUTURA AUTOSSUFICIENTE</span><h2>Configura uma vez e fica cravado</h2><p>A própria Corvo Library cria/verifica o Core na Cloudflare. Nada para instalar no computador e nenhuma variável manual na hospedagem do app. O D1 guarda somente o manifesto não secreto; chaves sensíveis ficam como secrets do Worker.</p>
+          {connectionProfiles.length>0 && <div className="setupCallout"><div><strong>Acessos salvos neste navegador</strong><span>{connectionProfiles.length===1?"1 instalação salva. Novas instalações serão adicionadas sem substituir esta.":`${connectionProfiles.length} instalações salvas. Alternar não apaga nem revoga as demais.`}</span></div><div className="inlineActions"><label className="tokenField" style={{minWidth:280}}><span>Instalação ativa</span><select value={activeConnectionProfileId} onChange={(event:ChangeEvent<HTMLSelectElement>)=>switchBrowserConnection(event.target.value)}>{connectionProfiles.map(profile=><option key={profile.id} value={profile.id}>{profile.label} · {profile.connection.coreUrl.replace(/^https?:\/\//,"")}</option>)}</select></label><button className="secondary" onClick={openAdditionalBrowserConnection}>＋ Adicionar outro acesso</button></div></div>}
           {sessionUnauthorized && localConnection && <div className="sessionRecoveryCard"><div><span className="eyebrow">RECUPERAÇÃO DE SESSÃO</span><strong>Infraestrutura encontrada; somente este navegador perdeu a credencial válida.</strong><p>Isso pode acontecer quando uma instalação antiga regenerou a chave compartilhada em outro computador. A recuperação abaixo não apaga D1/R2, não recria a infraestrutura e, na 0.20.60, não invalida os outros PCs: cada navegador recebe seu próprio token.</p></div><label>Cloudflare API Token<input type="password" autoComplete="off" value={browserRecoveryToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setBrowserRecoveryToken(event.target.value)} placeholder="Cole o token administrativo da Cloudflare"/></label><div className="inlineActions"><button className="primary" disabled={browserRecoveryBusy} onClick={()=>void recoverBrowserAccess()}>{browserRecoveryBusy?"Recuperando…":"Recuperar acesso deste navegador"}</button><button className="secondary" onClick={()=>void refreshCoreVersion()}>Verificar Core sem D1</button></div>{browserRecoveryMessage&&<small className="mcpKeyStatus">{browserRecoveryMessage}</small>}</div>}
           <div className="setupCallout"><div><strong>{infraProfile ? `Configuração travada · revisão ${infraProfile.revision}` : localConnection ? "Conexão local encontrada — verificando Core" : "Configuração ainda não concluída"}</strong><span>{infraProfile ? `Instância ${infraProfile.instanceId} · só muda pelo botão Alterar configuração.` : "Cole uma única credencial Cloudflare e a Library cuida de D1, R2, Queue, Worker e restauração."}</span></div><button className="primary" onClick={() => openInfrastructureSetup(false)}>{infraProfile ? "Ver configuração" : "Configurar agora"}</button></div>
           {infraProfile && <div className="lockedConfig"><div><span>ESTADO</span><strong>🔒 LOCKED</strong></div><div><span>INSTÂNCIA</span><code>{infraProfile.instanceId}</code></div><div><span>REVISÃO</span><strong>{infraProfile.revision}</strong></div><div><span>ÚLTIMA ALTERAÇÃO</span><strong>{new Date(infraProfile.updatedAt).toLocaleString("pt-BR")}</strong></div></div>}
           <div className="bindingList"><div><b>DB</b><span>D1 · {infraProfile?.d1DatabaseName || localConnection?.d1DatabaseName || "corvo-library-v2"}</span><em>{health?.core.d1 || "aguardando"}</em></div><div><b>MEDIA</b><span>R2 · {infraProfile?.r2BucketName || localConnection?.r2BucketName || "corvoquiz-prod"}</span><em>{health?.core.r2 || "aguardando"}</em></div><div><b>MATERIALIZE_QUEUE</b><span>Queue · {infraProfile?.queueName || localConnection?.queueName || "corvo-materialize-v2"}</span><em>{health?.core.queue || "aguardando"}</em></div><div><b>APP AUTH</b><span>Chave de sessão da Library · não é credencial Cloudflare</span><em>{health?.core.appAuth || (localConnection ? "salva" : "aguardando")}</em></div><div><b>CONTROLE</b><span>API Token Cloudflare · secret exclusivo do Worker</span><em>{health?.core.control || "aguardando"}</em></div></div>
-          {localConnection && <div className="notice compact"><strong>Conexão deste navegador salva</strong><span>{localConnection.coreUrl} · atualizações do frontend não apagam esta conexão.</span></div>}
+          {localConnection && <div className="notice compact"><strong>Conexão ativa deste navegador</strong><span>{localConnection.coreUrl} · outros acessos salvos permanecem preservados.</span></div>}
           <div className={`coreVersionPanel ${coreVersionStatus.toLowerCase()}`}>
             <div className="coreVersionGrid">
               <div><span>APP</span><strong>{APP_VERSION}</strong><small>frontend publicado</small></div>
@@ -2118,7 +2163,7 @@ Tudo é configurado pela própria tela Configurações.
 
         {setupOpen && <div className="setupOverlay" role="dialog" aria-modal="true" aria-label="Configurar infraestrutura">
           <div className="setupModal">
-            <div className="setupModalHead"><div><span className="eyebrow">CONFIGURAÇÃO AUTOSSUFICIENTE</span><h2>{infraProfile && !infraEditing ? "Corvo Library já configurada" : infraProfile ? "Alterar configuração" : "Conectar a Corvo Library"}</h2><p>{infraProfile && !infraEditing ? `A revisão ${infraProfile.revision} está travada. Abrir o app ou publicar uma nova versão não muda nada.` : "Tudo acontece aqui dentro. Nada para instalar no computador e nenhuma variável manual na hospedagem."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setInfraEditing(false);setInfraMessage("");setSetupAdvanced(false);setCloudflareToken("");}} aria-label="Fechar">×</button></div>
+            <div className="setupModalHead"><div><span className="eyebrow">CONFIGURAÇÃO AUTOSSUFICIENTE</span><h2>{addingConnection ? "Adicionar outro acesso" : infraProfile && !infraEditing ? "Corvo Library já configurada" : infraProfile ? "Alterar configuração" : "Conectar a Corvo Library"}</h2><p>{infraProfile && !infraEditing ? `A revisão ${infraProfile.revision} está travada. Abrir o app ou publicar uma nova versão não muda nada.` : "Tudo acontece aqui dentro. Nada para instalar no computador e nenhuma variável manual na hospedagem."}</p></div><button className="iconClose" onClick={() => {setSetupOpen(false);setAddingConnection(false);setInfraEditing(false);setInfraMessage("");setSetupAdvanced(false);setCloudflareToken("");}} aria-label="Fechar">×</button></div>
 
             <div className="quickSetupStatus">
               <div className={localConnection || infraProfile ? "done" : "current"}><b>1</b><span>Acesso Cloudflare</span><small>{localConnection || infraProfile ? "Conexão conhecida" : "Cole o API Token uma vez"}</small></div>
@@ -2126,7 +2171,7 @@ Tudo é configurado pela própria tela Configurações.
               <div className={health?.core.ok && infraProfile ? "done" : "waiting"}><b>3</b><span>Gravado</span><small>{infraProfile ? `LOCKED · revisão ${infraProfile.revision}` : "Persistente nas próximas versões"}</small></div>
             </div>
 
-            {infraProfile && !infraEditing ? <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId} · nada é redefinido por atualização.</small></div><div className="lockedActions">{coreVersionMismatch && <button className="secondary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : `Atualizar Core ${EXPECTED_CORE_VERSION}`}</button>}<button className="secondary" disabled={setupBusy} onClick={()=>void recheckInfrastructure()}>{setupBusy ? "Verificando…" : "Verificar agora"}</button><button className="primary" onClick={()=>{setInfraEditing(true);setCloudflareToken("");setAutoSetupStage("");}}>Alterar configuração</button></div></div> : <>
+            {infraProfile && !infraEditing && !addingConnection ? <div className="lockedHero"><div><span>CONFIGURAÇÃO PERSISTENTE</span><strong>🔒 LOCKED · REVISÃO {infraProfile.revision}</strong><small>Instância {infraProfile.instanceId} · nada é redefinido por atualização.</small></div><div className="lockedActions">{coreVersionMismatch && <button className="secondary" disabled={coreUpdateBusy} onClick={()=>void updateCoreFromApp()}>{coreUpdateBusy ? "Atualizando…" : `Atualizar Core ${EXPECTED_CORE_VERSION}`}</button>}<button className="secondary" disabled={setupBusy} onClick={()=>void recheckInfrastructure()}>{setupBusy ? "Verificando…" : "Verificar agora"}</button><button className="primary" onClick={()=>{setInfraEditing(true);setCloudflareToken("");setAutoSetupStage("");}}>Alterar configuração</button></div></div> : <>
               <div className="selfSetupCard">
                 <div className="selfSetupCopy"><span className="eyebrow">ÚNICA ENTRADA NECESSÁRIA</span><h3>API Token da Cloudflare</h3><p>Use um API Token da sua conta. Ele é usado pelo setup e depois fica guardado como <b>secret do próprio Worker</b>. Não é salvo no D1, não fica em variável da hospedagem e é removido do campo ao terminar.</p><div className="tokenPermissions"><b>Permissões do token</b><span>Workers Scripts Write · D1 Write · Workers R2 Storage Write · Queues Write</span><a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Abrir criação de API Token na Cloudflare ↗</a></div></div>
                 <label className="tokenField"><span>API Token</span><input type="password" autoComplete="off" value={cloudflareToken} onChange={(event:ChangeEvent<HTMLInputElement>)=>setCloudflareToken(event.target.value)} placeholder="Cole aqui o token da Cloudflare" /></label>
