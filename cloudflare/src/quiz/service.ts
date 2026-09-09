@@ -11,7 +11,7 @@ const uuid = () => crypto.randomUUID();
 const LOCAL_EXECUTOR_PREFIX='local-';
 const LEGACY_LOCAL_EXECUTOR_PREFIX='local:';
 const ACTIVE_EXECUTOR_WINDOW_MS=30_000;
-const ACTIVE_LOCAL_EXECUTOR_WINDOW_MS=45_000;
+const ACTIVE_LOCAL_EXECUTOR_WINDOW_MS=75_000;
 let ready: Promise<void>|undefined;
 export function ensureQuiz(env:Env) {
   return ready ||= (async()=>{await env.DB.exec(`CREATE TABLE IF NOT EXISTS quiz_documents(id TEXT PRIMARY KEY,title TEXT NOT NULL,project_id TEXT,revision INTEGER NOT NULL DEFAULT 0,snapshot_key TEXT,summary_json TEXT NOT NULL DEFAULT '{}',updated_at INTEGER NOT NULL);
@@ -166,9 +166,14 @@ export async function quizRpc(env:Env, request:Request, op:string, p:any={}):Pro
   }
   if(op==='claim'){
     const owner=safeId(p.owner),now=Date.now();await touchExecutor(env,owner,now);
+    // Idle local renderers must not scan the queue every few seconds. The
+    // status+created_at index makes this a one-row/zero-row probe. Only when a
+    // queued job really exists do we run lease cleanup and the atomic claim.
+    const next:any=await env.DB.prepare("SELECT id FROM quiz_jobs WHERE status='QUEUED' ORDER BY created_at,id LIMIT 1").first();
+    if(!next)return {ok:true,job:null,poll_after_ms:8000};
     await env.DB.prepare(`UPDATE quiz_jobs SET status='FAILED',result_json=?,updated_at=? WHERE status IN ('RUNNING','CANCEL_REQUESTED') AND lease_until<?`).bind(json({ok:false,error:'EXECUTOR_LOST',retry:'Submit a new request_id after reviewing persisted revision.'}),now,now).run();
-    const row:any=await env.DB.prepare(`UPDATE quiz_jobs SET status='RUNNING',owner=?,lease_until=?,updated_at=? WHERE id=(SELECT q.id FROM quiz_jobs q WHERE q.status='QUEUED' AND NOT EXISTS(SELECT 1 FROM quiz_jobs busy WHERE busy.document_id=q.document_id AND busy.status IN ('RUNNING','CANCEL_REQUESTED')) ORDER BY q.created_at,q.id LIMIT 1) AND status='QUEUED' RETURNING *`).bind(owner,now+60_000,now).first();
-    if(!row)return {ok:true,job:null};const d=await doc(env,row.document_id);return {ok:true,job:{id:row.id,document_id:row.document_id,expected_revision:row.expected_revision,command:JSON.parse(row.request_json),revision:d.revision,project:await snapshot(env,d)}};
+    const row:any=await env.DB.prepare(`UPDATE quiz_jobs SET status='RUNNING',owner=?,lease_until=?,updated_at=? WHERE id=? AND status='QUEUED' AND NOT EXISTS(SELECT 1 FROM quiz_jobs busy WHERE busy.document_id=quiz_jobs.document_id AND busy.id<>quiz_jobs.id AND busy.status IN ('RUNNING','CANCEL_REQUESTED')) RETURNING *`).bind(owner,now+60_000,now,safeId(next.id)).first();
+    if(!row)return {ok:true,job:null,poll_after_ms:1200};const d=await doc(env,row.document_id);return {ok:true,job:{id:row.id,document_id:row.document_id,expected_revision:row.expected_revision,command:JSON.parse(row.request_json),revision:d.revision,project:await snapshot(env,d)}};
   }
   if(op==='heartbeat'){
     const now=Date.now();await env.DB.prepare('UPDATE quiz_executors SET seen_at=? WHERE id=?').bind(now,safeId(p.owner)).run();

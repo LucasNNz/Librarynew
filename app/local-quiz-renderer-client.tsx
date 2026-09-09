@@ -39,7 +39,6 @@ export default function LocalQuizRendererClient() {
   const stopped = useRef(false);
   const owner = useRef(`local-${crypto.randomUUID()}`);
   const currentJob = useRef<ClaimedJob | null>(null);
-  const lastExecutorPing = useRef(0);
 
   async function request(path: string, body: any, media = false): Promise<any> {
     const connection = readBrowserConnection();
@@ -183,11 +182,9 @@ export default function LocalQuizRendererClient() {
         }
         installBridge();
         await target.CorvoQuizStudio.detectLibrary?.().catch(() => false);
-        const now = Date.now();
-        if (now - lastExecutorPing.current >= 10_000) {
-          await rpc('executor-ping', { owner: owner.current });
-          lastExecutorPing.current = now;
-        }
+        // One cheap indexed claim also refreshes this renderer's presence.
+        // Do not maintain a second D1 heartbeat while idle: the Free tier counts
+        // rows read/written and an always-open Library tab must be near-zero cost.
         const claimed = await rpc('claim', { owner: owner.current });
         if (claimed?.job) {
           busy.current = true;
@@ -204,7 +201,7 @@ export default function LocalQuizRendererClient() {
       } catch {
         // Silent retry; this worker is auxiliary and must never break the UI.
       }
-      loopTimer = window.setTimeout(() => void loop(), 2000);
+      loopTimer = window.setTimeout(() => void loop(), 8000);
     };
     loopTimer = window.setTimeout(() => void loop(), 1200);
     return () => {
